@@ -683,14 +683,22 @@ impl App {
         direction: NavDirection,
     ) -> Option<(usize, crate::layout::PaneId)> {
         let ws_idx = self.state.active?;
+        let tab = self.state.workspaces.get(ws_idx)?.active_tab()?;
+        let tiled: Vec<crate::layout::PaneInfo> = self
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .filter(|info| !tab.is_float(info.id))
+            .cloned()
+            .collect();
         let focused = self
             .state
             .view
             .pane_infos
             .iter()
             .find(|pane| pane.is_focused)?;
-        let target =
-            crate::layout::find_in_direction(focused, direction, &self.state.view.pane_infos)?;
+        let target = crate::layout::find_in_direction(focused, direction, &tiled)?;
         Some((ws_idx, target))
     }
 
@@ -699,14 +707,22 @@ impl App {
         direction: NavDirection,
     ) -> Option<(usize, crate::layout::PaneId, crate::layout::PaneId)> {
         let ws_idx = self.state.active?;
+        let tab = self.state.workspaces.get(ws_idx)?.active_tab()?;
+        let tiled: Vec<crate::layout::PaneInfo> = self
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .filter(|info| !tab.is_float(info.id))
+            .cloned()
+            .collect();
         let focused = self
             .state
             .view
             .pane_infos
             .iter()
             .find(|pane| pane.is_focused)?;
-        let target =
-            crate::layout::find_in_direction(focused, direction, &self.state.view.pane_infos)?;
+        let target = crate::layout::find_in_direction(focused, direction, &tiled)?;
         Some((ws_idx, focused.id, target))
     }
 

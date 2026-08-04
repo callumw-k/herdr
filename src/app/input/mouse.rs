@@ -647,7 +647,7 @@ impl AppState {
                         self.pane_scroll_metrics(terminal_runtimes, info.id),
                     ));
                     return self.mouse_pane_focus_action(info.id);
-                } else if let Some(info) = self.view.pane_infos.iter().find(|p| {
+                } else if let Some(info) = self.view.pane_infos.iter().rev().find(|p| {
                     mouse.column >= p.rect.x
                         && mouse.column < p.rect.x + p.rect.width
                         && mouse.row >= p.rect.y
@@ -1424,7 +1424,7 @@ impl AppState {
     }
 
     pub(super) fn pane_at(&self, col: u16, row: u16) -> Option<&PaneInfo> {
-        self.view.pane_infos.iter().find(|p| {
+        self.view.pane_infos.iter().rev().find(|p| {
             col >= p.inner_rect.x
                 && col < p.inner_rect.x + p.inner_rect.width
                 && row >= p.inner_rect.y
@@ -1452,7 +1452,7 @@ impl AppState {
     }
 
     pub(super) fn pane_frame_at(&self, col: u16, row: u16) -> Option<&PaneInfo> {
-        self.view.pane_infos.iter().find(|p| {
+        self.view.pane_infos.iter().rev().find(|p| {
             col >= p.rect.x
                 && col < p.rect.x + p.rect.width
                 && row >= p.rect.y
