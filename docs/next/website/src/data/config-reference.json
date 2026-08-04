@@ -653,6 +653,18 @@
           "description": "Draw borders around split panes."
         },
         {
+          "key": "ui.floating_pane_width",
+          "type": "integer or percentage",
+          "default": "unset",
+          "description": "Width of floating panes, in cells or as a percentage like \"60%\". Unset uses half the terminal area."
+        },
+        {
+          "key": "ui.floating_pane_height",
+          "type": "integer or percentage",
+          "default": "unset",
+          "description": "Height of floating panes, in cells or as a percentage like \"60%\". Unset uses half the terminal area."
+        },
+        {
           "key": "ui.pane_scrollbars",
           "type": "boolean",
           "default": "true",

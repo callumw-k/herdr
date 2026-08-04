@@ -3,6 +3,8 @@ use std::{collections::BTreeSet, num::NonZeroUsize};
 use crossterm::event::KeyModifiers;
 use serde::{de, Deserialize, Deserializer, Serialize};
 
+use crate::popup_size::PopupSize;
+
 use super::{
     ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SidebarConfig,
     SoundConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD, DEFAULT_MOUSE_SCROLL_LINES,
@@ -814,6 +816,12 @@ pub struct UiConfig {
     pub prompt_new_workspace_name: bool,
     /// Draw borders around split panes. Default: true.
     pub pane_borders: bool,
+    /// Width of floating panes, in cells or as a percentage like "60%".
+    /// Unset uses half the terminal area.
+    pub floating_pane_width: Option<PopupSize>,
+    /// Height of floating panes, in cells or as a percentage like "60%".
+    /// Unset uses half the terminal area.
+    pub floating_pane_height: Option<PopupSize>,
     /// Draw interactive scrollbars beside terminal panes. Default: true.
     pub pane_scrollbars: bool,
     /// Keep split panes visually separated instead of sharing divider borders. Default: true.
@@ -1023,6 +1031,8 @@ impl Default for UiConfig {
             prompt_new_tab_name: true,
             prompt_new_workspace_name: false,
             pane_borders: true,
+            floating_pane_width: None,
+            floating_pane_height: None,
             pane_scrollbars: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
