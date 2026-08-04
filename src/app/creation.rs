@@ -357,12 +357,7 @@ impl App {
             Ok(ws
                 .tabs
                 .iter()
-                .flat_map(|tab| {
-                    tab.layout
-                        .pane_ids()
-                        .into_iter()
-                        .chain(tab.floats.iter().copied())
-                })
+                .flat_map(|tab| tab.all_pane_ids())
                 .filter_map(|pane_id| self.pane_info(ws_idx, pane_id))
                 .collect())
         } else {
@@ -374,12 +369,7 @@ impl App {
                 .flat_map(|(ws_idx, ws)| {
                     ws.tabs
                         .iter()
-                        .flat_map(|tab| {
-                            tab.layout
-                                .pane_ids()
-                                .into_iter()
-                                .chain(tab.floats.iter().copied())
-                        })
+                        .flat_map(|tab| tab.all_pane_ids())
                         .filter_map(move |pane_id| self.pane_info(ws_idx, pane_id))
                 })
                 .collect())

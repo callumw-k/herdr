@@ -575,7 +575,7 @@ impl AppState {
             return Vec::new();
         };
         let mut rows = Vec::new();
-        for pane_id in tab.layout.pane_ids() {
+        for pane_id in tab.all_pane_ids() {
             let Some(pane) = tab.panes.get(&pane_id) else {
                 continue;
             };

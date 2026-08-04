@@ -219,6 +219,15 @@ impl Tab {
         self.floats.contains(&pane_id)
     }
 
+    /// Every pane in this tab, tiled then floating. Use this over `layout.pane_ids()`
+    /// wherever "every pane" is meant rather than "every tiled pane".
+    pub fn all_pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
+        self.layout
+            .pane_ids()
+            .into_iter()
+            .chain(self.floats.iter().copied())
+    }
+
     #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
     pub fn top_float(&self) -> Option<PaneId> {
         if self.floats_hidden {
