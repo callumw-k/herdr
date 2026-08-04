@@ -240,8 +240,10 @@ impl Tab {
 
     #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
     pub fn push_float(&mut self, pane_id: PaneId, pane_state: PaneState) {
+        if !self.floats.contains(&pane_id) {
+            self.floats.push(pane_id);
+        }
         self.panes.insert(pane_id, pane_state);
-        self.floats.push(pane_id);
         self.floats_hidden = false;
         self.float_focused = true;
     }
@@ -725,6 +727,21 @@ mod tests {
 
         tab.set_floats_hidden(true);
         assert_eq!(tab.top_float(), None);
+    }
+
+    #[test]
+    fn push_float_with_duplicate_id_does_not_duplicate_stack_entry() {
+        let mut tab = test_tab();
+        let float = PaneId::alloc();
+        tab.push_float(float, PaneState::new(TerminalId::alloc()));
+        let updated_terminal = TerminalId::alloc();
+        tab.push_float(float, PaneState::new(updated_terminal.clone()));
+
+        assert_eq!(tab.floats, vec![float]);
+        assert_eq!(
+            tab.panes.get(&float).map(|p| &p.attached_terminal_id),
+            Some(&updated_terminal)
+        );
     }
 
     #[test]
