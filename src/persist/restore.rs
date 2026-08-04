@@ -376,7 +376,7 @@ fn restore_workspace(
             tab.number = public_tab_number;
         }
         next_public_tab_number = next_public_tab_number.max(tab.number + 1);
-        for pane_id in tab.layout.pane_ids() {
+        for pane_id in tab.all_pane_ids() {
             let public_number = public_pane_numbers_by_old_raw
                 .get(
                     &reverse_id_map
