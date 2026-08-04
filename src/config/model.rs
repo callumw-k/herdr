@@ -414,6 +414,12 @@ pub struct KeysConfig {
     /// Toggle zoom for the focused pane. Default: "prefix+z"
     #[serde(alias = "fullscreen")]
     pub zoom: BindingConfig,
+    /// Open a new floating pane. Default: "prefix+f"
+    pub new_float: BindingConfig,
+    /// Show or hide the floating layer. Default: "prefix+shift+f"
+    pub toggle_floats: BindingConfig,
+    /// Bring the next floating pane to the top. Default: "prefix+ctrl+f"
+    pub cycle_float: BindingConfig,
     /// Enter resize mode. Default: "prefix+r"
     pub resize_mode: BindingConfig,
     /// Toggle sidebar collapse. Default: "prefix+b"
@@ -533,6 +539,12 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(alias = "fullscreen", skip_serializing_if = "Option::is_none")]
     zoom: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    new_float: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_floats: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cycle_float: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     resize_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_sidebar: Option<BindingConfig>,
@@ -610,6 +622,9 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(split_horizontal);
         apply_field!(close_pane);
         apply_field!(zoom);
+        apply_field!(new_float);
+        apply_field!(toggle_floats);
+        apply_field!(cycle_float);
         apply_field!(resize_mode);
         apply_field!(toggle_sidebar);
         apply_field!(indexed);
@@ -708,6 +723,9 @@ impl KeysConfig {
         copy_effective_action_field!(split_horizontal, keybinds.split_horizontal);
         copy_effective_action_field!(close_pane, keybinds.close_pane);
         copy_effective_action_field!(zoom, keybinds.zoom);
+        copy_effective_action_field!(new_float, keybinds.new_float);
+        copy_effective_action_field!(toggle_floats, keybinds.toggle_floats);
+        copy_effective_action_field!(cycle_float, keybinds.cycle_float);
         copy_effective_action_field!(resize_mode, keybinds.resize_mode);
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
         copy_user_field!(indexed);
@@ -995,6 +1013,9 @@ impl Default for KeysConfig {
             split_horizontal: BindingConfig::one("prefix+minus"),
             close_pane: BindingConfig::one("prefix+x"),
             zoom: BindingConfig::one("prefix+z"),
+            new_float: BindingConfig::one("prefix+f"),
+            toggle_floats: BindingConfig::one("prefix+shift+f"),
+            cycle_float: BindingConfig::one("prefix+ctrl+f"),
             resize_mode: BindingConfig::one("prefix+r"),
             toggle_sidebar: BindingConfig::one("prefix+b"),
             indexed: IndexedKeysConfig::default(),

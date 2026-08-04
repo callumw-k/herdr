@@ -382,6 +382,29 @@ impl App {
                 self.zoom_focused_pane_via_api();
                 leave_navigate_mode(&mut self.state);
             }
+            NavigateAction::NewFloat => {
+                if let Some(ws_idx) = self.state.active {
+                    if let Err(err) = self.open_float_pane(ws_idx, None) {
+                        tracing::warn!(%err, "failed to open floating pane");
+                    }
+                }
+                leave_navigate_mode(&mut self.state);
+            }
+            NavigateAction::ToggleFloats => {
+                let hidden = self
+                    .state
+                    .active
+                    .and_then(|ws_idx| self.state.workspaces.get(ws_idx))
+                    .and_then(|ws| ws.active_tab())
+                    .map(|tab| tab.floats_hidden)
+                    .unwrap_or(false);
+                self.state.set_floats_hidden_in_active_tab(!hidden);
+                leave_navigate_mode(&mut self.state);
+            }
+            NavigateAction::CycleFloat => {
+                self.state.cycle_floats_in_active_tab(true);
+                leave_navigate_mode(&mut self.state);
+            }
             NavigateAction::EnterResizeMode => self.state.mode = Mode::Resize,
             NavigateAction::ToggleSidebar => {
                 self.state.sidebar_collapsed = !self.state.sidebar_collapsed;
@@ -1381,6 +1404,9 @@ pub(crate) enum NavigateAction {
     EditScrollback,
     CopyMode,
     Zoom,
+    NewFloat,
+    ToggleFloats,
+    CycleFloat,
     EnterResizeMode,
     ToggleSidebar,
     CyclePaneNext,
@@ -1525,6 +1551,9 @@ fn non_indexed_action_for_key(
         (&kb.split_horizontal, NavigateAction::SplitHorizontal),
         (&kb.close_pane, NavigateAction::ClosePane),
         (&kb.zoom, NavigateAction::Zoom),
+        (&kb.new_float, NavigateAction::NewFloat),
+        (&kb.toggle_floats, NavigateAction::ToggleFloats),
+        (&kb.cycle_float, NavigateAction::CycleFloat),
         (&kb.resize_mode, NavigateAction::EnterResizeMode),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
         (&kb.reload_config, NavigateAction::ReloadConfig),
@@ -1754,6 +1783,23 @@ pub(super) fn execute_navigate_action_in_context(
         NavigateAction::CopyMode => state.enter_copy_mode(terminal_runtimes),
         NavigateAction::Zoom => {
             state.toggle_zoom();
+            leave_navigate_mode(state);
+        }
+        // App-only: opening a float needs terminal runtimes and event channels this
+        // test harness doesn't have, same as EditScrollback above.
+        NavigateAction::NewFloat => {}
+        NavigateAction::ToggleFloats => {
+            let hidden = state
+                .active
+                .and_then(|ws_idx| state.workspaces.get(ws_idx))
+                .and_then(|ws| ws.active_tab())
+                .map(|tab| tab.floats_hidden)
+                .unwrap_or(false);
+            state.set_floats_hidden_in_active_tab(!hidden);
+            leave_navigate_mode(state);
+        }
+        NavigateAction::CycleFloat => {
+            state.cycle_floats_in_active_tab(true);
             leave_navigate_mode(state);
         }
         NavigateAction::EnterResizeMode => state.mode = Mode::Resize,
