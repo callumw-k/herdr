@@ -352,6 +352,9 @@ pub(super) fn render_panes(
     let terminal_active = app.mode == Mode::Terminal;
 
     for info in pane_infos {
+        if ws.is_float(info.id) {
+            continue;
+        }
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
             let show_cursor = info.is_focused
                 && terminal_active
@@ -402,6 +405,34 @@ pub(super) fn render_panes(
                 true,
             );
             render_copy_mode_cursor(app, frame, info);
+        }
+    }
+
+    if let Some(float_id) = ws.top_float() {
+        if let Some(info) = pane_infos.iter().find(|info| info.id == float_id) {
+            if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, float_id)
+            {
+                let title = ws
+                    .terminal_id(float_id)
+                    .and_then(|terminal_id| app.terminals.get(terminal_id))
+                    .and_then(|terminal| terminal.manual_label.as_deref())
+                    .unwrap_or("float");
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(if info.is_focused {
+                        app.palette.accent
+                    } else {
+                        app.palette.overlay0
+                    }))
+                    .title(
+                        pane_border_title(title, info.rect.width, info.is_focused)
+                            .unwrap_or_default(),
+                    )
+                    .style(Style::default().bg(app.palette.panel_bg));
+                frame.render_widget(Clear, info.rect);
+                frame.render_widget(block, info.rect);
+                rt.render(frame, info.inner_rect, !pane_is_scrolled_back(rt));
+            }
         }
     }
 
@@ -490,6 +521,11 @@ fn render_pane_borders(
 
     let mut cells = std::collections::HashMap::<(u16, u16), LineCell>::new();
     for info in pane_infos {
+        // The float draws its own Block border; feeding it into the line-join
+        // merge would corrupt the tiled joins underneath it.
+        if ws.is_float(info.id) {
+            continue;
+        }
         add_pane_border_cells(&mut cells, info);
     }
     add_split_border_cells(app.pane_gaps, split_borders, &mut cells);
@@ -504,9 +540,9 @@ fn render_pane_borders(
         {
             continue;
         }
-        let focused = pane_infos
-            .iter()
-            .any(|info| info.is_focused && line_touches_pane(x, y, info, app.pane_gaps));
+        let focused = pane_infos.iter().any(|info| {
+            !ws.is_float(info.id) && info.is_focused && line_touches_pane(x, y, info, app.pane_gaps)
+        });
         let symbol = line_cell_symbol(line);
         if symbol.is_empty() {
             continue;
