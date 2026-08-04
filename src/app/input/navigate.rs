@@ -287,8 +287,19 @@ impl App {
                 }
             }
             NavigateAction::NewTab => {
-                if self.state.active.is_some() {
-                    if self.state.prompt_new_tab_name {
+                if let Some(ws_idx) = self.state.active {
+                    let float_open = self
+                        .state
+                        .workspaces
+                        .get(ws_idx)
+                        .and_then(|ws| ws.active_tab())
+                        .is_some_and(|tab| tab.top_float().is_some());
+                    if float_open {
+                        if let Err(err) = self.open_float_pane(ws_idx, None) {
+                            tracing::warn!(%err, "failed to open floating pane");
+                        }
+                        leave_navigate_mode(&mut self.state);
+                    } else if self.state.prompt_new_tab_name {
                         super::modal::open_new_tab_dialog(&mut self.state);
                     } else {
                         self.runtime_tab_create(
@@ -1737,12 +1748,21 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::NewTab => {
-            if state.active.is_some() {
-                if state.prompt_new_tab_name {
-                    super::modal::open_new_tab_dialog(state);
-                } else {
-                    state.request_new_tab = true;
-                    leave_navigate_mode(state);
+            if let Some(ws_idx) = state.active {
+                let float_open = state
+                    .workspaces
+                    .get(ws_idx)
+                    .and_then(|ws| ws.active_tab())
+                    .is_some_and(|tab| tab.top_float().is_some());
+                // App-only: opening a float needs terminal runtimes and event channels
+                // this test harness doesn't have, same as NewFloat above.
+                if !float_open {
+                    if state.prompt_new_tab_name {
+                        super::modal::open_new_tab_dialog(state);
+                    } else {
+                        state.request_new_tab = true;
+                        leave_navigate_mode(state);
+                    }
                 }
             }
         }
@@ -3588,6 +3608,40 @@ navigate_pane_down = "ctrl+j"
         assert!(!state.creating_new_tab);
         assert!(state.request_new_tab);
         assert!(state.requested_new_tab_name.is_none());
+    }
+
+    #[test]
+    fn new_tab_action_opens_a_float_instead_when_one_is_visible() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.workspaces[0].tabs[0].push_float(
+            crate::layout::PaneId::alloc(),
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+
+        execute_navigate_action(&mut state, NavigateAction::NewTab);
+
+        // Opening the float itself needs a real App (see the App-only comment on
+        // this arm), so this only asserts the branch away from tab creation.
+        assert_eq!(state.mode, Mode::Navigate);
+        assert!(!state.creating_new_tab);
+        assert!(!state.request_new_tab);
+        assert_eq!(state.workspaces[0].tabs.len(), 1);
+    }
+
+    #[test]
+    fn new_tab_action_ignores_a_hidden_float() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.prompt_new_tab_name = false;
+        state.workspaces[0].tabs[0].push_float(
+            crate::layout::PaneId::alloc(),
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        state.workspaces[0].tabs[0].set_floats_hidden(true);
+
+        execute_navigate_action(&mut state, NavigateAction::NewTab);
+
+        assert_eq!(state.mode, Mode::Terminal);
+        assert!(state.request_new_tab);
     }
 
     #[test]
