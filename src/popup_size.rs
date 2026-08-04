@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 
+use crate::layout::PaneId;
 use ratatui::layout::Rect;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -89,6 +90,70 @@ pub(crate) fn resolve_popup_geometry(
     })
 }
 
+/// Cap on preview rows drawn above a floating pane's stack, regardless of
+/// how many floats are hidden or how much vertical space is free.
+const MAX_STACK_PREVIEW_ROWS: u16 = 8;
+
+/// What a single stack preview row represents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StackBarKind {
+    /// A hidden float; clicking this row's rect brings it to the front.
+    Pane(PaneId),
+    /// Folds `count` further hidden floats that didn't fit as individual rows.
+    Summary { count: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StackBar {
+    pub rect: Rect,
+    pub kind: StackBarKind,
+}
+
+/// One preview row per entry in `hidden`, stacked directly above
+/// `popup_outer`, capped to the space between `area`'s top edge and the
+/// popup and to `MAX_STACK_PREVIEW_ROWS`. `hidden` is ordered back-to-front
+/// (oldest first); when not everything fits, the oldest floats are folded
+/// into a single summary row at the top of the stack.
+pub(crate) fn stack_bar_rects(hidden: &[PaneId], popup_outer: Rect, area: Rect) -> Vec<StackBar> {
+    if hidden.is_empty() {
+        return Vec::new();
+    }
+    let space_above = popup_outer.y.saturating_sub(area.y);
+    let max_bars = space_above.min(MAX_STACK_PREVIEW_ROWS) as usize;
+    if max_bars == 0 {
+        return Vec::new();
+    }
+
+    let kinds: Vec<StackBarKind> = if hidden.len() <= max_bars {
+        hidden.iter().map(|id| StackBarKind::Pane(*id)).collect()
+    } else {
+        let real_bars = max_bars - 1;
+        let folded = hidden.len() - real_bars;
+        let mut kinds = vec![StackBarKind::Summary { count: folded }];
+        kinds.extend(
+            hidden[hidden.len() - real_bars..]
+                .iter()
+                .map(|id| StackBarKind::Pane(*id)),
+        );
+        kinds
+    };
+
+    let total = kinds.len() as u16;
+    kinds
+        .into_iter()
+        .enumerate()
+        .map(|(i, kind)| StackBar {
+            rect: Rect::new(
+                popup_outer.x,
+                popup_outer.y.saturating_sub(total - i as u16),
+                popup_outer.width,
+                1,
+            ),
+            kind,
+        })
+        .collect()
+}
+
 impl Serialize for PopupSize {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -172,6 +237,7 @@ impl schemars::JsonSchema for PopupSize {
 #[cfg(test)]
 mod tests {
     use super::PopupSize;
+    use super::{stack_bar_rects, StackBarKind, MAX_STACK_PREVIEW_ROWS};
 
     #[test]
     fn parses_cells_and_percent() {
@@ -248,5 +314,74 @@ mod tests {
             super::resolve_popup_geometry(None, None, ratatui::layout::Rect::new(0, 0, 5, 24),)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn stack_bar_rects_is_empty_when_no_hidden_floats() {
+        let popup = super::Rect::new(5, 10, 20, 6);
+        let area = super::Rect::new(0, 0, 80, 24);
+        assert!(stack_bar_rects(&[], popup, area).is_empty());
+    }
+
+    #[test]
+    fn stack_bar_rects_renders_one_bar_per_hidden_float_when_space_allows() {
+        let hidden = [
+            crate::layout::PaneId::from_raw(1),
+            crate::layout::PaneId::from_raw(2),
+        ];
+        let popup = super::Rect::new(5, 10, 20, 6);
+        let area = super::Rect::new(0, 0, 80, 24);
+        let bars = stack_bar_rects(&hidden, popup, area);
+        assert_eq!(bars.len(), 2);
+        assert_eq!(bars[0].rect, super::Rect::new(5, 8, 20, 1));
+        assert!(matches!(bars[0].kind, StackBarKind::Pane(id) if id == hidden[0]));
+        assert_eq!(bars[1].rect, super::Rect::new(5, 9, 20, 1));
+        assert!(matches!(bars[1].kind, StackBarKind::Pane(id) if id == hidden[1]));
+    }
+
+    #[test]
+    fn stack_bar_rects_folds_overflow_into_a_summary_row_when_space_is_tight() {
+        let hidden: Vec<_> = (1..=5).map(crate::layout::PaneId::from_raw).collect();
+        let popup = super::Rect::new(5, 2, 20, 6);
+        let area = super::Rect::new(0, 0, 80, 24);
+        let bars = stack_bar_rects(&hidden, popup, area);
+        // space_above = popup.y(2) - area.y(0) = 2, so only 2 rows fit:
+        // 1 summary row + 1 real bar for the most-recently-hidden float.
+        assert_eq!(bars.len(), 2);
+        assert_eq!(bars[0].rect, super::Rect::new(5, 0, 20, 1));
+        assert!(matches!(bars[0].kind, StackBarKind::Summary { count: 4 }));
+        assert_eq!(bars[1].rect, super::Rect::new(5, 1, 20, 1));
+        assert!(matches!(bars[1].kind, StackBarKind::Pane(id) if id == hidden[4]));
+    }
+
+    #[test]
+    fn stack_bar_rects_caps_at_max_stack_preview_rows_even_with_room_to_spare() {
+        let hidden: Vec<_> = (1..=20).map(crate::layout::PaneId::from_raw).collect();
+        let popup = super::Rect::new(5, 15, 20, 6);
+        let area = super::Rect::new(0, 0, 80, 24);
+        let bars = stack_bar_rects(&hidden, popup, area);
+        assert_eq!(bars.len(), MAX_STACK_PREVIEW_ROWS as usize);
+        assert!(matches!(bars[0].kind, StackBarKind::Summary { count: 13 }));
+        assert!(matches!(bars[1].kind, StackBarKind::Pane(id) if id == hidden[13]));
+        assert!(matches!(bars[7].kind, StackBarKind::Pane(id) if id == hidden[19]));
+    }
+
+    #[test]
+    fn stack_bar_rects_folds_everything_into_one_summary_row_when_only_one_row_fits() {
+        let hidden: Vec<_> = (1..=4).map(crate::layout::PaneId::from_raw).collect();
+        let popup = super::Rect::new(5, 1, 20, 6);
+        let area = super::Rect::new(0, 0, 80, 24);
+        let bars = stack_bar_rects(&hidden, popup, area);
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].rect, super::Rect::new(5, 0, 20, 1));
+        assert!(matches!(bars[0].kind, StackBarKind::Summary { count: 4 }));
+    }
+
+    #[test]
+    fn stack_bar_rects_is_empty_when_popup_touches_the_top_edge() {
+        let hidden = [crate::layout::PaneId::from_raw(1)];
+        let popup = super::Rect::new(5, 0, 20, 6);
+        let area = super::Rect::new(0, 0, 80, 24);
+        assert!(stack_bar_rects(&hidden, popup, area).is_empty());
     }
 }

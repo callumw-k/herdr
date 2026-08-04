@@ -10,6 +10,7 @@ use crate::{
         WorkspacePressState,
     },
     layout::{PaneInfo, SplitBorder},
+    popup_size::StackBarKind,
     selection::Selection,
     terminal::TerminalRuntimeRegistry,
 };
@@ -625,6 +626,17 @@ impl AppState {
                         self.mode = Mode::Terminal;
                         return Some(MouseAction::FocusPane { ws_idx, pane_id });
                     }
+                } else if let Some(kind) = self.stack_bar_at(mouse.column, mouse.row) {
+                    if self.mode != Mode::Terminal {
+                        self.mode = Mode::Terminal;
+                    }
+                    // A summary row names no pane, so it focuses nothing — but
+                    // it still consumes the click rather than falling through
+                    // to the tiled pane it is drawn over.
+                    return match kind {
+                        StackBarKind::Pane(pane_id) => self.mouse_pane_focus_action(pane_id),
+                        StackBarKind::Summary { .. } => None,
+                    };
                 } else if let Some(info) = self.pane_at(mouse.column, mouse.row).cloned() {
                     if self.mode != Mode::Terminal {
                         self.mode = Mode::Terminal;
@@ -1386,6 +1398,9 @@ impl AppState {
     }
 
     pub(super) fn find_border_at(&self, col: u16, row: u16) -> Option<&SplitBorder> {
+        if self.stack_bar_at(col, row).is_some() {
+            return None;
+        }
         self.view.split_borders.iter().find(|b| match b.direction {
             Direction::Horizontal if self.pane_borders && !self.pane_gaps => {
                 col == b.pos && row >= b.area.y && row < b.area.y + b.area.height
@@ -1423,7 +1438,27 @@ impl AppState {
         })
     }
 
+    /// The float-stack preview row under the cursor, if any.
+    ///
+    /// Stack bars are hit-test-only geometry: the floats they name have no
+    /// content on screen, so they deliberately never appear in `pane_infos`.
+    /// A bar is opaque to everything drawn beneath it — `pane_at`,
+    /// `pane_frame_at`, `find_border_at` and `scrollbar_target_at` all bail out
+    /// on one — so a click on it can only raise the float it names, never
+    /// select text in, scroll, or resize whatever it covers. Summary rows name
+    /// no pane and so do nothing at all, but still swallow the click.
+    pub(super) fn stack_bar_at(&self, col: u16, row: u16) -> Option<StackBarKind> {
+        self.view
+            .stack_bars
+            .iter()
+            .find(|bar| rect_contains(bar.rect, col, row))
+            .map(|bar| bar.kind)
+    }
+
     pub(super) fn pane_at(&self, col: u16, row: u16) -> Option<&PaneInfo> {
+        if self.stack_bar_at(col, row).is_some() {
+            return None;
+        }
         self.view.pane_infos.iter().rev().find(|p| {
             col >= p.inner_rect.x
                 && col < p.inner_rect.x + p.inner_rect.width
@@ -1452,6 +1487,9 @@ impl AppState {
     }
 
     pub(super) fn pane_frame_at(&self, col: u16, row: u16) -> Option<&PaneInfo> {
+        if self.stack_bar_at(col, row).is_some() {
+            return None;
+        }
         self.view.pane_infos.iter().rev().find(|p| {
             col >= p.rect.x
                 && col < p.rect.x + p.rect.width
@@ -1798,6 +1836,9 @@ impl AppState {
         row: u16,
     ) -> Option<(crate::layout::PaneId, ScrollbarClickTarget)> {
         let ws_idx = self.active?;
+        if self.stack_bar_at(col, row).is_some() {
+            return None;
+        }
         let info = self.view.pane_infos.iter().find(|info| {
             crate::ui::pane_scrollbar_rect(info).is_some_and(|track| {
                 col >= track.x

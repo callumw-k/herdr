@@ -14,7 +14,7 @@ use super::widgets::panel_contrast_fg;
 use crate::app::state::Palette;
 use crate::app::{AppState, Mode};
 use crate::layout::PaneInfo;
-use crate::popup_size::resolve_popup_geometry;
+use crate::popup_size::{resolve_popup_geometry, StackBar, StackBarKind};
 use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
 
 pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
@@ -340,6 +340,7 @@ pub(super) fn render_panes(
     frame: &mut Frame,
     pane_infos: &[PaneInfo],
     split_borders: &[crate::layout::SplitBorder],
+    stack_bars: &[StackBar],
 ) {
     let Some(ws_idx) = app.active else {
         return;
@@ -440,7 +441,40 @@ pub(super) fn render_panes(
         }
     }
 
-    render_pane_borders(app, ws, pane_infos, split_borders, frame);
+    for bar in stack_bars {
+        render_stack_bar(app, ws, frame, bar);
+    }
+
+    render_pane_borders(app, ws, pane_infos, split_borders, stack_bars, frame);
+}
+
+fn render_stack_bar(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    frame: &mut Frame,
+    bar: &StackBar,
+) {
+    let label = match bar.kind {
+        StackBarKind::Pane(pane_id) => ws
+            .pane_state(pane_id)
+            .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
+            .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders))
+            .unwrap_or_else(|| "float".to_string()),
+        StackBarKind::Summary { count } => format!("+{count} more"),
+    };
+    let text = pane_border_title(&label, bar.rect.width, false).unwrap_or_default();
+    let style = Style::default()
+        .fg(app.palette.overlay0)
+        .bg(app.palette.panel_bg);
+    frame.render_widget(Clear, bar.rect);
+    frame.render_widget(
+        Paragraph::new(Line::from(text)).style(style).block(
+            Block::default()
+                .borders(Borders::LEFT | Borders::RIGHT)
+                .border_style(style),
+        ),
+        bar.rect,
+    );
 }
 
 pub(crate) fn popup_pane_rects(app: &AppState, area: Rect) -> Option<(Rect, Rect)> {
@@ -512,14 +546,32 @@ struct LineCell {
     right: bool,
 }
 
-/// The topmost float's screen rect, if one is showing. Tiled-pane border
+/// The bounding box of the float stack — the visible popup plus every
+/// stack-preview bar above it, summary rows included. Tiled-pane border
 /// decorations must avoid drawing into this area so they don't punch through
-/// the float, which is drawn earlier in `render_panes`.
-fn float_rect(ws: &crate::workspace::Workspace, pane_infos: &[PaneInfo]) -> Option<Rect> {
+/// the stack, which is drawn earlier in `render_panes`. Summary rows have no
+/// `PaneInfo`, so `stack_bars` is the only source that covers them.
+fn float_rect(
+    ws: &crate::workspace::Workspace,
+    pane_infos: &[PaneInfo],
+    stack_bars: &[StackBar],
+) -> Option<Rect> {
     pane_infos
         .iter()
-        .find(|info| ws.is_float(info.id))
+        .filter(|info| ws.is_float(info.id))
         .map(|info| info.rect)
+        .chain(stack_bars.iter().map(|bar| bar.rect))
+        .reduce(union_rect)
+}
+
+fn union_rect(a: Rect, b: Rect) -> Rect {
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    let right = a.x.saturating_add(a.width).max(b.x.saturating_add(b.width));
+    let bottom =
+        a.y.saturating_add(a.height)
+            .max(b.y.saturating_add(b.height));
+    Rect::new(x, y, right.saturating_sub(x), bottom.saturating_sub(y))
 }
 
 fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
@@ -534,6 +586,7 @@ fn render_pane_borders(
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
     split_borders: &[crate::layout::SplitBorder],
+    stack_bars: &[StackBar],
     frame: &mut Frame,
 ) {
     if !app.pane_borders || pane_infos.iter().all(|info| info.borders.is_empty()) {
@@ -550,7 +603,7 @@ fn render_pane_borders(
         add_pane_border_cells(&mut cells, info);
     }
     add_split_border_cells(app.pane_gaps, split_borders, &mut cells);
-    let float_rect = float_rect(ws, pane_infos);
+    let float_rect = float_rect(ws, pane_infos, stack_bars);
 
     let buf = frame.buffer_mut();
     let area = buf.area;
@@ -582,7 +635,7 @@ fn render_pane_borders(
         cell.set_style(Style::default().fg(color));
     }
 
-    render_pane_border_titles(app, ws, pane_infos, frame);
+    render_pane_border_titles(app, ws, pane_infos, stack_bars, frame);
 }
 
 fn add_split_border_cells(
@@ -711,11 +764,12 @@ fn render_pane_border_titles(
     app: &AppState,
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
+    stack_bars: &[StackBar],
     frame: &mut Frame,
 ) {
     let buf = frame.buffer_mut();
     let area = buf.area;
-    let float_rect = float_rect(ws, pane_infos);
+    let float_rect = float_rect(ws, pane_infos, stack_bars);
     for info in pane_infos {
         if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
             continue;
@@ -1083,6 +1137,7 @@ mod tests {
             ws,
             &app.view.pane_infos,
             &app.view.split_borders,
+            &app.view.stack_bars,
             frame,
         );
     }
@@ -1404,6 +1459,44 @@ mod tests {
     }
 
     #[test]
+    fn float_rect_unions_the_popup_with_every_stack_bar_including_the_summary_row() {
+        let hidden_id = PaneId::from_raw(1);
+        let float_id = PaneId::from_raw(2);
+        let pane_infos = vec![PaneInfo {
+            id: float_id,
+            rect: Rect::new(5, 4, 20, 6),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused: true,
+        }];
+        let stack_bars = vec![
+            crate::popup_size::StackBar {
+                rect: Rect::new(5, 2, 20, 1),
+                kind: crate::popup_size::StackBarKind::Summary { count: 2 },
+            },
+            crate::popup_size::StackBar {
+                rect: Rect::new(5, 3, 20, 1),
+                kind: crate::popup_size::StackBarKind::Pane(hidden_id),
+            },
+        ];
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].push_float(
+            hidden_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+
+        assert_eq!(
+            float_rect(&ws, &pane_infos, &stack_bars),
+            Some(Rect::new(5, 2, 20, 8))
+        );
+    }
+
+    #[test]
     fn gapped_pane_focus_does_not_color_neighbor_border() {
         let mut app = AppState::test_new();
         app.mode = Mode::Terminal;
@@ -1600,6 +1693,191 @@ mod tests {
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
         assert_eq!(info.inner_rect, area);
+    }
+
+    #[test]
+    fn render_panes_draws_a_stack_bar_with_its_pane_label_above_the_popup() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 30, 10);
+
+        let mut ws = Workspace::test_new("test");
+        let hidden_id = PaneId::from_raw(50);
+        let top_id = PaneId::from_raw(51);
+        let hidden_terminal_id = crate::terminal::TerminalId::alloc();
+        ws.tabs[0].push_float(
+            hidden_id,
+            crate::pane::PaneState::new(hidden_terminal_id.clone()),
+        );
+        ws.tabs[0].push_float(
+            top_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+
+        let mut terminal_state = TerminalState::new(hidden_terminal_id.clone(), "/tmp".into());
+        terminal_state.set_manual_label("claude".into());
+        app.terminals.insert(hidden_terminal_id, terminal_state);
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let bar = crate::popup_size::StackBar {
+            rect: Rect::new(5, 3, 20, 1),
+            kind: crate::popup_size::StackBarKind::Pane(hidden_id),
+        };
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    &[],
+                    &[],
+                    std::slice::from_ref(&bar),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let row: String = (5..25).map(|x| buffer[(x, 3)].symbol()).collect();
+        assert!(row.contains("claude"), "bar row: {row:?}");
+        assert_eq!(buffer[(5, 3)].symbol(), "│");
+        assert_eq!(buffer[(24, 3)].symbol(), "│");
+    }
+
+    #[test]
+    fn tiled_split_borders_do_not_draw_over_stack_bars_or_the_summary_row() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 20, 12);
+
+        let left_id = PaneId::from_raw(60);
+        let right_id = PaneId::from_raw(61);
+        let hidden_id = PaneId::from_raw(62);
+        let top_id = PaneId::from_raw(63);
+
+        // A 50/50 vertical divider running down column 10, straight through
+        // the columns the centred popup and its stack bars occupy.
+        let pane_infos = vec![
+            PaneInfo {
+                id: left_id,
+                rect: Rect::new(0, 0, 10, 12),
+                inner_rect: Rect::new(1, 1, 8, 10),
+                scrollbar_rect: None,
+                borders: Borders::TOP | Borders::LEFT | Borders::BOTTOM,
+                is_focused: false,
+            },
+            PaneInfo {
+                id: right_id,
+                rect: Rect::new(10, 0, 10, 12),
+                inner_rect: Rect::new(11, 1, 8, 10),
+                scrollbar_rect: None,
+                borders: Borders::ALL,
+                is_focused: false,
+            },
+            PaneInfo {
+                id: top_id,
+                rect: Rect::new(2, 4, 16, 6),
+                inner_rect: Rect::new(3, 5, 14, 4),
+                scrollbar_rect: None,
+                borders: Borders::ALL,
+                is_focused: true,
+            },
+        ];
+        let split_borders = vec![crate::layout::SplitBorder {
+            pos: 10,
+            direction: ratatui::layout::Direction::Horizontal,
+            ratio: 0.5,
+            area: Rect::new(0, 0, 20, 12),
+            path: vec![],
+        }];
+        let stack_bars = vec![
+            crate::popup_size::StackBar {
+                rect: Rect::new(2, 2, 16, 1),
+                kind: crate::popup_size::StackBarKind::Summary { count: 2 },
+            },
+            crate::popup_size::StackBar {
+                rect: Rect::new(2, 3, 16, 1),
+                kind: crate::popup_size::StackBarKind::Pane(hidden_id),
+            },
+        ];
+
+        let mut ws = Workspace::test_new("test");
+        for id in [hidden_id, top_id] {
+            ws.tabs[0].push_float(
+                id,
+                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+            );
+        }
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    &pane_infos,
+                    &split_borders,
+                    &stack_bars,
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // The divider is real: it draws above the stack and below the popup.
+        assert_eq!(buffer[(10, 1)].symbol(), "│");
+        assert_eq!(buffer[(10, 10)].symbol(), "│");
+        // ...but never inside it, on the summary row or on a real bar row.
+        for y in 2..=3 {
+            assert_ne!(
+                buffer[(10, y)].symbol(),
+                "│",
+                "tiled divider punched through stack row {y}"
+            );
+        }
+        let summary_row: String = (2..18).map(|x| buffer[(x, 2)].symbol()).collect();
+        assert!(summary_row.contains("+2 more"), "summary: {summary_row:?}");
+        let bar_row: String = (2..18).map(|x| buffer[(x, 3)].symbol()).collect();
+        assert!(bar_row.contains("float"), "bar: {bar_row:?}");
+    }
+
+    #[test]
+    fn render_panes_draws_a_summary_bar_with_the_folded_count() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 30, 10);
+        app.workspaces = vec![Workspace::test_new("test")];
+        app.active = Some(0);
+
+        let bar = crate::popup_size::StackBar {
+            rect: Rect::new(5, 3, 20, 1),
+            kind: crate::popup_size::StackBarKind::Summary { count: 3 },
+        };
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    &[],
+                    &[],
+                    std::slice::from_ref(&bar),
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let row: String = (5..25).map(|x| buffer[(x, 3)].symbol()).collect();
+        assert!(row.contains("+3 more"), "bar row: {row:?}");
     }
 
     #[test]

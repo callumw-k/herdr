@@ -279,6 +279,7 @@ fn compute_view_internal(
     let TabSurfaceLayout {
         pane_infos,
         split_borders,
+        stack_bars,
     } = compute_tab_surface(
         app,
         terminal_runtimes,
@@ -319,6 +320,7 @@ fn compute_view_internal(
         toast_hit_area,
         pane_infos,
         split_borders,
+        stack_bars,
     };
     app.sync_copy_mode_search_geometry();
 }
@@ -348,6 +350,7 @@ fn compute_mobile_view(
     let TabSurfaceLayout {
         pane_infos,
         split_borders,
+        stack_bars,
     } = compute_tab_surface(
         app,
         terminal_runtimes,
@@ -382,6 +385,7 @@ fn compute_mobile_view(
         toast_hit_area,
         pane_infos,
         split_borders,
+        stack_bars,
     };
     app.sync_copy_mode_search_geometry();
 }

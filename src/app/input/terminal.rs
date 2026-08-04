@@ -2009,4 +2009,160 @@ mod tests {
             info.inner_rect.height as usize
         );
     }
+
+    #[tokio::test]
+    async fn clicking_a_stack_bar_raises_that_float_and_focuses_it() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let hidden_float = crate::layout::PaneId::from_raw(201);
+        let top_float = crate::layout::PaneId::from_raw(202);
+        // A real float is always registered (via the spawn/split path in
+        // src/app/creation.rs) before it is pushed; register both here so the
+        // synthetic setup matches that invariant instead of producing a
+        // pane_id `public_pane_id()` can't resolve.
+        ws.register_new_pane_with_number(hidden_float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(
+            hidden_float,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.register_new_pane_with_number(top_float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(
+            top_float,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+
+        let root_pane = ws.tabs[0].root_pane;
+        // The bar is drawn over the tiled root pane. It must be opaque: the
+        // click raises the float and never anchors a selection underneath.
+        app.state.view.pane_infos = vec![crate::layout::PaneInfo {
+            id: root_pane,
+            rect: Rect::new(0, 0, 80, 20),
+            inner_rect: Rect::new(1, 1, 78, 18),
+            scrollbar_rect: None,
+            borders: ratatui::widgets::Borders::ALL,
+            is_focused: true,
+        }];
+        app.state.view.stack_bars = vec![crate::popup_size::StackBar {
+            rect: Rect::new(30, 4, 40, 1),
+            kind: crate::popup_size::StackBarKind::Pane(hidden_float),
+        }];
+
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 35, 4));
+
+        assert!(app.state.selection.is_none());
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.tabs[0].top_float(), Some(hidden_float));
+        assert_eq!(ws.focused_pane_id(), Some(hidden_float));
+    }
+
+    #[tokio::test]
+    async fn a_wheel_notch_over_a_stack_bar_does_not_scroll_the_tiled_pane_beneath_it() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let root_pane = ws.tabs[0].root_pane;
+        let hidden_float = crate::layout::PaneId::from_raw(204);
+        let top_float = crate::layout::PaneId::from_raw(205);
+        for id in [hidden_float, top_float] {
+            ws.register_new_pane_with_number(id, ws.next_public_pane_number);
+            ws.tabs[0].push_float(
+                id,
+                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+            );
+        }
+        // Enough scrollback that a wheel notch would visibly move the viewport.
+        ws.tabs[0].runtimes.insert(
+            root_pane,
+            crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                78,
+                18,
+                16 * 1024,
+                &numbered_lines_bytes(64),
+            ),
+        );
+
+        // The bar covers the tiled root pane's frame as well as its content.
+        app.state.view.pane_infos = vec![crate::layout::PaneInfo {
+            id: root_pane,
+            rect: Rect::new(0, 0, 80, 20),
+            inner_rect: Rect::new(1, 1, 78, 18),
+            scrollbar_rect: None,
+            borders: ratatui::widgets::Borders::ALL,
+            is_focused: true,
+        }];
+        app.state.view.stack_bars = vec![crate::popup_size::StackBar {
+            rect: Rect::new(30, 4, 40, 1),
+            kind: crate::popup_size::StackBarKind::Pane(hidden_float),
+        }];
+
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        let offset = |app: &App| {
+            app.state
+                .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, root_pane)
+                .and_then(crate::terminal::TerminalRuntime::scroll_metrics)
+                .expect("scroll metrics")
+                .offset_from_bottom
+        };
+        assert_eq!(offset(&app), 0);
+
+        app.handle_mouse(mouse(MouseEventKind::ScrollUp, 35, 4));
+
+        assert_eq!(
+            offset(&app),
+            0,
+            "wheel over a stack bar scrolled the tiled pane underneath it"
+        );
+    }
+
+    #[tokio::test]
+    async fn clicking_a_summary_stack_bar_focuses_nothing_and_is_not_passed_through() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let root_pane = ws.tabs[0].root_pane;
+        let top_float = crate::layout::PaneId::from_raw(203);
+        ws.register_new_pane_with_number(top_float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(
+            top_float,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+
+        let summary_rect = Rect::new(30, 4, 40, 1);
+        // The tiled root pane sits underneath the summary row; the click must
+        // not reach it either.
+        app.state.view.pane_infos = vec![crate::layout::PaneInfo {
+            id: root_pane,
+            rect: Rect::new(0, 0, 80, 20),
+            inner_rect: Rect::new(1, 1, 78, 18),
+            scrollbar_rect: None,
+            borders: ratatui::widgets::Borders::ALL,
+            is_focused: false,
+        }];
+        app.state.view.stack_bars = vec![crate::popup_size::StackBar {
+            rect: summary_rect,
+            kind: crate::popup_size::StackBarKind::Summary { count: 3 },
+        }];
+
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        let focused_before = app.state.workspaces[0].focused_pane_id();
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 35, 4));
+
+        // Falling through to the tiled pane under the row would anchor a
+        // selection in it; nothing at all should have happened.
+        assert!(app.state.selection.is_none());
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.tabs[0].top_float(), Some(top_float));
+        assert_eq!(ws.focused_pane_id(), focused_before);
+    }
 }

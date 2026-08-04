@@ -8,6 +8,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::detect::AgentState;
 use crate::layout::{PaneId, PaneInfo, SplitBorder};
+use crate::popup_size::StackBar;
 use crate::selection::Selection;
 
 pub(crate) type InstalledPluginRegistry =
@@ -789,6 +790,7 @@ pub struct ViewState {
     pub toast_hit_area: Rect,
     pub pane_infos: Vec<PaneInfo>,
     pub split_borders: Vec<SplitBorder>,
+    pub stack_bars: Vec<StackBar>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1820,6 +1822,7 @@ impl AppState {
                 toast_hit_area: Rect::default(),
                 pane_infos: Vec::new(),
                 split_borders: Vec::new(),
+                stack_bars: Vec::new(),
             },
             drag: None,
             workspace_press: None,

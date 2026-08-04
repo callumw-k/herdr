@@ -4,18 +4,21 @@ use super::panes::{compute_pane_infos, render_panes, resize_tab_panes};
 use crate::app::state::ViewState;
 use crate::app::{AppState, Mode};
 use crate::layout::{PaneInfo, SplitBorder};
+use crate::popup_size::{resolve_popup_geometry, stack_bar_rects, StackBar};
 use crate::protocol::CursorState;
 use crate::terminal::TerminalRuntimeRegistry;
 
 pub(crate) struct TabSurfaceLayout {
     pub(crate) pane_infos: Vec<PaneInfo>,
     pub(crate) split_borders: Vec<SplitBorder>,
+    pub(crate) stack_bars: Vec<StackBar>,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct TabSurfaceView<'a> {
     pub(crate) pane_infos: &'a [PaneInfo],
     pub(crate) split_borders: &'a [SplitBorder],
+    pub(crate) stack_bars: &'a [StackBar],
 }
 
 impl ViewState {
@@ -23,6 +26,7 @@ impl ViewState {
         TabSurfaceView {
             pane_infos: &self.pane_infos,
             split_borders: &self.split_borders,
+            stack_bars: &self.stack_bars,
         }
     }
 }
@@ -45,12 +49,39 @@ pub(crate) fn compute_tab_surface(
             }
         })
         .unwrap_or_default();
+    // `pane_infos` stays strictly "where each pane's content is". Stack bars
+    // are hit-test-only geometry for panes with nothing on screen, so they
+    // live in `stack_bars` alone; `pane_at` reads them for click-to-raise.
     let pane_infos = compute_pane_infos(app, terminal_runtimes, area, resize_panes, cell_size);
+    let stack_bars = compute_stack_bars(app, area);
 
     TabSurfaceLayout {
         pane_infos,
         split_borders,
+        stack_bars,
     }
+}
+
+/// Preview rows for the floats hidden behind the active tab's visible
+/// floating popup, back-to-front (oldest first). Empty when there is no
+/// floating popup showing or nothing is hidden behind it.
+fn compute_stack_bars(app: &AppState, area: Rect) -> Vec<StackBar> {
+    let Some(ws_idx) = app.active else {
+        return Vec::new();
+    };
+    let Some(ws) = app.workspaces.get(ws_idx) else {
+        return Vec::new();
+    };
+    if ws.top_float().is_none() {
+        return Vec::new();
+    }
+    let Some(geometry) =
+        resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
+    else {
+        return Vec::new();
+    };
+    let hidden = &ws.floats[..ws.floats.len() - 1];
+    stack_bar_rects(hidden, geometry.outer, area)
 }
 
 pub(crate) fn resize_tab_surface(
@@ -75,6 +106,7 @@ pub(crate) fn render_tab_surface(
         frame,
         surface.pane_infos,
         surface.split_borders,
+        surface.stack_bars,
     );
 }
 
@@ -212,6 +244,7 @@ mod tests {
         let surface_view = TabSurfaceView {
             pane_infos: &surface.pane_infos,
             split_borders: &surface.split_borders,
+            stack_bars: &surface.stack_bars,
         };
         let mut terminal =
             Terminal::new(TestBackend::new(full_area.width, full_area.height)).unwrap();
@@ -322,6 +355,167 @@ mod tests {
         assert_eq!(
             frame_digest(&frame),
             "295608a66067f1e1f066c0adb3cf427e8a2d68bba8f68949fb72d464dcd8baab"
+        );
+    }
+
+    #[tokio::test]
+    async fn compute_tab_surface_adds_stack_bars_for_hidden_floats_without_touching_pane_infos() {
+        let mut workspace = Workspace::test_new("stack");
+        let root_pane = workspace.tabs[0].root_pane;
+        let float_a = crate::layout::PaneId::from_raw(301);
+        let float_b = crate::layout::PaneId::from_raw(302);
+        let float_c = crate::layout::PaneId::from_raw(303);
+        for id in [float_a, float_b, float_c] {
+            workspace.tabs[0].push_float(
+                id,
+                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+            );
+        }
+
+        let mut app = AppState::test_new();
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        app.mode = Mode::Terminal;
+
+        let area = Rect::new(0, 0, 100, 40);
+        let surface = compute_tab_surface(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        assert_eq!(surface.stack_bars.len(), 2);
+        assert!(matches!(
+            surface.stack_bars[0].kind,
+            crate::popup_size::StackBarKind::Pane(id) if id == float_a
+        ));
+        assert!(matches!(
+            surface.stack_bars[1].kind,
+            crate::popup_size::StackBarKind::Pane(id) if id == float_b
+        ));
+
+        // Bars are hit-test-only geometry. A hidden float has no content on
+        // screen, so it must not appear in `pane_infos` — every consumer of
+        // that list (retained-render dirty patching, pending agent resume
+        // sizing, hyperlink and graphics scans) treats an entry as "this
+        // pane's real content lives at this rect".
+        let pane_ids: Vec<_> = surface.pane_infos.iter().map(|info| info.id).collect();
+        assert_eq!(pane_ids, vec![root_pane, float_c]);
+    }
+
+    #[tokio::test]
+    async fn compute_tab_surface_folds_overflow_hidden_floats_into_an_unclickable_summary_row() {
+        let mut workspace = Workspace::test_new("stack-overflow");
+        // 10 hidden floats plus the topmost one. The preview-row cap is 8
+        // rows, so this must overflow into a folded summary row.
+        let hidden_ids: Vec<_> = (400..410).map(crate::layout::PaneId::from_raw).collect();
+        let top_id = crate::layout::PaneId::from_raw(410);
+        for id in hidden_ids.iter().copied().chain([top_id]) {
+            workspace.tabs[0].push_float(
+                id,
+                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+            );
+        }
+
+        let mut app = AppState::test_new();
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        app.mode = Mode::Terminal;
+
+        let area = Rect::new(0, 0, 100, 40);
+        let surface = compute_tab_surface(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        // Cap of 8 preview rows: 1 folded summary row + 7 real per-float bars.
+        assert_eq!(surface.stack_bars.len(), 8);
+        assert!(matches!(
+            surface.stack_bars[0].kind,
+            crate::popup_size::StackBarKind::Summary { count: 3 }
+        ));
+        let real_bar_ids = &hidden_ids[3..];
+        let bar_ids: Vec<_> = surface.stack_bars[1..]
+            .iter()
+            .map(|bar| match bar.kind {
+                crate::popup_size::StackBarKind::Pane(id) => id,
+                crate::popup_size::StackBarKind::Summary { .. } => panic!("unexpected summary row"),
+            })
+            .collect();
+        assert_eq!(bar_ids, real_bar_ids);
+
+        // Only the visible float has content on screen, folded or not.
+        let pane_ids: std::collections::HashSet<_> =
+            surface.pane_infos.iter().map(|info| info.id).collect();
+        for id in &hidden_ids {
+            assert!(
+                !pane_ids.contains(id),
+                "hidden float {id:?} must not reach pane_infos"
+            );
+        }
+        assert!(pane_ids.contains(&top_id));
+    }
+
+    #[tokio::test]
+    async fn a_hidden_float_behind_a_stack_bar_never_reaches_pane_infos_or_hyperlinks() {
+        let uri = "https://example.com/hidden-float";
+        let mut workspace = Workspace::test_new("stack-hyperlinks");
+        let hidden_id = crate::layout::PaneId::from_raw(500);
+        let top_id = crate::layout::PaneId::from_raw(501);
+        workspace.tabs[0].push_float(
+            hidden_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        workspace.tabs[0].push_float(
+            top_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        // The hidden float's real content contains a hyperlink; only its
+        // one-row bar is on screen, so this must never surface in results.
+        workspace.insert_test_runtime(
+            hidden_id,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(
+                20,
+                8,
+                format!("\x1b]8;;{uri}\x1b\\HIDDEN\x1b]8;;\x1b\\").as_bytes(),
+            ),
+        );
+
+        let mut app = AppState::test_new();
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        app.mode = Mode::Terminal;
+
+        let area = Rect::new(0, 0, 100, 40);
+        let surface = compute_tab_surface(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        assert_eq!(surface.stack_bars.len(), 1);
+        assert!(
+            !surface.pane_infos.iter().any(|info| info.id == hidden_id),
+            "hidden float must have no pane_infos entry"
+        );
+        let surface_view = TabSurfaceView {
+            pane_infos: &surface.pane_infos,
+            split_borders: &surface.split_borders,
+            stack_bars: &surface.stack_bars,
+        };
+
+        // Consequence of the above: nothing that scans pane content against a
+        // `PaneInfo` rect can read the hidden float's screen.
+        let links = tab_surface_hyperlinks(&app, &TerminalRuntimeRegistry::new(), surface_view);
+        assert!(
+            links.is_empty(),
+            "hidden float's hyperlink must not be scanned: {links:?}"
         );
     }
 }
