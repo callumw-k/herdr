@@ -4,6 +4,10 @@
 
 ### Added
 - Added floating panes: `prefix+f` opens one, `prefix+ctrl+f` cycles the stack, and `prefix+shift+f` shows or hides the layer. Configure their default size with `ui.floating_pane_width` and `ui.floating_pane_height`.
+- The plugin marketplace now discovers valid manifests at repository roots and subdirectories, groups multiple plugins under each repository, and publishes their versions and exact default-branch commits.
+
+### Fixed
+- `pane send-keys` and `agent send-keys` now preserve Shift when sending `shift+tab`, allowing agent permission modes to be cycled programmatically. (#1561, thanks @keinstn and @tomohisa)
 
 ## [0.8.0] - 2026-08-03
 
