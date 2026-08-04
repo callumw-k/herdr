@@ -579,6 +579,9 @@ impl Tab {
         if !self.panes.contains_key(&pane_id) {
             return None;
         }
+        if self.is_float(pane_id) {
+            return None;
+        }
 
         if self.layout.pane_count() > 1 {
             let next_root = self.promoted_root_if_needed(pane_id);

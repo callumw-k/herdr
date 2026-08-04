@@ -1007,6 +1007,9 @@ impl Workspace {
 
     pub(crate) fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<TakenPane> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
+        if self.tabs[tab_idx].is_float(pane_id) {
+            return None;
+        }
         let pane_count = self.tabs[tab_idx].layout.pane_count();
         if pane_count <= 1 {
             let mut tab = self.tabs.remove(tab_idx);
