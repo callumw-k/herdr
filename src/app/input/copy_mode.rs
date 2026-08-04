@@ -38,6 +38,16 @@ impl AppState {
         else {
             return;
         };
+        if self
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.active_tab())
+            .is_some_and(|tab| tab.is_float(pane_id))
+        {
+            // Copy mode has no render support for floats (selection/search/cursor
+            // highlights are skipped for them), so refuse entry rather than run silently.
+            return;
+        }
         let Some(info) = self.pane_info_by_id(pane_id).cloned() else {
             return;
         };
