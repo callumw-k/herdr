@@ -375,6 +375,24 @@ impl AppState {
     }
 
     #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub(crate) fn focus_floats_in_active_tab(&mut self) -> bool {
+        let Some(ws_idx) = self.active else {
+            return false;
+        };
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return false;
+        };
+        let Some(tab) = ws.active_tab_mut() else {
+            return false;
+        };
+        if tab.focus_floats() {
+            self.mark_session_dirty();
+            return true;
+        }
+        false
+    }
+
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
     pub(crate) fn set_floats_hidden_in_active_tab(&mut self, hidden: bool) -> bool {
         let Some(ws_idx) = self.active else {
             return false;

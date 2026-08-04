@@ -416,6 +416,9 @@ pub struct KeysConfig {
     pub zoom: BindingConfig,
     /// Open a new floating pane. Default: "prefix+f"
     pub new_float: BindingConfig,
+    /// Open a floating pane, or focus/close the focused one if one already
+    /// exists. Unset by default.
+    pub toggle_float: BindingConfig,
     /// Show or hide the floating layer. Default: "prefix+shift+f"
     pub toggle_floats: BindingConfig,
     /// Bring the next floating pane to the top. Default: "prefix+ctrl+f"
@@ -541,6 +544,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     new_float: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_float: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     toggle_floats: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cycle_float: Option<BindingConfig>,
@@ -623,6 +628,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(close_pane);
         apply_field!(zoom);
         apply_field!(new_float);
+        apply_field!(toggle_float);
         apply_field!(toggle_floats);
         apply_field!(cycle_float);
         apply_field!(resize_mode);
@@ -724,6 +730,7 @@ impl KeysConfig {
         copy_effective_action_field!(close_pane, keybinds.close_pane);
         copy_effective_action_field!(zoom, keybinds.zoom);
         copy_effective_action_field!(new_float, keybinds.new_float);
+        copy_effective_action_field!(toggle_float, keybinds.toggle_float);
         copy_effective_action_field!(toggle_floats, keybinds.toggle_floats);
         copy_effective_action_field!(cycle_float, keybinds.cycle_float);
         copy_effective_action_field!(resize_mode, keybinds.resize_mode);
@@ -1014,6 +1021,7 @@ impl Default for KeysConfig {
             close_pane: BindingConfig::one("prefix+x"),
             zoom: BindingConfig::one("prefix+z"),
             new_float: BindingConfig::one("prefix+f"),
+            toggle_float: BindingConfig::empty(),
             toggle_floats: BindingConfig::one("prefix+shift+f"),
             cycle_float: BindingConfig::one("prefix+ctrl+f"),
             resize_mode: BindingConfig::one("prefix+r"),

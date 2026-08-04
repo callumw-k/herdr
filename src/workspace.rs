@@ -983,6 +983,13 @@ impl Workspace {
         let Some(tab_idx) = self.find_tab_index_for_pane(pane_id) else {
             return false;
         };
+        if self.tabs[tab_idx].is_float(pane_id) {
+            let closed = self.tabs[tab_idx].close_float(pane_id).is_some();
+            if closed {
+                self.unregister_pane(pane_id);
+            }
+            return false;
+        }
         let pane_count = self.tabs[tab_idx].layout.pane_count();
         let tab_count = self.tabs.len();
         if pane_count <= 1 {
@@ -1922,6 +1929,22 @@ mod tests {
         ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
 
         assert!(!ws.close_pane(float));
+
+        assert!(ws.tabs[0].floats.is_empty());
+        assert_eq!(ws.tabs[0].layout.pane_count(), 1);
+        assert!(ws.tabs[0].panes.contains_key(&tiled));
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn remove_pane_closes_a_float_without_closing_the_workspace() {
+        let mut ws = Workspace::test_new("float-exit");
+        let tiled = ws.tabs[0].layout.focused();
+        let float = PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
+
+        assert!(!ws.remove_pane(float));
 
         assert!(ws.tabs[0].floats.is_empty());
         assert_eq!(ws.tabs[0].layout.pane_count(), 1);

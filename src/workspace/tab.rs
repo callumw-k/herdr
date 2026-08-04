@@ -288,6 +288,19 @@ impl Tab {
         true
     }
 
+    /// Bring the floating layer into focus without creating or closing anything.
+    /// Returns false when there is nothing to do: no floats exist, or the
+    /// layer is already focused and visible.
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub fn focus_floats(&mut self) -> bool {
+        if self.floats.is_empty() || (self.float_focused && !self.floats_hidden) {
+            return false;
+        }
+        self.floats_hidden = false;
+        self.float_focused = true;
+        true
+    }
+
     #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
     pub fn set_floats_hidden(&mut self, hidden: bool) -> bool {
         if self.floats_hidden == hidden {
@@ -754,6 +767,37 @@ mod tests {
             tab.panes.get(&float).map(|p| &p.attached_terminal_id),
             Some(&updated_terminal)
         );
+    }
+
+    #[test]
+    fn focus_floats_does_nothing_without_a_float() {
+        let mut tab = test_tab();
+
+        assert!(!tab.focus_floats());
+        assert!(!tab.float_focused);
+    }
+
+    #[test]
+    fn focus_floats_unhides_and_focuses_an_existing_float() {
+        let mut tab = test_tab();
+        let float = PaneId::alloc();
+        tab.push_float(float, PaneState::new(TerminalId::alloc()));
+        tab.set_floats_hidden(true);
+
+        assert!(tab.focus_floats());
+
+        assert!(!tab.floats_hidden);
+        assert!(tab.float_focused);
+        assert_eq!(tab.focused_pane(), float);
+    }
+
+    #[test]
+    fn focus_floats_does_nothing_when_already_focused() {
+        let mut tab = test_tab();
+        let float = PaneId::alloc();
+        tab.push_float(float, PaneState::new(TerminalId::alloc()));
+
+        assert!(!tab.focus_floats(), "already focused, nothing to do");
     }
 
     #[test]

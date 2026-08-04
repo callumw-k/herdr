@@ -390,6 +390,27 @@ impl App {
                 }
                 leave_navigate_mode(&mut self.state);
             }
+            NavigateAction::ToggleFloat => {
+                let floats_empty = self
+                    .state
+                    .active
+                    .and_then(|ws_idx| self.state.workspaces.get(ws_idx))
+                    .and_then(|ws| ws.active_tab())
+                    .map(|tab| tab.floats.is_empty())
+                    .unwrap_or(true);
+                if floats_empty {
+                    if let Some(ws_idx) = self.state.active {
+                        if let Err(err) = self.open_float_pane(ws_idx, None) {
+                            tracing::warn!(%err, "failed to open floating pane");
+                        }
+                    }
+                    leave_navigate_mode(&mut self.state);
+                } else if self.state.focus_floats_in_active_tab() {
+                    leave_navigate_mode(&mut self.state);
+                } else if !self.close_focused_pane_via_api_requires_confirmation() {
+                    leave_navigate_mode(&mut self.state);
+                }
+            }
             NavigateAction::ToggleFloats => {
                 let hidden = self
                     .state
@@ -1405,6 +1426,7 @@ pub(crate) enum NavigateAction {
     CopyMode,
     Zoom,
     NewFloat,
+    ToggleFloat,
     ToggleFloats,
     CycleFloat,
     EnterResizeMode,
@@ -1552,6 +1574,7 @@ fn non_indexed_action_for_key(
         (&kb.close_pane, NavigateAction::ClosePane),
         (&kb.zoom, NavigateAction::Zoom),
         (&kb.new_float, NavigateAction::NewFloat),
+        (&kb.toggle_float, NavigateAction::ToggleFloat),
         (&kb.toggle_floats, NavigateAction::ToggleFloats),
         (&kb.cycle_float, NavigateAction::CycleFloat),
         (&kb.resize_mode, NavigateAction::EnterResizeMode),
@@ -1788,6 +1811,21 @@ pub(super) fn execute_navigate_action_in_context(
         // App-only: opening a float needs terminal runtimes and event channels this
         // test harness doesn't have, same as EditScrollback above.
         NavigateAction::NewFloat => {}
+        NavigateAction::ToggleFloat => {
+            let floats_empty = state
+                .active
+                .and_then(|ws_idx| state.workspaces.get(ws_idx))
+                .and_then(|ws| ws.active_tab())
+                .map(|tab| tab.floats.is_empty())
+                .unwrap_or(true);
+            if !floats_empty {
+                if state.focus_floats_in_active_tab() {
+                    leave_navigate_mode(state);
+                } else if !state.close_pane() {
+                    leave_navigate_mode(state);
+                }
+            }
+        }
         NavigateAction::ToggleFloats => {
             let hidden = state
                 .active
