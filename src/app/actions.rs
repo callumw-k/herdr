@@ -336,10 +336,57 @@ impl AppState {
             .get_mut(ws_idx)
             .and_then(|ws| ws.tabs.get_mut(tab_idx))
         {
-            tab.layout.focus_pane(pane_id);
+            if tab.is_float(pane_id) {
+                // Raise the target to the top of the stack so focus and z-order agree.
+                if let Some(position) = tab.floats.iter().position(|id| *id == pane_id) {
+                    let float = tab.floats.remove(position);
+                    tab.floats.push(float);
+                }
+                tab.floats_hidden = false;
+                tab.float_focused = true;
+            } else {
+                tab.float_focused = false;
+                tab.layout.focus_pane(pane_id);
+            }
             self.previous_pane_focus = previous;
             self.mark_session_dirty();
             self.sync_copy_mode_with_focus();
+            return true;
+        }
+        false
+    }
+
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub(crate) fn cycle_floats_in_active_tab(&mut self, forward: bool) -> bool {
+        let Some(ws_idx) = self.active else {
+            return false;
+        };
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return false;
+        };
+        let Some(tab) = ws.active_tab_mut() else {
+            return false;
+        };
+        if tab.cycle_floats(forward) {
+            self.mark_session_dirty();
+            return true;
+        }
+        false
+    }
+
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub(crate) fn set_floats_hidden_in_active_tab(&mut self, hidden: bool) -> bool {
+        let Some(ws_idx) = self.active else {
+            return false;
+        };
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return false;
+        };
+        let Some(tab) = ws.active_tab_mut() else {
+            return false;
+        };
+        if tab.set_floats_hidden(hidden) {
+            self.mark_session_dirty();
             return true;
         }
         false

@@ -274,6 +274,69 @@ impl App {
         Ok(idx)
     }
 
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub(crate) fn open_float_pane(
+        &mut self,
+        ws_idx: usize,
+        cwd: Option<PathBuf>,
+    ) -> std::io::Result<crate::layout::PaneId> {
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return Err(std::io::Error::other("workspace not found"));
+        };
+        let tab_idx = ws.active_tab_index();
+        let cwd = cwd
+            .or_else(|| {
+                let tab = ws.active_tab()?;
+                let focused = tab.focused_pane();
+                tab.cwd_for_pane(focused, &self.state.terminals, &self.terminal_runtimes)
+            })
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+
+        let terminal_area = self.state.view.terminal_area;
+        let geometry = crate::popup_size::resolve_popup_geometry(
+            self.state.floating_pane_width,
+            self.state.floating_pane_height,
+            terminal_area,
+        );
+        let (rows, cols) = match geometry {
+            Some(geometry) => (geometry.inner.height, geometry.inner.width),
+            None => self.state.estimate_pane_size(),
+        };
+
+        let pane_id = crate::layout::PaneId::alloc();
+        let pane_number = self.state.workspaces[ws_idx].next_public_pane_number;
+        let launch_env = self
+            .pane_launch_env(ws_idx, pane_id, Vec::new())
+            .unwrap_or_else(|| crate::pane::PaneLaunchEnv::from_extra(Vec::new()));
+
+        let runtime = crate::terminal::TerminalRuntime::spawn(
+            pane_id,
+            rows,
+            cols,
+            cwd.clone(),
+            self.state.pane_scrollback_limit_bytes,
+            self.state.host_terminal_theme,
+            self.state.host_terminal_appearance,
+            crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
+            &launch_env,
+            self.event_tx.clone(),
+            self.render_notify.clone(),
+            self.render_dirty.clone(),
+        )?;
+
+        let terminal_id = crate::terminal::TerminalId::alloc();
+        let terminal = crate::terminal::TerminalState::new(terminal_id.clone(), cwd);
+        self.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        self.state.terminals.insert(terminal_id.clone(), terminal);
+
+        let ws = &mut self.state.workspaces[ws_idx];
+        ws.register_new_pane_with_number(pane_id, pane_number);
+        ws.tabs[tab_idx].push_float(pane_id, crate::pane::PaneState::new(terminal_id));
+
+        self.schedule_session_save();
+        Ok(pane_id)
+    }
+
     pub(super) fn collect_panes_for_workspace(
         &self,
         workspace_id: Option<&str>,
