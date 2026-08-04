@@ -208,6 +208,24 @@ impl App {
         id: String,
         params: TabFloatsToggleParams,
     ) -> String {
+        if params.workspace_id.is_some() {
+            // Toggling always acts on the active tab, so a workspace that is not
+            // active has nothing meaningful to toggle.
+            let Some(ws_idx) = params
+                .workspace_id
+                .as_deref()
+                .and_then(|workspace_id| self.parse_workspace_id(workspace_id))
+            else {
+                return encode_error(id, "workspace_not_found", "workspace not found");
+            };
+            if self.state.active != Some(ws_idx) {
+                return encode_error(
+                    id,
+                    "workspace_not_active",
+                    "float toggling requires the active workspace",
+                );
+            }
+        }
         let Some(ws_idx) = self.state.active else {
             return encode_error(id, "workspace_not_found", "no active workspace");
         };
