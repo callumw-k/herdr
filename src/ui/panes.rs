@@ -232,7 +232,7 @@ pub(super) fn compute_pane_infos(
 
     let multi_pane = ws.layout.pane_count() > 1;
 
-    if ws.zoomed {
+    let mut pane_infos = if ws.zoomed {
         let focused_id = ws.layout.focused();
         let borders = if multi_pane && app.pane_borders {
             Borders::ALL
@@ -258,42 +258,77 @@ pub(super) fn compute_pane_infos(
                 );
             }
         }
-        return vec![PaneInfo {
+        vec![PaneInfo {
             id: focused_id,
             rect: area,
             inner_rect,
             scrollbar_rect,
             borders,
-            is_focused: true,
-        }];
-    }
+            is_focused: !ws.float_focused,
+        }]
+    } else {
+        let mut pane_infos =
+            apply_pane_chrome(ws.layout.panes(area), app.pane_borders, app.pane_gaps);
 
-    let mut pane_infos = apply_pane_chrome(ws.layout.panes(area), app.pane_borders, app.pane_gaps);
+        for info in &mut pane_infos {
+            let pane_inner = pane_inner_rect(info.rect, info.borders);
 
-    for info in &mut pane_infos {
-        let pane_inner = pane_inner_rect(info.rect, info.borders);
-
-        let mut inner_rect = pane_inner;
-        let mut scrollbar_rect = None;
-        if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
-            (inner_rect, scrollbar_rect) =
-                stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
-            if resize_panes
-                && ws.terminal_id(info.id).is_some_and(|terminal_id| {
-                    !app.direct_attach_resize_locks.contains(terminal_id)
-                })
+            let mut inner_rect = pane_inner;
+            let mut scrollbar_rect = None;
+            if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
             {
-                rt.resize(
-                    inner_rect.height,
-                    inner_rect.width,
-                    cell_size.width_px,
-                    cell_size.height_px,
-                );
+                (inner_rect, scrollbar_rect) =
+                    stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
+                if resize_panes
+                    && ws.terminal_id(info.id).is_some_and(|terminal_id| {
+                        !app.direct_attach_resize_locks.contains(terminal_id)
+                    })
+                {
+                    rt.resize(
+                        inner_rect.height,
+                        inner_rect.width,
+                        cell_size.width_px,
+                        cell_size.height_px,
+                    );
+                }
             }
+
+            info.inner_rect = inner_rect;
+            info.scrollbar_rect = scrollbar_rect;
+            info.is_focused = !ws.float_focused && info.is_focused;
         }
 
-        info.inner_rect = inner_rect;
-        info.scrollbar_rect = scrollbar_rect;
+        pane_infos
+    };
+
+    // The float is appended last so hit-tests that iterate in reverse find it first.
+    if let Some(float_id) = ws.top_float() {
+        if let Some(geometry) =
+            resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
+        {
+            if resize_panes {
+                if let Some(rt) =
+                    app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, float_id)
+                {
+                    rt.resize(
+                        geometry.inner.height,
+                        geometry.inner.width,
+                        cell_size.width_px,
+                        cell_size.height_px,
+                    );
+                }
+            }
+            pane_infos.push(PaneInfo {
+                id: float_id,
+                rect: geometry.outer,
+                inner_rect: geometry.inner,
+                // Floats get no scrollbar lane, matching the popup pane. Scrollback
+                // still works; only the lane is absent.
+                scrollbar_rect: None,
+                borders: Borders::ALL,
+                is_focused: ws.float_focused,
+            });
+        }
     }
 
     pane_infos
