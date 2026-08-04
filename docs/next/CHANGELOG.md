@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- Added floating panes: `prefix+f` opens one, `prefix+ctrl+f` cycles the stack, and `prefix+shift+f` shows or hides the layer. Configure their default size with `ui.floating_pane_width` and `ui.floating_pane_height`.
+
 ## [0.8.0] - 2026-08-03
 
 ### Added
