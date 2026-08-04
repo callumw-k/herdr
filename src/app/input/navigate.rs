@@ -415,12 +415,10 @@ impl App {
                             tracing::warn!(%err, "failed to open floating pane");
                         }
                     }
-                    leave_navigate_mode(&mut self.state);
-                } else if self.state.focus_floats_in_active_tab() {
-                    leave_navigate_mode(&mut self.state);
-                } else if !self.close_focused_pane_via_api_requires_confirmation() {
-                    leave_navigate_mode(&mut self.state);
+                } else if !self.state.focus_floats_in_active_tab() {
+                    self.state.set_floats_hidden_in_active_tab(true);
                 }
+                leave_navigate_mode(&mut self.state);
             }
             NavigateAction::ToggleFloats => {
                 let hidden = self
@@ -1839,11 +1837,10 @@ pub(super) fn execute_navigate_action_in_context(
                 .map(|tab| tab.floats.is_empty())
                 .unwrap_or(true);
             if !floats_empty {
-                if state.focus_floats_in_active_tab() {
-                    leave_navigate_mode(state);
-                } else if !state.close_pane() {
-                    leave_navigate_mode(state);
+                if !state.focus_floats_in_active_tab() {
+                    state.set_floats_hidden_in_active_tab(true);
                 }
+                leave_navigate_mode(state);
             }
         }
         NavigateAction::ToggleFloats => {
@@ -3642,6 +3639,42 @@ navigate_pane_down = "ctrl+j"
 
         assert_eq!(state.mode, Mode::Terminal);
         assert!(state.request_new_tab);
+    }
+
+    #[test]
+    fn toggle_float_action_hides_an_open_focused_float() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.workspaces[0].tabs[0].push_float(
+            crate::layout::PaneId::alloc(),
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+
+        execute_navigate_action(&mut state, NavigateAction::ToggleFloat);
+
+        assert_eq!(state.mode, Mode::Terminal);
+        assert!(state.workspaces[0].tabs[0].floats_hidden);
+        assert!(!state.workspaces[0].tabs[0].float_focused);
+        assert_eq!(
+            state.workspaces[0].tabs[0].floats.len(),
+            1,
+            "hiding must not close the float"
+        );
+    }
+
+    #[test]
+    fn toggle_float_action_focuses_a_hidden_float() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.workspaces[0].tabs[0].push_float(
+            crate::layout::PaneId::alloc(),
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        state.workspaces[0].tabs[0].set_floats_hidden(true);
+
+        execute_navigate_action(&mut state, NavigateAction::ToggleFloat);
+
+        assert_eq!(state.mode, Mode::Terminal);
+        assert!(!state.workspaces[0].tabs[0].floats_hidden);
+        assert!(state.workspaces[0].tabs[0].float_focused);
     }
 
     #[test]

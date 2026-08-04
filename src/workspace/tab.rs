@@ -309,6 +309,8 @@ impl Tab {
         self.floats_hidden = hidden;
         if hidden {
             self.float_focused = false;
+        } else if !self.floats.is_empty() {
+            self.float_focused = true;
         }
         true
     }
@@ -851,5 +853,18 @@ mod tests {
         tab.set_floats_hidden(true);
 
         assert!(!tab.float_focused);
+    }
+
+    #[test]
+    fn showing_the_layer_restores_float_focus() {
+        let mut tab = test_tab();
+        let float = PaneId::alloc();
+        tab.push_float(float, PaneState::new(TerminalId::alloc()));
+        tab.set_floats_hidden(true);
+
+        tab.set_floats_hidden(false);
+
+        assert!(tab.float_focused);
+        assert_eq!(tab.focused_pane(), float);
     }
 }

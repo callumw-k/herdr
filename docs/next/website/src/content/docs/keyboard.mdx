@@ -73,6 +73,8 @@ Press `prefix+[` to enter copy mode for the focused pane. Use `h/j/k/l`, tmux-st
 
 A floating pane sits above the tab's normal split layout in a centred box, instead of taking a slot in the grid. Press `prefix+f` to open one. Floats stack per tab, and only the topmost one is drawn, so `prefix+ctrl+f` cycles the stack to bring the next float to the top. `prefix+shift+f` hides or shows the whole floating layer for the tab without closing anything underneath it.
 
+`toggle_float` is unbound by default and combines opening and hiding into one key: it opens a float if none exists, focuses the floating layer if it's hidden, or hides it if it's already focused and visible. Nothing is ever closed by this action.
+
 While a floating pane is visible, `prefix+c` opens another floating pane instead of a new tab. Hide the floating layer first if you want `prefix+c` to create a tab as usual.
 
 Floats persist across a server restart along with their scrollback, and Herdr treats them as ordinary panes for agent detection. This is different from the session-modal popup opened by a `type = "popup"` custom command (see [Custom command keybindings](/docs/configuration/#custom-command-keybindings)): that popup takes over all terminal input until its command exits, while a floating pane is a regular interactive pane you can leave running.
