@@ -357,7 +357,12 @@ impl App {
             Ok(ws
                 .tabs
                 .iter()
-                .flat_map(|tab| tab.layout.pane_ids().into_iter())
+                .flat_map(|tab| {
+                    tab.layout
+                        .pane_ids()
+                        .into_iter()
+                        .chain(tab.floats.iter().copied())
+                })
                 .filter_map(|pane_id| self.pane_info(ws_idx, pane_id))
                 .collect())
         } else {
@@ -369,7 +374,12 @@ impl App {
                 .flat_map(|(ws_idx, ws)| {
                     ws.tabs
                         .iter()
-                        .flat_map(|tab| tab.layout.pane_ids().into_iter())
+                        .flat_map(|tab| {
+                            tab.layout
+                                .pane_ids()
+                                .into_iter()
+                                .chain(tab.floats.iter().copied())
+                        })
                         .filter_map(move |pane_id| self.pane_info(ws_idx, pane_id))
                 })
                 .collect())
@@ -511,6 +521,7 @@ impl App {
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             focused,
+            floating: ws.tabs[tab_idx].is_float(pane_id),
             cwd: ws.tabs[tab_idx]
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),

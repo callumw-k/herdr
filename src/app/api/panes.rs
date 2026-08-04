@@ -1,17 +1,18 @@
 use bytes::Bytes;
 
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, PaneClearAgentAuthorityParams, PaneCurrentParams,
-    PaneDirection, PaneEdgesParams, PaneEdgesResult, PaneFocusDirectionParams,
-    PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInfo, PaneLayoutPane, PaneLayoutParams,
-    PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit, PaneListParams, PaneMoveDestination,
-    PaneMoveParams, PaneMoveReason, PaneMoveResult, PaneNeighborParams, PaneNeighborResult,
-    PaneProcessInfo, PaneProcessInfoParams, PaneProcessInfoProcess, PaneReadParams, PaneReadResult,
-    PaneReleaseAgentParams, PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
+    EventData, EventEnvelope, EventKind, FloatCycleDirection, PaneClearAgentAuthorityParams,
+    PaneCurrentParams, PaneDirection, PaneEdgesParams, PaneEdgesResult, PaneFloatCycleParams,
+    PaneFloatParams, PaneFocusDirectionParams, PaneFocusDirectionReason, PaneFocusDirectionResult,
+    PaneInfo, PaneLayoutPane, PaneLayoutParams, PaneLayoutRect, PaneLayoutSnapshot,
+    PaneLayoutSplit, PaneListParams, PaneMoveDestination, PaneMoveParams, PaneMoveReason,
+    PaneMoveResult, PaneNeighborParams, PaneNeighborResult, PaneProcessInfo, PaneProcessInfoParams,
+    PaneProcessInfoProcess, PaneReadParams, PaneReadResult, PaneReleaseAgentParams,
+    PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
     PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
     PaneSendInputParams, PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneSwapParams,
     PaneSwapReason, PaneSwapResult, PaneTarget, PaneZoomMode, PaneZoomParams, PaneZoomReason,
-    PaneZoomResult, ResponseResult,
+    PaneZoomResult, ResponseResult, TabFloatsToggleParams,
 };
 use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
 use crate::app::App;
@@ -130,6 +131,101 @@ impl App {
             Ok(panes) => encode_success(id, ResponseResult::PaneList { panes }),
             Err((code, message)) => encode_error(id, &code, message),
         }
+    }
+
+    pub(super) fn handle_pane_float(&mut self, id: String, params: PaneFloatParams) -> String {
+        let ws_idx = match params.workspace_id.as_deref() {
+            Some(workspace_id) => match self.parse_workspace_id(workspace_id) {
+                Some(ws_idx) => ws_idx,
+                None => {
+                    return encode_error(
+                        id,
+                        "workspace_not_found",
+                        format!("workspace {workspace_id} not found"),
+                    )
+                }
+            },
+            None => match self.state.active {
+                Some(ws_idx) => ws_idx,
+                None => return encode_error(id, "workspace_not_found", "no active workspace"),
+            },
+        };
+
+        let cwd = params.cwd.map(std::path::PathBuf::from);
+        let pane_id = match self.open_float_pane(ws_idx, cwd) {
+            Ok(pane_id) => pane_id,
+            Err(err) => return encode_error(id, "pane_float_failed", err.to_string()),
+        };
+
+        if params.focus {
+            self.state.focus_pane_in_workspace(ws_idx, pane_id);
+            self.state.settle_terminal_mode_after_focus();
+        }
+
+        let Some(pane) = self.pane_info(ws_idx, pane_id) else {
+            return encode_error(id, "pane_not_found", "pane not found");
+        };
+        self.emit_event(EventEnvelope {
+            event: EventKind::PaneCreated,
+            data: EventData::PaneCreated { pane: pane.clone() },
+        });
+        encode_success(id, ResponseResult::PaneInfo { pane })
+    }
+
+    pub(super) fn handle_pane_float_cycle(
+        &mut self,
+        id: String,
+        params: PaneFloatCycleParams,
+    ) -> String {
+        if params.workspace_id.is_some() {
+            // Cycling always acts on the active tab, so a workspace that is not
+            // active has nothing meaningful to rotate.
+            let Some(ws_idx) = params
+                .workspace_id
+                .as_deref()
+                .and_then(|workspace_id| self.parse_workspace_id(workspace_id))
+            else {
+                return encode_error(id, "workspace_not_found", "workspace not found");
+            };
+            if self.state.active != Some(ws_idx) {
+                return encode_error(
+                    id,
+                    "workspace_not_active",
+                    "float cycling requires the active workspace",
+                );
+            }
+        }
+        let forward = matches!(params.direction, FloatCycleDirection::Next);
+        if !self.state.cycle_floats_in_active_tab(forward) {
+            return encode_error(id, "no_floating_panes", "no floating panes to cycle");
+        }
+        self.schedule_session_save();
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    pub(super) fn handle_tab_floats_toggle(
+        &mut self,
+        id: String,
+        params: TabFloatsToggleParams,
+    ) -> String {
+        let Some(ws_idx) = self.state.active else {
+            return encode_error(id, "workspace_not_found", "no active workspace");
+        };
+        let current = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.active_tab())
+            .map(|tab| tab.floats_hidden)
+            .unwrap_or(false);
+        let hidden = match params.mode {
+            PaneZoomMode::Toggle => !current,
+            PaneZoomMode::On => false,
+            PaneZoomMode::Off => true,
+        };
+        self.state.set_floats_hidden_in_active_tab(hidden);
+        self.schedule_session_save();
+        encode_success(id, ResponseResult::Ok {})
     }
 
     pub(super) fn handle_pane_current(&mut self, id: String, params: PaneCurrentParams) -> String {

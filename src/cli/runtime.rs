@@ -1,9 +1,9 @@
 use crate::api::schema::{
-    EmptyParams, Method, PaneFocusDirectionParams, PaneMoveParams, PaneRenameParams,
-    PaneResizeParams, PaneSplitParams, PaneSwapParams, PaneTarget, PaneZoomParams, Request,
-    TabCreateParams, TabListParams, TabRenameParams, TabTarget, WorkspaceCreateParams,
-    WorkspaceRenameParams, WorkspaceTarget, WorktreeCreateParams, WorktreeListParams,
-    WorktreeOpenParams, WorktreeRemoveParams,
+    EmptyParams, Method, PaneFloatCycleParams, PaneFloatParams, PaneFocusDirectionParams,
+    PaneMoveParams, PaneRenameParams, PaneResizeParams, PaneSplitParams, PaneSwapParams,
+    PaneTarget, PaneZoomParams, Request, TabCreateParams, TabFloatsToggleParams, TabListParams,
+    TabRenameParams, TabTarget, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceTarget,
+    WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
 };
 
 fn print_method_response(id: &'static str, method: Method) -> std::io::Result<i32> {
@@ -99,6 +99,18 @@ pub(super) fn pane_resize(params: PaneResizeParams) -> std::io::Result<i32> {
 
 pub(super) fn pane_zoom(params: PaneZoomParams) -> std::io::Result<i32> {
     print_method_response("cli:pane:zoom", Method::PaneZoom(params))
+}
+
+pub(super) fn pane_float(params: PaneFloatParams) -> std::io::Result<i32> {
+    print_method_response("cli:pane:float", Method::PaneFloat(params))
+}
+
+pub(super) fn pane_float_cycle(params: PaneFloatCycleParams) -> std::io::Result<i32> {
+    print_method_response("cli:pane:float_cycle", Method::PaneFloatCycle(params))
+}
+
+pub(super) fn tab_floats_toggle(params: TabFloatsToggleParams) -> std::io::Result<i32> {
+    print_method_response("cli:tab:floats_toggle", Method::TabFloatsToggle(params))
 }
 
 pub(super) fn pane_rename(params: PaneRenameParams) -> std::io::Result<i32> {

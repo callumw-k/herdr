@@ -790,6 +790,9 @@
                 "null"
               ]
             },
+            "floating": {
+              "type": "boolean"
+            },
             "focused": {
               "type": "boolean"
             },
@@ -2092,6 +2095,13 @@
           ],
           "type": "object"
         },
+        "FloatCycleDirection": {
+          "enum": [
+            "next",
+            "previous"
+          ],
+          "type": "string"
+        },
         "IntegrationInstallParams": {
           "properties": {
             "target": {
@@ -2425,6 +2435,42 @@
         "PaneEdgesParams": {
           "properties": {
             "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "PaneFloatCycleParams": {
+          "properties": {
+            "direction": {
+              "$ref": "#/schemas/request/$defs/FloatCycleDirection",
+              "default": "next"
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "PaneFloatParams": {
+          "properties": {
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "focus": {
+              "default": false,
+              "type": "boolean"
+            },
+            "workspace_id": {
               "type": [
                 "string",
                 "null"
@@ -4037,6 +4083,21 @@
           },
           "type": "object"
         },
+        "TabFloatsToggleParams": {
+          "properties": {
+            "mode": {
+              "$ref": "#/schemas/request/$defs/PaneZoomMode",
+              "default": "toggle"
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "TabListParams": {
           "properties": {
             "workspace_id": {
@@ -5110,6 +5171,54 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneZoomParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.float",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneFloatParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "pane.float_cycle",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/PaneFloatCycleParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.floats_toggle",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabFloatsToggleParams"
             }
           },
           "required": [
@@ -7361,6 +7470,9 @@
                 "string",
                 "null"
               ]
+            },
+            "floating": {
+              "type": "boolean"
             },
             "focused": {
               "type": "boolean"
