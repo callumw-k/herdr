@@ -2053,18 +2053,21 @@ impl AppState {
     #[cfg(test)]
     fn close_focused_pane_would_close_workspace(&self, ws_idx: usize) -> bool {
         self.workspaces.get(ws_idx).is_some_and(|ws| {
-            let pane_count = ws
-                .active_tab()
-                .map(|tab| tab.layout.pane_count())
-                .unwrap_or(0);
-            pane_count <= 1 && ws.tabs.len() <= 1
+            let tab = ws.active_tab();
+            let pane_count = tab.map(|tab| tab.layout.pane_count()).unwrap_or(0);
+            let is_float = tab
+                .map(|tab| tab.is_float(tab.focused_pane()))
+                .unwrap_or(false);
+            !is_float && pane_count <= 1 && ws.tabs.len() <= 1
         })
     }
 
     pub(crate) fn close_pane_would_close_workspace(&self, ws_idx: usize, pane_id: PaneId) -> bool {
         self.workspaces.get(ws_idx).is_some_and(|ws| {
             ws.find_tab_index_for_pane(pane_id).is_some_and(|tab_idx| {
-                ws.tabs[tab_idx].layout.pane_count() <= 1 && ws.tabs.len() <= 1
+                !ws.tabs[tab_idx].is_float(pane_id)
+                    && ws.tabs[tab_idx].layout.pane_count() <= 1
+                    && ws.tabs.len() <= 1
             })
         })
     }
