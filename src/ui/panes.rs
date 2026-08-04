@@ -512,6 +512,23 @@ struct LineCell {
     right: bool,
 }
 
+/// The topmost float's screen rect, if one is showing. Tiled-pane border
+/// decorations must avoid drawing into this area so they don't punch through
+/// the float, which is drawn earlier in `render_panes`.
+fn float_rect(ws: &crate::workspace::Workspace, pane_infos: &[PaneInfo]) -> Option<Rect> {
+    pane_infos
+        .iter()
+        .find(|info| ws.is_float(info.id))
+        .map(|info| info.rect)
+}
+
+fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
+    x >= rect.x
+        && x < rect.x.saturating_add(rect.width)
+        && y >= rect.y
+        && y < rect.y.saturating_add(rect.height)
+}
+
 fn render_pane_borders(
     app: &AppState,
     ws: &crate::workspace::Workspace,
@@ -533,6 +550,7 @@ fn render_pane_borders(
         add_pane_border_cells(&mut cells, info);
     }
     add_split_border_cells(app.pane_gaps, split_borders, &mut cells);
+    let float_rect = float_rect(ws, pane_infos);
 
     let buf = frame.buffer_mut();
     let area = buf.area;
@@ -542,6 +560,9 @@ fn render_pane_borders(
             || y < area.y
             || y >= area.y.saturating_add(area.height)
         {
+            continue;
+        }
+        if float_rect.is_some_and(|rect| rect_contains(rect, x, y)) {
             continue;
         }
         let focused = pane_infos.iter().any(|info| {
@@ -694,6 +715,7 @@ fn render_pane_border_titles(
 ) {
     let buf = frame.buffer_mut();
     let area = buf.area;
+    let float_rect = float_rect(ws, pane_infos);
     for info in pane_infos {
         if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
             continue;
@@ -718,6 +740,16 @@ fn render_pane_border_titles(
             .saturating_sub(1)
             .min(area.x.saturating_add(area.width));
         if start_x >= end_x {
+            continue;
+        }
+        if !ws.is_float(info.id)
+            && float_rect.is_some_and(|rect| {
+                y >= rect.y
+                    && y < rect.y.saturating_add(rect.height)
+                    && start_x < rect.x.saturating_add(rect.width)
+                    && end_x > rect.x
+            })
+        {
             continue;
         }
         let color = if info.is_focused {
@@ -1284,6 +1316,91 @@ mod tests {
         assert_eq!(buffer[(2, 2)].style().fg, Some(app.palette.accent));
         assert_eq!(buffer[(2, 1)].symbol(), "│");
         assert_eq!(buffer[(2, 1)].style().fg, Some(app.palette.accent));
+    }
+
+    #[test]
+    fn tiled_split_borders_do_not_draw_over_a_float() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 4, 4);
+        let float_id = PaneId::from_raw(99);
+        app.view.pane_infos = vec![
+            PaneInfo {
+                id: PaneId::from_raw(1),
+                rect: Rect::new(0, 0, 2, 2),
+                inner_rect: Rect::default(),
+                scrollbar_rect: None,
+                borders: Borders::TOP | Borders::LEFT,
+                is_focused: false,
+            },
+            PaneInfo {
+                id: PaneId::from_raw(2),
+                rect: Rect::new(2, 0, 2, 2),
+                inner_rect: Rect::default(),
+                scrollbar_rect: None,
+                borders: Borders::TOP | Borders::LEFT | Borders::RIGHT,
+                is_focused: false,
+            },
+            PaneInfo {
+                id: PaneId::from_raw(3),
+                rect: Rect::new(0, 2, 2, 2),
+                inner_rect: Rect::default(),
+                scrollbar_rect: None,
+                borders: Borders::TOP | Borders::LEFT | Borders::BOTTOM,
+                is_focused: false,
+            },
+            PaneInfo {
+                id: PaneId::from_raw(4),
+                rect: Rect::new(2, 2, 2, 2),
+                inner_rect: Rect::default(),
+                scrollbar_rect: None,
+                borders: Borders::ALL,
+                is_focused: false,
+            },
+            // The float covers the cross-junction the tiled split would
+            // otherwise draw at (2, 2) / (2, 1).
+            PaneInfo {
+                id: float_id,
+                rect: Rect::new(1, 1, 2, 2),
+                inner_rect: Rect::default(),
+                scrollbar_rect: None,
+                borders: Borders::ALL,
+                is_focused: true,
+            },
+        ];
+        app.view.split_borders = vec![
+            crate::layout::SplitBorder {
+                pos: 2,
+                direction: ratatui::layout::Direction::Horizontal,
+                ratio: 0.5,
+                area: Rect::new(0, 0, 4, 4),
+                path: vec![],
+            },
+            crate::layout::SplitBorder {
+                pos: 2,
+                direction: ratatui::layout::Direction::Vertical,
+                ratio: 0.5,
+                area: Rect::new(0, 0, 4, 4),
+                path: vec![false],
+            },
+        ];
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 4)).unwrap();
+
+        terminal
+            .draw(|frame| render_view_pane_borders(&app, &ws, frame))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(2, 2)].symbol(), " ", "junction hidden under float");
+        assert_eq!(buffer[(2, 1)].symbol(), " ", "divider hidden under float");
+        // Outside the float's rect, the tiled join still draws normally.
+        assert_eq!(buffer[(2, 0)].symbol(), "┬");
     }
 
     #[test]
