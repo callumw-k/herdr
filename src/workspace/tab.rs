@@ -46,6 +46,12 @@ pub struct Tab {
     #[cfg(test)]
     pub runtimes: HashMap<PaneId, TerminalRuntime>,
     pub zoomed: bool,
+    /// Floating panes over the tiled layer, back to front. Last is topmost.
+    pub floats: Vec<PaneId>,
+    /// Hide the whole floating layer without closing anything.
+    pub floats_hidden: bool,
+    /// When true, keyboard focus is the topmost visible float.
+    pub float_focused: bool,
     pub events: mpsc::Sender<AppEvent>,
     pub(crate) render_notify: Arc<Notify>,
     pub(crate) render_dirty: Arc<RenderSignal>,
@@ -188,6 +194,9 @@ impl Tab {
                 #[cfg(test)]
                 runtimes: HashMap::new(),
                 zoomed: false,
+                floats: Vec::new(),
+                floats_hidden: false,
+                float_focused: false,
                 events,
                 render_notify,
                 render_dirty,
@@ -203,6 +212,105 @@ impl Tab {
 
     pub fn set_custom_name(&mut self, name: String) {
         self.custom_name = Some(name);
+    }
+
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub fn is_float(&self, pane_id: PaneId) -> bool {
+        self.floats.contains(&pane_id)
+    }
+
+    /// Every pane in this tab, tiled then floating. Use this over `layout.pane_ids()`
+    /// wherever "every pane" is meant rather than "every tiled pane".
+    pub fn all_pane_ids(&self) -> impl Iterator<Item = PaneId> + '_ {
+        self.layout
+            .pane_ids()
+            .into_iter()
+            .chain(self.floats.iter().copied())
+    }
+
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub fn top_float(&self) -> Option<PaneId> {
+        if self.floats_hidden {
+            return None;
+        }
+        self.floats.last().copied()
+    }
+
+    /// Focus resolves to the topmost visible float when the floating layer holds
+    /// focus, otherwise to the tiled layer. `layout.focused()` keeps tracking the
+    /// tiled focus independently, so returning to it needs no saved-focus field.
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub fn focused_pane(&self) -> PaneId {
+        self.float_focused
+            .then(|| self.top_float())
+            .flatten()
+            .unwrap_or_else(|| self.layout.focused())
+    }
+
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub fn push_float(&mut self, pane_id: PaneId, pane_state: PaneState) {
+        if !self.floats.contains(&pane_id) {
+            self.floats.push(pane_id);
+        }
+        self.panes.insert(pane_id, pane_state);
+        self.floats_hidden = false;
+        self.float_focused = true;
+    }
+
+    /// Unlike `detach_pane`, there is no last-pane guard: closing the final float
+    /// is valid because the tiled layer still exists.
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub fn close_float(&mut self, pane_id: PaneId) -> Option<DetachedPane> {
+        let position = self.floats.iter().position(|id| *id == pane_id)?;
+        self.floats.remove(position);
+        let pane = self.panes.remove(&pane_id)?;
+        if self.floats.is_empty() {
+            self.float_focused = false;
+        }
+        Some((pane_id, pane.attached_terminal_id))
+    }
+
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub fn cycle_floats(&mut self, forward: bool) -> bool {
+        if self.floats.len() < 2 && !self.floats_hidden {
+            return false;
+        }
+        if self.floats.is_empty() {
+            return false;
+        }
+        self.floats_hidden = false;
+        if forward {
+            self.floats.rotate_right(1);
+        } else {
+            self.floats.rotate_left(1);
+        }
+        self.float_focused = true;
+        true
+    }
+
+    /// Bring the floating layer into focus without creating or closing anything.
+    /// Returns false when there is nothing to do: no floats exist, or the
+    /// layer is already focused and visible.
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub fn focus_floats(&mut self) -> bool {
+        if self.floats.is_empty() || (self.float_focused && !self.floats_hidden) {
+            return false;
+        }
+        self.floats_hidden = false;
+        self.float_focused = true;
+        true
+    }
+
+    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    pub fn set_floats_hidden(&mut self, hidden: bool) -> bool {
+        if self.floats_hidden == hidden {
+            return false;
+        }
+        self.floats_hidden = hidden;
+        if hidden {
+            self.float_focused = false;
+        }
+        true
     }
 
     pub fn split_focused(
@@ -480,6 +588,9 @@ impl Tab {
             #[cfg(test)]
             runtimes: HashMap::new(),
             zoomed: false,
+            floats: Vec::new(),
+            floats_hidden: false,
+            float_focused: false,
             events,
             render_notify,
             render_dirty,
@@ -488,6 +599,9 @@ impl Tab {
 
     pub(crate) fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<MovedPane> {
         if !self.panes.contains_key(&pane_id) {
+            return None;
+        }
+        if self.is_float(pane_id) {
             return None;
         }
 
@@ -597,5 +711,145 @@ impl Tab {
         terminal_runtimes
             .get(terminal_id)
             .and_then(|rt| rt.foreground_cwd())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_tab() -> Tab {
+        let ws = crate::workspace::Workspace::test_new("float-test");
+        ws.tabs
+            .into_iter()
+            .next()
+            .expect("test workspace has a tab")
+    }
+
+    #[test]
+    fn focused_pane_prefers_top_float_when_float_focused() {
+        let mut tab = test_tab();
+        let tiled = tab.layout.focused();
+        let float = PaneId::alloc();
+        tab.push_float(float, PaneState::new(TerminalId::alloc()));
+
+        assert_eq!(tab.focused_pane(), float);
+        assert_eq!(tab.layout.focused(), tiled, "tiled focus is remembered");
+
+        tab.set_floats_hidden(true);
+        assert_eq!(tab.focused_pane(), tiled);
+    }
+
+    #[test]
+    fn top_float_is_last_pushed_and_hidden_layer_has_none() {
+        let mut tab = test_tab();
+        let first = PaneId::alloc();
+        let second = PaneId::alloc();
+        tab.push_float(first, PaneState::new(TerminalId::alloc()));
+        tab.push_float(second, PaneState::new(TerminalId::alloc()));
+
+        assert_eq!(tab.top_float(), Some(second));
+
+        tab.set_floats_hidden(true);
+        assert_eq!(tab.top_float(), None);
+    }
+
+    #[test]
+    fn push_float_with_duplicate_id_does_not_duplicate_stack_entry() {
+        let mut tab = test_tab();
+        let float = PaneId::alloc();
+        tab.push_float(float, PaneState::new(TerminalId::alloc()));
+        let updated_terminal = TerminalId::alloc();
+        tab.push_float(float, PaneState::new(updated_terminal.clone()));
+
+        assert_eq!(tab.floats, vec![float]);
+        assert_eq!(
+            tab.panes.get(&float).map(|p| &p.attached_terminal_id),
+            Some(&updated_terminal)
+        );
+    }
+
+    #[test]
+    fn focus_floats_does_nothing_without_a_float() {
+        let mut tab = test_tab();
+
+        assert!(!tab.focus_floats());
+        assert!(!tab.float_focused);
+    }
+
+    #[test]
+    fn focus_floats_unhides_and_focuses_an_existing_float() {
+        let mut tab = test_tab();
+        let float = PaneId::alloc();
+        tab.push_float(float, PaneState::new(TerminalId::alloc()));
+        tab.set_floats_hidden(true);
+
+        assert!(tab.focus_floats());
+
+        assert!(!tab.floats_hidden);
+        assert!(tab.float_focused);
+        assert_eq!(tab.focused_pane(), float);
+    }
+
+    #[test]
+    fn focus_floats_does_nothing_when_already_focused() {
+        let mut tab = test_tab();
+        let float = PaneId::alloc();
+        tab.push_float(float, PaneState::new(TerminalId::alloc()));
+
+        assert!(!tab.focus_floats(), "already focused, nothing to do");
+    }
+
+    #[test]
+    fn cycle_floats_rotates_stack_and_unhides() {
+        let mut tab = test_tab();
+        let first = PaneId::alloc();
+        let second = PaneId::alloc();
+        tab.push_float(first, PaneState::new(TerminalId::alloc()));
+        tab.push_float(second, PaneState::new(TerminalId::alloc()));
+        tab.set_floats_hidden(true);
+
+        assert!(tab.cycle_floats(true));
+
+        assert!(!tab.floats_hidden, "cycling brings the layer back");
+        assert_eq!(tab.top_float(), Some(first));
+        assert_eq!(tab.focused_pane(), first);
+    }
+
+    #[test]
+    fn close_float_drops_state_and_clears_focus_when_last() {
+        let mut tab = test_tab();
+        let tiled = tab.layout.focused();
+        let float = PaneId::alloc();
+        tab.push_float(float, PaneState::new(TerminalId::alloc()));
+
+        assert!(tab.close_float(float).is_some());
+
+        assert!(tab.floats.is_empty());
+        assert!(!tab.panes.contains_key(&float));
+        assert!(!tab.float_focused);
+        assert_eq!(tab.focused_pane(), tiled);
+    }
+
+    #[test]
+    fn close_float_ignores_a_tiled_pane() {
+        let mut tab = test_tab();
+        let tiled = tab.layout.focused();
+
+        assert!(tab.close_float(tiled).is_none());
+
+        assert!(tab.panes.contains_key(&tiled), "tiled pane must survive");
+    }
+
+    #[test]
+    fn hiding_the_layer_clears_float_focus() {
+        let mut tab = test_tab();
+        let float = PaneId::alloc();
+        tab.push_float(float, PaneState::new(TerminalId::alloc()));
+        assert!(tab.float_focused);
+
+        tab.set_floats_hidden(true);
+
+        assert!(!tab.float_focused);
     }
 }

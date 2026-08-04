@@ -382,6 +382,50 @@ impl App {
                 self.zoom_focused_pane_via_api();
                 leave_navigate_mode(&mut self.state);
             }
+            NavigateAction::NewFloat => {
+                if let Some(ws_idx) = self.state.active {
+                    if let Err(err) = self.open_float_pane(ws_idx, None) {
+                        tracing::warn!(%err, "failed to open floating pane");
+                    }
+                }
+                leave_navigate_mode(&mut self.state);
+            }
+            NavigateAction::ToggleFloat => {
+                let floats_empty = self
+                    .state
+                    .active
+                    .and_then(|ws_idx| self.state.workspaces.get(ws_idx))
+                    .and_then(|ws| ws.active_tab())
+                    .map(|tab| tab.floats.is_empty())
+                    .unwrap_or(true);
+                if floats_empty {
+                    if let Some(ws_idx) = self.state.active {
+                        if let Err(err) = self.open_float_pane(ws_idx, None) {
+                            tracing::warn!(%err, "failed to open floating pane");
+                        }
+                    }
+                    leave_navigate_mode(&mut self.state);
+                } else if self.state.focus_floats_in_active_tab() {
+                    leave_navigate_mode(&mut self.state);
+                } else if !self.close_focused_pane_via_api_requires_confirmation() {
+                    leave_navigate_mode(&mut self.state);
+                }
+            }
+            NavigateAction::ToggleFloats => {
+                let hidden = self
+                    .state
+                    .active
+                    .and_then(|ws_idx| self.state.workspaces.get(ws_idx))
+                    .and_then(|ws| ws.active_tab())
+                    .map(|tab| tab.floats_hidden)
+                    .unwrap_or(false);
+                self.state.set_floats_hidden_in_active_tab(!hidden);
+                leave_navigate_mode(&mut self.state);
+            }
+            NavigateAction::CycleFloat => {
+                self.state.cycle_floats_in_active_tab(true);
+                leave_navigate_mode(&mut self.state);
+            }
             NavigateAction::EnterResizeMode => self.state.mode = Mode::Resize,
             NavigateAction::ToggleSidebar => {
                 self.state.sidebar_collapsed = !self.state.sidebar_collapsed;
@@ -683,14 +727,22 @@ impl App {
         direction: NavDirection,
     ) -> Option<(usize, crate::layout::PaneId)> {
         let ws_idx = self.state.active?;
+        let tab = self.state.workspaces.get(ws_idx)?.active_tab()?;
+        let tiled: Vec<crate::layout::PaneInfo> = self
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .filter(|info| !tab.is_float(info.id))
+            .cloned()
+            .collect();
         let focused = self
             .state
             .view
             .pane_infos
             .iter()
             .find(|pane| pane.is_focused)?;
-        let target =
-            crate::layout::find_in_direction(focused, direction, &self.state.view.pane_infos)?;
+        let target = crate::layout::find_in_direction(focused, direction, &tiled)?;
         Some((ws_idx, target))
     }
 
@@ -699,14 +751,22 @@ impl App {
         direction: NavDirection,
     ) -> Option<(usize, crate::layout::PaneId, crate::layout::PaneId)> {
         let ws_idx = self.state.active?;
+        let tab = self.state.workspaces.get(ws_idx)?.active_tab()?;
+        let tiled: Vec<crate::layout::PaneInfo> = self
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .filter(|info| !tab.is_float(info.id))
+            .cloned()
+            .collect();
         let focused = self
             .state
             .view
             .pane_infos
             .iter()
             .find(|pane| pane.is_focused)?;
-        let target =
-            crate::layout::find_in_direction(focused, direction, &self.state.view.pane_infos)?;
+        let target = crate::layout::find_in_direction(focused, direction, &tiled)?;
         Some((ws_idx, focused.id, target))
     }
 
@@ -1365,6 +1425,10 @@ pub(crate) enum NavigateAction {
     EditScrollback,
     CopyMode,
     Zoom,
+    NewFloat,
+    ToggleFloat,
+    ToggleFloats,
+    CycleFloat,
     EnterResizeMode,
     ToggleSidebar,
     CyclePaneNext,
@@ -1509,6 +1573,10 @@ fn non_indexed_action_for_key(
         (&kb.split_horizontal, NavigateAction::SplitHorizontal),
         (&kb.close_pane, NavigateAction::ClosePane),
         (&kb.zoom, NavigateAction::Zoom),
+        (&kb.new_float, NavigateAction::NewFloat),
+        (&kb.toggle_float, NavigateAction::ToggleFloat),
+        (&kb.toggle_floats, NavigateAction::ToggleFloats),
+        (&kb.cycle_float, NavigateAction::CycleFloat),
         (&kb.resize_mode, NavigateAction::EnterResizeMode),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
         (&kb.reload_config, NavigateAction::ReloadConfig),
@@ -1738,6 +1806,38 @@ pub(super) fn execute_navigate_action_in_context(
         NavigateAction::CopyMode => state.enter_copy_mode(terminal_runtimes),
         NavigateAction::Zoom => {
             state.toggle_zoom();
+            leave_navigate_mode(state);
+        }
+        // App-only: opening a float needs terminal runtimes and event channels this
+        // test harness doesn't have, same as EditScrollback above.
+        NavigateAction::NewFloat => {}
+        NavigateAction::ToggleFloat => {
+            let floats_empty = state
+                .active
+                .and_then(|ws_idx| state.workspaces.get(ws_idx))
+                .and_then(|ws| ws.active_tab())
+                .map(|tab| tab.floats.is_empty())
+                .unwrap_or(true);
+            if !floats_empty {
+                if state.focus_floats_in_active_tab() {
+                    leave_navigate_mode(state);
+                } else if !state.close_pane() {
+                    leave_navigate_mode(state);
+                }
+            }
+        }
+        NavigateAction::ToggleFloats => {
+            let hidden = state
+                .active
+                .and_then(|ws_idx| state.workspaces.get(ws_idx))
+                .and_then(|ws| ws.active_tab())
+                .map(|tab| tab.floats_hidden)
+                .unwrap_or(false);
+            state.set_floats_hidden_in_active_tab(!hidden);
+            leave_navigate_mode(state);
+        }
+        NavigateAction::CycleFloat => {
+            state.cycle_floats_in_active_tab(true);
             leave_navigate_mode(state);
         }
         NavigateAction::EnterResizeMode => state.mode = Mode::Resize,

@@ -40,6 +40,9 @@ Panes:
 | Swap panes | `prefix+shift+h/j/k/l` |
 | Resize mode | `prefix+r` |
 | Copy mode | `prefix+[` |
+| New floating pane | `prefix+f` |
+| Cycle floating panes | `prefix+ctrl+f` |
+| Show/hide floating panes | `prefix+shift+f` |
 
 Tabs:
 
@@ -65,6 +68,14 @@ The full keymap and the binding syntax live in the [keybinding reference](/docs/
 ## Copy mode
 
 Press `prefix+[` to enter copy mode for the focused pane. Use `h/j/k/l`, tmux-style `w/b/e`, `{`/`}`, `PageUp`/`PageDown`, `ctrl+b`/`ctrl+f`, and `ctrl+u`/`ctrl+d` to move. Press `/` or `?` for forward or backward literal search, then `n` or `N` to repeat in the same or opposite direction. Search is case-insensitive unless the query contains an uppercase letter. Use `v` or Space to start a selection, `y` or Enter to copy it, and `q` or Esc to leave without copying. Esc clears an active selection or search before exiting. Copy mode does not pause the pane process: output remains live, follows at the bottom, and stays pinned when you navigate into history. The configured prefix keeps its normal meaning in copy mode; with the default prefix, `ctrl+b` enters prefix mode instead of paging up, so use a different prefix if you want `ctrl+b` for copy-mode page-up. Mouse drag-select copies without entering copy mode at all.
+
+## Floating panes
+
+A floating pane sits above the tab's normal split layout in a centred box, instead of taking a slot in the grid. Press `prefix+f` to open one. Floats stack per tab, and only the topmost one is drawn, so `prefix+ctrl+f` cycles the stack to bring the next float to the top. `prefix+shift+f` hides or shows the whole floating layer for the tab without closing anything underneath it.
+
+Floats persist across a server restart along with their scrollback, and Herdr treats them as ordinary panes for agent detection. This is different from the session-modal popup opened by a `type = "popup"` custom command (see [Custom command keybindings](/docs/configuration/#custom-command-keybindings)): that popup takes over all terminal input until its command exits, while a floating pane is a regular interactive pane you can leave running.
+
+Configure the default float size with `ui.floating_pane_width` and `ui.floating_pane_height`; see [UI and sidebar](/docs/configuration/#ui-and-sidebar).
 
 ## Change anything
 

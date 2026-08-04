@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::api::schema::{TabCreateParams, TabListParams, TabRenameParams};
+use crate::api::schema::{
+    PaneZoomMode, TabCreateParams, TabFloatsToggleParams, TabListParams, TabRenameParams,
+};
 
 pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
     let Some(subcommand) = args.first().map(|arg| arg.as_str()) else {
@@ -15,6 +17,7 @@ pub(super) fn run_tab_command(args: &[String]) -> std::io::Result<i32> {
         "focus" => tab_focus(&args[1..]),
         "rename" => tab_rename(&args[1..]),
         "close" => tab_close(&args[1..]),
+        "floats-toggle" => tab_floats_toggle(&args[1..]),
         "help" | "--help" | "-h" => {
             print_tab_help();
             Ok(0)
@@ -174,6 +177,64 @@ fn tab_close(args: &[String]) -> std::io::Result<i32> {
     super::runtime::tab_close(super::normalize_tab_id(raw_tab_id))
 }
 
+fn tab_floats_toggle(args: &[String]) -> std::io::Result<i32> {
+    let params = match parse_tab_floats_toggle_args(args) {
+        Ok(params) => params,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
+
+    super::runtime::tab_floats_toggle(params)
+}
+
+fn parse_tab_floats_toggle_args(args: &[String]) -> Result<TabFloatsToggleParams, String> {
+    let mut workspace_id = None;
+    let mut mode = PaneZoomMode::Toggle;
+    let mut mode_seen = false;
+
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--workspace" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --workspace".into());
+                };
+                workspace_id = Some(super::normalize_workspace_id(value));
+                index += 2;
+            }
+            "--toggle" => {
+                if mode_seen {
+                    return Err("provide only one of --toggle, --on, or --off".into());
+                }
+                mode = PaneZoomMode::Toggle;
+                mode_seen = true;
+                index += 1;
+            }
+            "--on" => {
+                if mode_seen {
+                    return Err("provide only one of --toggle, --on, or --off".into());
+                }
+                mode = PaneZoomMode::On;
+                mode_seen = true;
+                index += 1;
+            }
+            "--off" => {
+                if mode_seen {
+                    return Err("provide only one of --toggle, --on, or --off".into());
+                }
+                mode = PaneZoomMode::Off;
+                mode_seen = true;
+                index += 1;
+            }
+            other => return Err(format!("unknown option: {other}")),
+        }
+    }
+
+    Ok(TabFloatsToggleParams { workspace_id, mode })
+}
+
 fn print_tab_help() {
     eprintln!("herdr tab commands:");
     eprintln!("  herdr tab list [--workspace <workspace_id>]");
@@ -184,4 +245,5 @@ fn print_tab_help() {
     eprintln!("  herdr tab focus <tab_id>");
     eprintln!("  herdr tab rename <tab_id> <label>");
     eprintln!("  herdr tab close <tab_id>");
+    eprintln!("  herdr tab floats-toggle [--workspace <workspace_id>] [--toggle|--on|--off]");
 }

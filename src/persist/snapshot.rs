@@ -92,6 +92,12 @@ pub struct TabSnapshot {
     pub focused: Option<u32>,
     #[serde(default)]
     pub root_pane: Option<u32>,
+    #[serde(default)]
+    pub floats: Vec<u32>,
+    #[serde(default)]
+    pub floats_hidden: bool,
+    #[serde(default)]
+    pub float_focused: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -151,6 +157,9 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             zoomed: snap.zoomed,
             focused: snap.focused,
             root_pane: snap.root_pane,
+            floats: Vec::new(),
+            floats_hidden: false,
+            float_focused: false,
         };
 
         Self {
@@ -378,6 +387,9 @@ fn capture_tab(
         zoomed: tab.zoomed,
         focused: Some(tab.layout.focused().raw()),
         root_pane: Some(tab.root_pane.raw()),
+        floats: tab.floats.iter().map(|id| id.raw()).collect(),
+        floats_hidden: tab.floats_hidden,
+        float_focused: tab.float_focused,
     }
 }
 
@@ -684,6 +696,9 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
+                    floats: Vec::new(),
+                    floats_hidden: false,
+                    float_focused: false,
                 }],
                 active_tab: 0,
             }],
@@ -1246,6 +1261,9 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
+                    floats: Vec::new(),
+                    floats_hidden: false,
+                    float_focused: false,
                 }],
                 active_tab: 0,
             }],
@@ -1263,5 +1281,43 @@ mod tests {
             restored.workspaces[0].tabs[0].panes[&0].cwd,
             PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test")
         );
+    }
+
+    #[test]
+    fn capture_preserves_float_ids_and_flags() {
+        let mut ws = Workspace::test_new("float-capture");
+        let float = crate::layout::PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(
+            float,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].float_focused = false;
+
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let snap = capture_tab(&ws.tabs[0], &HashMap::new(), &terminal_runtimes);
+
+        assert_eq!(snap.floats, vec![float.raw()]);
+        assert!(!snap.floats_hidden);
+        assert!(!snap.float_focused);
+        assert!(
+            snap.panes.contains_key(&float.raw()),
+            "float pane state must be captured alongside tiled panes"
+        );
+    }
+
+    #[test]
+    fn tab_snapshot_without_float_fields_deserialises_to_empty_layer() {
+        let json = serde_json::json!({
+            "layout": { "Pane": 1 },
+            "panes": {},
+            "zoomed": false,
+        });
+
+        let snap: TabSnapshot = serde_json::from_value(json).expect("legacy snapshot loads");
+
+        assert!(snap.floats.is_empty());
+        assert!(!snap.floats_hidden);
+        assert!(!snap.float_focused);
     }
 }

@@ -983,6 +983,13 @@ impl Workspace {
         let Some(tab_idx) = self.find_tab_index_for_pane(pane_id) else {
             return false;
         };
+        if self.tabs[tab_idx].is_float(pane_id) {
+            let closed = self.tabs[tab_idx].close_float(pane_id).is_some();
+            if closed {
+                self.unregister_pane(pane_id);
+            }
+            return false;
+        }
         let pane_count = self.tabs[tab_idx].layout.pane_count();
         let tab_count = self.tabs.len();
         if pane_count <= 1 {
@@ -1007,6 +1014,9 @@ impl Workspace {
 
     pub(crate) fn take_pane_for_move(&mut self, pane_id: PaneId) -> Option<TakenPane> {
         let tab_idx = self.find_tab_index_for_pane(pane_id)?;
+        if self.tabs[tab_idx].is_float(pane_id) {
+            return None;
+        }
         let pane_count = self.tabs[tab_idx].layout.pane_count();
         if pane_count <= 1 {
             let mut tab = self.tabs.remove(tab_idx);
@@ -1219,7 +1229,7 @@ impl Workspace {
     }
 
     pub fn focused_pane_id(&self) -> Option<PaneId> {
-        self.active_tab().map(|tab| tab.layout.focused())
+        self.active_tab().map(|tab| tab.focused_pane())
     }
 
     pub fn close_pane(&mut self, pane_id: PaneId) -> bool {
@@ -1227,6 +1237,13 @@ impl Workspace {
             Some(idx) => idx,
             None => return false,
         };
+        if self.tabs[tab_idx].is_float(pane_id) {
+            let closed = self.tabs[tab_idx].close_float(pane_id).is_some();
+            if closed {
+                self.unregister_pane(pane_id);
+            }
+            return false;
+        }
         let pane_count = self.tabs[tab_idx].layout.pane_count();
         let tab_count = self.tabs.len();
         if pane_count <= 1 {
@@ -1254,7 +1271,7 @@ impl Workspace {
         self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
     }
 
-    fn register_new_pane_with_number(&mut self, pane_id: PaneId, number: usize) {
+    pub(crate) fn register_new_pane_with_number(&mut self, pane_id: PaneId, number: usize) {
         self.public_pane_numbers.insert(pane_id, number);
         self.next_public_pane_number = self.next_public_pane_number.max(number + 1);
     }
@@ -1298,6 +1315,9 @@ impl Workspace {
             panes,
             runtimes: HashMap::new(),
             zoomed: false,
+            floats: Vec::new(),
+            floats_hidden: false,
+            float_focused: false,
             events,
             render_notify,
             render_dirty,
@@ -1354,6 +1374,9 @@ impl Workspace {
             panes,
             runtimes: HashMap::new(),
             zoomed: false,
+            floats: Vec::new(),
+            floats_hidden: false,
+            float_focused: false,
             events,
             render_notify,
             render_dirty,
@@ -1456,10 +1479,35 @@ impl Workspace {
                 tab.layout.focused()
             );
             let pane_set: std::collections::HashSet<_> = tab.panes.keys().copied().collect();
+            let mut float_set = std::collections::HashSet::new();
+            for float_id in &tab.floats {
+                assert!(
+                    float_set.insert(*float_id),
+                    "workspace {} tab {} has duplicate float {:?}",
+                    self.id,
+                    tab_idx,
+                    float_id
+                );
+                assert!(
+                    !layout_set.contains(float_id),
+                    "workspace {} tab {} pane {:?} must not appear in both the layout and the floating layer",
+                    self.id,
+                    tab_idx,
+                    float_id
+                );
+            }
+            let both_layers: std::collections::HashSet<_> =
+                layout_set.union(&float_set).copied().collect();
             assert_eq!(
-                layout_set, pane_set,
-                "workspace {} tab {} layout panes must exactly match pane states",
+                both_layers, pane_set,
+                "workspace {} tab {} layout and floating panes must exactly match pane states",
                 self.id, tab_idx
+            );
+            assert!(
+                !tab.float_focused || tab.top_float().is_some(),
+                "workspace {} tab {} float focus is set with no visible float",
+                self.id,
+                tab_idx
             );
 
             for (pane_id, pane) in &tab.panes {
@@ -1818,6 +1866,89 @@ mod tests {
         assert_eq!(ws.tabs[2].number, 1);
         assert_eq!(ws.tabs[2].root_pane, moved_root);
         assert_eq!(ws.tabs[ws.active_tab].root_pane, active_root);
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn invariants_accept_a_float_outside_the_layout_tree() {
+        let mut ws = Workspace::test_new("float-invariants");
+        let float = PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
+
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "must not appear in both")]
+    fn invariants_reject_a_pane_in_both_layers() {
+        let mut ws = Workspace::test_new("float-both-layers");
+        let tiled = ws.tabs[0].layout.focused();
+        ws.tabs[0].floats.push(tiled);
+
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate float")]
+    fn invariants_reject_duplicate_floats() {
+        let mut ws = Workspace::test_new("float-duplicate");
+        let float = PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
+        ws.tabs[0].floats.push(float);
+
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    #[should_panic(expected = "float focus")]
+    fn invariants_reject_stale_float_focus() {
+        let mut ws = Workspace::test_new("float-stale-focus");
+        ws.tabs[0].float_focused = true;
+
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn focused_pane_id_follows_the_floating_layer() {
+        let mut ws = Workspace::test_new("float-focus-id");
+        let float = PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
+
+        assert_eq!(ws.focused_pane_id(), Some(float));
+    }
+
+    #[test]
+    fn close_pane_closes_a_float_without_touching_the_tiled_layer() {
+        let mut ws = Workspace::test_new("float-close");
+        let tiled = ws.tabs[0].layout.focused();
+        let float = PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
+
+        assert!(!ws.close_pane(float));
+
+        assert!(ws.tabs[0].floats.is_empty());
+        assert_eq!(ws.tabs[0].layout.pane_count(), 1);
+        assert!(ws.tabs[0].panes.contains_key(&tiled));
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn remove_pane_closes_a_float_without_closing_the_workspace() {
+        let mut ws = Workspace::test_new("float-exit");
+        let tiled = ws.tabs[0].layout.focused();
+        let float = PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
+
+        assert!(!ws.remove_pane(float));
+
+        assert!(ws.tabs[0].floats.is_empty());
+        assert_eq!(ws.tabs[0].layout.pane_count(), 1);
+        assert!(ws.tabs[0].panes.contains_key(&tiled));
         ws.assert_invariants_for_test();
     }
 }

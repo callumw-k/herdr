@@ -659,6 +659,7 @@ mod tests {
             workspace_id: "workspace_1".into(),
             tab_id: "tab_1".into(),
             focused: true,
+            floating: false,
             cwd: None,
             foreground_cwd: None,
             label: None,

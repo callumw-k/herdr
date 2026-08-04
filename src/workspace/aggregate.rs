@@ -32,11 +32,9 @@ impl Tab {
         tab_idx: usize,
         tab_label: &str,
     ) -> Vec<PaneDetail> {
-        self.layout
-            .pane_ids()
-            .iter()
+        self.all_pane_ids()
             .filter_map(|id| {
-                let pane = self.panes.get(id)?;
+                let pane = self.panes.get(&id)?;
                 let terminal = terminals.get(&pane.attached_terminal_id)?;
                 let agent_kind_label = terminal.effective_agent_label().map(str::to_string);
                 let fallback_agent_label = terminal
@@ -49,7 +47,7 @@ impl Tab {
                     .unwrap_or_else(|| fallback_agent_label.clone());
                 let presentation = terminal.effective_presentation();
                 Some(PaneDetail {
-                    pane_id: *id,
+                    pane_id: id,
                     tab_idx,
                     tab_label: tab_label.to_string(),
                     label: agent_label.clone(),

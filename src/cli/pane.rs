@@ -1,11 +1,12 @@
 use crate::api::schema::{
-    Method, OutputMatch, PaneCurrentParams, PaneDirection, PaneEdgesParams,
-    PaneFocusDirectionParams, PaneLayoutParams, PaneListParams, PaneMoveDestination,
-    PaneMoveParams, PaneNeighborParams, PaneProcessInfoParams, PaneReadParams,
-    PaneReleaseAgentParams, PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
-    PaneReportMetadataParams, PaneResizeParams, PaneSendInputParams, PaneSendKeysParams,
-    PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneTarget, PaneWaitForOutputParams,
-    PaneZoomMode, PaneZoomParams, ReadFormat, ReadSource, Request, SplitDirection,
+    FloatCycleDirection, Method, OutputMatch, PaneCurrentParams, PaneDirection, PaneEdgesParams,
+    PaneFloatCycleParams, PaneFloatParams, PaneFocusDirectionParams, PaneLayoutParams,
+    PaneListParams, PaneMoveDestination, PaneMoveParams, PaneNeighborParams, PaneProcessInfoParams,
+    PaneReadParams, PaneReleaseAgentParams, PaneRenameParams, PaneReportAgentParams,
+    PaneReportAgentSessionParams, PaneReportMetadataParams, PaneResizeParams, PaneSendInputParams,
+    PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneTarget,
+    PaneWaitForOutputParams, PaneZoomMode, PaneZoomParams, ReadFormat, ReadSource, Request,
+    SplitDirection,
 };
 
 pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
@@ -25,6 +26,8 @@ pub(super) fn run_pane_command(args: &[String]) -> std::io::Result<i32> {
         "focus" => pane_focus(&args[1..]),
         "resize" => pane_resize(&args[1..]),
         "zoom" => pane_zoom(&args[1..]),
+        "float" => pane_float(&args[1..]),
+        "float-cycle" => pane_float_cycle(&args[1..]),
         "read" => pane_read(&args[1..]),
         "rename" => pane_rename(&args[1..]),
         "split" => pane_split(&args[1..]),
@@ -417,6 +420,103 @@ fn parse_pane_zoom_args(args: &[String]) -> Result<PaneZoomParams, String> {
     }
 
     Ok(PaneZoomParams { pane_id, mode })
+}
+
+fn pane_float(args: &[String]) -> std::io::Result<i32> {
+    let params = match parse_pane_float_args(args) {
+        Ok(params) => params,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
+
+    super::runtime::pane_float(params)
+}
+
+fn parse_pane_float_args(args: &[String]) -> Result<PaneFloatParams, String> {
+    let mut workspace_id = None;
+    let mut cwd = None;
+    let mut focus = false;
+
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--workspace" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --workspace".into());
+                };
+                workspace_id = Some(super::normalize_workspace_id(value));
+                index += 2;
+            }
+            "--cwd" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --cwd".into());
+                };
+                cwd = Some(value.clone());
+                index += 2;
+            }
+            "--focus" => {
+                focus = true;
+                index += 1;
+            }
+            "--no-focus" => {
+                focus = false;
+                index += 1;
+            }
+            other => return Err(format!("unknown option: {other}")),
+        }
+    }
+
+    Ok(PaneFloatParams {
+        workspace_id,
+        cwd,
+        focus,
+    })
+}
+
+fn pane_float_cycle(args: &[String]) -> std::io::Result<i32> {
+    let params = match parse_pane_float_cycle_args(args) {
+        Ok(params) => params,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
+
+    super::runtime::pane_float_cycle(params)
+}
+
+fn parse_pane_float_cycle_args(args: &[String]) -> Result<PaneFloatCycleParams, String> {
+    let mut workspace_id = None;
+    let mut direction = FloatCycleDirection::Next;
+
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--workspace" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err("missing value for --workspace".into());
+                };
+                workspace_id = Some(super::normalize_workspace_id(value));
+                index += 2;
+            }
+            "--next" => {
+                direction = FloatCycleDirection::Next;
+                index += 1;
+            }
+            "--previous" => {
+                direction = FloatCycleDirection::Previous;
+                index += 1;
+            }
+            other => return Err(format!("unknown option: {other}")),
+        }
+    }
+
+    Ok(PaneFloatCycleParams {
+        workspace_id,
+        direction,
+    })
 }
 
 fn pane_rename(args: &[String]) -> std::io::Result<i32> {
@@ -1497,6 +1597,8 @@ fn print_pane_help() {
         "  herdr pane resize --direction left|right|up|down [--amount FLOAT] [--pane ID|--current]"
     );
     eprintln!("  herdr pane zoom [<pane_id>|--pane ID|--current] [--toggle|--on|--off]");
+    eprintln!("  herdr pane float [--workspace <workspace_id>] [--cwd PATH] [--focus|--no-focus]");
+    eprintln!("  herdr pane float-cycle [--workspace <workspace_id>] [--next|--previous]");
     eprintln!("  herdr pane rename <pane_id> <label>|--clear");
     eprintln!("  herdr pane read <pane_id> [--source visible|recent|recent-unwrapped] [--lines N] [--format text|ansi] [--ansi]");
     eprintln!(

@@ -512,6 +512,24 @@
           "description": "Toggle zoom for the focused pane. The legacy key name `fullscreen` is accepted as an alias."
         },
         {
+          "key": "keys.new_float",
+          "type": "keybinding",
+          "default": "\"prefix+f\"",
+          "description": "Open a new floating pane."
+        },
+        {
+          "key": "keys.toggle_floats",
+          "type": "keybinding",
+          "default": "\"prefix+shift+f\"",
+          "description": "Show or hide the floating layer."
+        },
+        {
+          "key": "keys.cycle_float",
+          "type": "keybinding",
+          "default": "\"prefix+ctrl+f\"",
+          "description": "Bring the next floating pane to the top."
+        },
+        {
           "key": "keys.resize_mode",
           "type": "keybinding",
           "default": "\"prefix+r\"",
@@ -651,6 +669,18 @@
           "type": "boolean",
           "default": "true",
           "description": "Draw borders around split panes."
+        },
+        {
+          "key": "ui.floating_pane_width",
+          "type": "integer or percentage",
+          "default": "unset",
+          "description": "Width of floating panes, in cells or as a percentage like \"60%\". Unset uses half the terminal area."
+        },
+        {
+          "key": "ui.floating_pane_height",
+          "type": "integer or percentage",
+          "default": "unset",
+          "description": "Height of floating panes, in cells or as a percentage like \"60%\". Unset uses half the terminal area."
         },
         {
           "key": "ui.pane_scrollbars",
