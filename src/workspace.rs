@@ -1232,7 +1232,7 @@ impl Workspace {
             if closed {
                 self.unregister_pane(pane_id);
             }
-            return closed;
+            return false;
         }
         let pane_count = self.tabs[tab_idx].layout.pane_count();
         let tab_count = self.tabs.len();
@@ -1918,7 +1918,7 @@ mod tests {
         ws.register_new_pane_with_number(float, ws.next_public_pane_number);
         ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
 
-        assert!(ws.close_pane(float));
+        assert!(!ws.close_pane(float));
 
         assert!(ws.tabs[0].floats.is_empty());
         assert_eq!(ws.tabs[0].layout.pane_count(), 1);
