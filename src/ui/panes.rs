@@ -431,7 +431,11 @@ pub(super) fn render_panes(
                     .style(Style::default().bg(app.palette.panel_bg));
                 frame.render_widget(Clear, info.rect);
                 frame.render_widget(block, info.rect);
-                rt.render(frame, info.inner_rect, !pane_is_scrolled_back(rt));
+                let show_cursor = info.is_focused
+                    && terminal_active
+                    && !pane_is_scrolled_back(rt)
+                    && app.pane_exposes_host_cursor(ws_idx, info.id);
+                rt.render(frame, info.inner_rect, show_cursor);
             }
         }
     }
