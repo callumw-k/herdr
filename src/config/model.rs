@@ -416,8 +416,8 @@ pub struct KeysConfig {
     pub zoom: BindingConfig,
     /// Open a new floating pane. Default: "prefix+f"
     pub new_float: BindingConfig,
-    /// Open a floating pane, or focus/close the focused one if one already
-    /// exists. Unset by default.
+    /// Open a floating pane if none exist, focus the floating layer if it is
+    /// unfocused, otherwise hide it. Unset by default.
     pub toggle_float: BindingConfig,
     /// Show or hide the floating layer. Default: "prefix+shift+f"
     pub toggle_floats: BindingConfig,

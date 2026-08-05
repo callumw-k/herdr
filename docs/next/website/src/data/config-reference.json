@@ -518,6 +518,12 @@
           "description": "Open a new floating pane."
         },
         {
+          "key": "keys.toggle_float",
+          "type": "keybinding",
+          "default": "\"\"",
+          "description": "Open a floating pane if none exist, focus the floating layer if it is unfocused, otherwise hide it. Unset by default."
+        },
+        {
           "key": "keys.toggle_floats",
           "type": "keybinding",
           "default": "\"prefix+shift+f\"",
