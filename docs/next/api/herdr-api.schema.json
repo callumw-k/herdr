@@ -2147,6 +2147,16 @@
         },
         "LayoutApplyParams": {
           "properties": {
+            "float_root": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/LayoutNode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "focus": {
               "default": false,
               "type": "boolean"
@@ -7319,6 +7329,20 @@
           "properties": {
             "arrangement": {
               "$ref": "#/schemas/success_response/$defs/ArrangementSchema"
+            },
+            "float_arrangement": {
+              "$ref": "#/schemas/success_response/$defs/ArrangementSchema",
+              "default": "stacked"
+            },
+            "float_root": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/LayoutNode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "focused_pane_id": {
               "type": "string"

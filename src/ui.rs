@@ -101,6 +101,7 @@ pub(crate) use self::{
 };
 use crate::app::state::ViewLayout;
 use crate::app::{AppState, Mode};
+use crate::popup_size::resolve_popup_geometry;
 use crate::terminal::TerminalRuntimeRegistry;
 
 const COLLAPSED_WIDTH: u16 = 4; // num + space + dot + separator
@@ -243,12 +244,18 @@ fn compute_view_internal(
         .map(|ws| desktop_tab_bar_and_terminal_area(app, ws, main_area))
         .unwrap_or((Rect::default(), main_area));
 
+    let float_region = resolve_popup_geometry(
+        app.floating_pane_width,
+        app.floating_pane_height,
+        terminal_area,
+    )
+    .map(|geometry| geometry.outer);
     if let Some(tab) = app
         .active
         .and_then(|i| app.workspaces.get_mut(i))
         .and_then(|ws| ws.active_tab_mut())
     {
-        tab.reflow(terminal_area);
+        tab.reflow(terminal_area, float_region);
     }
 
     if !app.sidebar_collapsed {
@@ -355,12 +362,18 @@ fn compute_mobile_view(
         app.mobile_switcher_scroll = app.mobile_switcher_scroll.min(max_scroll);
     }
 
+    let float_region = resolve_popup_geometry(
+        app.floating_pane_width,
+        app.floating_pane_height,
+        terminal_area,
+    )
+    .map(|geometry| geometry.outer);
     if let Some(tab) = app
         .active
         .and_then(|i| app.workspaces.get_mut(i))
         .and_then(|ws| ws.active_tab_mut())
     {
-        tab.reflow(terminal_area);
+        tab.reflow(terminal_area, float_region);
     }
 
     let TabSurfaceLayout {

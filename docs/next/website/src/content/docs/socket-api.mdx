@@ -217,10 +217,18 @@ and argv `command`. Split nodes use `direction` (`right` or `down`), `ratio`,
 contain a split. `arrangement` describes how the tab will be reflowed; after a
 `layout.apply` call with a `Split` root, the tab retains its existing arrangement value until the next pane is created or closed.
 
+The response also includes `float_arrangement` and `float_root` for the tab's
+floating layer, a second independent tree of the same `pane`/`split`/`stack`
+shape. `float_arrangement` defaults to `stacked` rather than `grid`, and
+`float_root` is omitted when the tab has no floats.
+
 `layout.apply` creates a fresh tab from a declarative tree. If `tab_id` is
 provided, Herdr creates the replacement tab first and then closes the old tab.
 This restores structure, labels, cwd, env, and optional argv commands; it does
-not preserve live PTYs, scrollback, or running processes.
+not preserve live PTYs, scrollback, or running processes. An optional
+`float_root` alongside `root` installs the tab's floating layer the same way;
+a `Stack` float root sets `float_arrangement` to `stacked`, matching the rule
+for `root`.
 
 ```json
 {

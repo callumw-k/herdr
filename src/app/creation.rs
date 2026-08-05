@@ -274,7 +274,6 @@ impl App {
         Ok(idx)
     }
 
-    #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
     pub(crate) fn open_float_pane(
         &mut self,
         ws_idx: usize,

@@ -165,6 +165,8 @@ pub struct LayoutApplyParams {
     #[serde(default)]
     pub focus: bool,
     pub root: LayoutNode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_root: Option<LayoutNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -184,7 +186,16 @@ pub struct LayoutDescription {
     pub zoomed: bool,
     pub focused_pane_id: String,
     pub arrangement: ArrangementSchema,
+    #[serde(default = "stacked_arrangement_schema")]
+    pub float_arrangement: ArrangementSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_root: Option<LayoutNode>,
     pub root: LayoutNode,
+}
+
+/// The float layer defaults to Stacked, unlike the tiled layer's Grid.
+fn stacked_arrangement_schema() -> ArrangementSchema {
+    ArrangementSchema::Stacked
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

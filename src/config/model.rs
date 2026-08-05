@@ -427,7 +427,7 @@ pub struct KeysConfig {
     pub toggle_float: BindingConfig,
     /// Show or hide the floating layer. Default: "prefix+shift+f"
     pub toggle_floats: BindingConfig,
-    /// Bring the next floating pane to the top. Default: "prefix+ctrl+f"
+    /// Move focus to the next floating pane. Default: "prefix+ctrl+f"
     pub cycle_float: BindingConfig,
     /// Enter resize mode. Default: "prefix+r"
     pub resize_mode: BindingConfig,

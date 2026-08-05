@@ -551,7 +551,7 @@
           "key": "keys.cycle_float",
           "type": "keybinding",
           "default": "\"prefix+ctrl+f\"",
-          "description": "Bring the next floating pane to the top."
+          "description": "Move focus to the next floating pane."
         },
         {
           "key": "keys.resize_mode",

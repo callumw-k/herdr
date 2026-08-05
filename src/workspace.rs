@@ -1315,11 +1315,13 @@ impl Workspace {
             panes,
             runtimes: HashMap::new(),
             zoomed: false,
-            floats: Vec::new(),
+            float_layout: None,
+            float_arrangement: crate::layout::Arrangement::Stacked,
             floats_hidden: false,
             float_focused: false,
             arrangement: crate::layout::Arrangement::default(),
             needs_reflow: false,
+            float_needs_reflow: false,
             events,
             render_notify,
             render_dirty,
@@ -1376,11 +1378,13 @@ impl Workspace {
             panes,
             runtimes: HashMap::new(),
             zoomed: false,
-            floats: Vec::new(),
+            float_layout: None,
+            float_arrangement: crate::layout::Arrangement::Stacked,
             floats_hidden: false,
             float_focused: false,
             arrangement: crate::layout::Arrangement::default(),
             needs_reflow: false,
+            float_needs_reflow: false,
             events,
             render_notify,
             render_dirty,
@@ -1484,16 +1488,16 @@ impl Workspace {
             );
             let pane_set: std::collections::HashSet<_> = tab.panes.keys().copied().collect();
             let mut float_set = std::collections::HashSet::new();
-            for float_id in &tab.floats {
+            for float_id in tab.floats() {
                 assert!(
-                    float_set.insert(*float_id),
+                    float_set.insert(float_id),
                     "workspace {} tab {} has duplicate float {:?}",
                     self.id,
                     tab_idx,
                     float_id
                 );
                 assert!(
-                    !layout_set.contains(float_id),
+                    !layout_set.contains(&float_id),
                     "workspace {} tab {} pane {:?} must not appear in both the layout and the floating layer",
                     self.id,
                     tab_idx,
@@ -1508,7 +1512,7 @@ impl Workspace {
                 self.id, tab_idx
             );
             assert!(
-                !tab.float_focused || tab.top_float().is_some(),
+                !tab.float_focused || tab.focused_float().is_some(),
                 "workspace {} tab {} float focus is set with no visible float",
                 self.id,
                 tab_idx
@@ -1888,7 +1892,13 @@ mod tests {
     fn invariants_reject_a_pane_in_both_layers() {
         let mut ws = Workspace::test_new("float-both-layers");
         let tiled = ws.tabs[0].layout.focused();
-        ws.tabs[0].floats.push(tiled);
+        // The invariant under test only cares that the layer's layout tree
+        // contains a tiled pane, so build one directly rather than routing it
+        // through push_float, which would refuse to add a pane already tracked.
+        ws.tabs[0].float_layout = Some(TileLayout::from_saved(
+            crate::layout::Node::Pane(tiled),
+            tiled,
+        ));
 
         ws.assert_invariants_for_test();
     }
@@ -1900,7 +1910,17 @@ mod tests {
         let float = PaneId::alloc();
         ws.register_new_pane_with_number(float, ws.next_public_pane_number);
         ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
-        ws.tabs[0].floats.push(float);
+        // push_float refuses to add a pane id that's already in the layer, so
+        // build a tree with a genuine duplicate directly.
+        ws.tabs[0].float_layout = Some(TileLayout::from_saved(
+            crate::layout::Node::Split {
+                direction: Direction::Vertical,
+                ratio: 0.5,
+                first: Box::new(crate::layout::Node::Pane(float)),
+                second: Box::new(crate::layout::Node::Pane(float)),
+            },
+            float,
+        ));
 
         ws.assert_invariants_for_test();
     }
@@ -1934,7 +1954,7 @@ mod tests {
 
         assert!(!ws.close_pane(float));
 
-        assert!(ws.tabs[0].floats.is_empty());
+        assert!(ws.tabs[0].floats().is_empty());
         assert_eq!(ws.tabs[0].layout.pane_count(), 1);
         assert!(ws.tabs[0].panes.contains_key(&tiled));
         ws.assert_invariants_for_test();
@@ -1950,7 +1970,7 @@ mod tests {
 
         assert!(!ws.remove_pane(float));
 
-        assert!(ws.tabs[0].floats.is_empty());
+        assert!(ws.tabs[0].floats().is_empty());
         assert_eq!(ws.tabs[0].layout.pane_count(), 1);
         assert!(ws.tabs[0].panes.contains_key(&tiled));
         ws.assert_invariants_for_test();

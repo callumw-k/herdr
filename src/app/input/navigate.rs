@@ -288,13 +288,7 @@ impl App {
             }
             NavigateAction::NewTab => {
                 if let Some(ws_idx) = self.state.active {
-                    let float_open = self
-                        .state
-                        .workspaces
-                        .get(ws_idx)
-                        .and_then(|ws| ws.active_tab())
-                        .is_some_and(|tab| tab.top_float().is_some());
-                    if float_open {
+                    if self.state.float_layer_is_open() {
                         if let Err(err) = self.open_float_pane(ws_idx, None) {
                             tracing::warn!(%err, "failed to open floating pane");
                         }
@@ -376,12 +370,32 @@ impl App {
             }
             NavigateAction::SplitVertical => {
                 self.state.set_tab_arrangement(Arrangement::Vertical);
-                self.split_focused_pane_via_api(crate::api::schema::SplitDirection::Right);
+                if let Some(ws_idx) = self
+                    .state
+                    .active
+                    .filter(|_| self.state.float_layer_has_focus())
+                {
+                    if let Err(err) = self.open_float_pane(ws_idx, None) {
+                        tracing::warn!(%err, "failed to open floating pane");
+                    }
+                } else {
+                    self.split_focused_pane_via_api(crate::api::schema::SplitDirection::Right);
+                }
                 leave_navigate_mode(&mut self.state);
             }
             NavigateAction::SplitHorizontal => {
                 self.state.set_tab_arrangement(Arrangement::Horizontal);
-                self.split_focused_pane_via_api(crate::api::schema::SplitDirection::Down);
+                if let Some(ws_idx) = self
+                    .state
+                    .active
+                    .filter(|_| self.state.float_layer_has_focus())
+                {
+                    if let Err(err) = self.open_float_pane(ws_idx, None) {
+                        tracing::warn!(%err, "failed to open floating pane");
+                    }
+                } else {
+                    self.split_focused_pane_via_api(crate::api::schema::SplitDirection::Down);
+                }
                 leave_navigate_mode(&mut self.state);
             }
             NavigateAction::ArrangementNext => {
@@ -393,12 +407,13 @@ impl App {
                 leave_navigate_mode(&mut self.state);
             }
             NavigateAction::NewPane => {
-                // Same rule as NewTab: while the floating layer is up, creation
-                // acts on it rather than on the tiled panes underneath.
+                // Creation and arrangement follow focus: this differs from
+                // NewTab, which acts on the float layer whenever it is merely
+                // visible rather than focused.
                 if let Some(ws_idx) = self
                     .state
                     .active
-                    .filter(|_| self.state.float_layer_is_open())
+                    .filter(|_| self.state.float_layer_has_focus())
                 {
                     if let Err(err) = self.open_float_pane(ws_idx, None) {
                         tracing::warn!(%err, "failed to open floating pane");
@@ -434,7 +449,7 @@ impl App {
                     .active
                     .and_then(|ws_idx| self.state.workspaces.get(ws_idx))
                     .and_then(|ws| ws.active_tab())
-                    .map(|tab| tab.floats.is_empty())
+                    .map(|tab| tab.floats().is_empty())
                     .unwrap_or(true);
                 if floats_empty {
                     if let Some(ws_idx) = self.state.active {
@@ -595,9 +610,6 @@ impl App {
     }
 
     pub(crate) fn focus_pane_direction_via_api(&mut self, direction: NavDirection) {
-        if self.state.cycle_float_stack_for_direction(direction) {
-            return;
-        }
         if let Some((ws_idx, target)) = self.directional_pane_target_from_view(direction) {
             self.focus_pane_internal_via_api(ws_idx, target);
             return;
@@ -784,21 +796,15 @@ impl App {
     ) -> Option<(usize, crate::layout::PaneId)> {
         let ws_idx = self.state.active?;
         let tab = self.state.workspaces.get(ws_idx)?.active_tab()?;
-        let tiled: Vec<crate::layout::PaneInfo> = self
-            .state
-            .view
-            .pane_infos
-            .iter()
-            .filter(|info| !tab.is_float(info.id))
-            .cloned()
-            .collect();
+        let want_floats = tab.float_focused && !tab.floats_hidden;
+        let candidates = candidates_for_layer(&self.state.view.pane_infos, tab, want_floats);
         let focused = self
             .state
             .view
             .pane_infos
             .iter()
             .find(|pane| pane.is_focused)?;
-        let target = crate::layout::find_in_direction(focused, direction, &tiled)?;
+        let target = crate::layout::find_in_direction(focused, direction, &candidates)?;
         Some((ws_idx, target))
     }
 
@@ -808,21 +814,15 @@ impl App {
     ) -> Option<(usize, crate::layout::PaneId, crate::layout::PaneId)> {
         let ws_idx = self.state.active?;
         let tab = self.state.workspaces.get(ws_idx)?.active_tab()?;
-        let tiled: Vec<crate::layout::PaneInfo> = self
-            .state
-            .view
-            .pane_infos
-            .iter()
-            .filter(|info| !tab.is_float(info.id))
-            .cloned()
-            .collect();
+        let want_floats = tab.float_focused && !tab.floats_hidden;
+        let candidates = candidates_for_layer(&self.state.view.pane_infos, tab, want_floats);
         let focused = self
             .state
             .view
             .pane_infos
             .iter()
             .find(|pane| pane.is_focused)?;
-        let target = crate::layout::find_in_direction(focused, direction, &tiled)?;
+        let target = crate::layout::find_in_direction(focused, direction, &candidates)?;
         Some((ws_idx, focused.id, target))
     }
 
@@ -1244,6 +1244,21 @@ impl App {
         self.state.mode = Mode::Terminal;
         Ok((ws_idx, new_pane))
     }
+}
+
+/// Directional movement stays inside one layer. The layers overlap, so "the
+/// pane to the left" across them would be ambiguous. A free function, so it
+/// is testable without constructing an `App`.
+fn candidates_for_layer(
+    infos: &[crate::layout::PaneInfo],
+    tab: &crate::workspace::Tab,
+    want_floats: bool,
+) -> Vec<crate::layout::PaneInfo> {
+    infos
+        .iter()
+        .filter(|info| tab.is_float(info.id) == want_floats)
+        .cloned()
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1802,15 +1817,10 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::NewTab => {
-            if let Some(ws_idx) = state.active {
-                let float_open = state
-                    .workspaces
-                    .get(ws_idx)
-                    .and_then(|ws| ws.active_tab())
-                    .is_some_and(|tab| tab.top_float().is_some());
+            if state.active.is_some() {
                 // App-only: opening a float needs terminal runtimes and event channels
                 // this test harness doesn't have, same as NewFloat above.
-                if !float_open {
+                if !state.float_layer_is_open() {
                     if state.prompt_new_tab_name {
                         super::modal::open_new_tab_dialog(state);
                     } else {
@@ -1865,12 +1875,18 @@ pub(super) fn execute_navigate_action_in_context(
         }
         NavigateAction::SplitVertical => {
             state.set_tab_arrangement(Arrangement::Vertical);
-            state.split_pane(terminal_runtimes, Direction::Horizontal);
+            // Mirrors the App path: with the float layer focused, creation
+            // targets it, which this harness cannot do — see NewFloat below.
+            if !state.float_layer_has_focus() {
+                state.split_pane(terminal_runtimes, Direction::Horizontal);
+            }
             leave_navigate_mode(state);
         }
         NavigateAction::SplitHorizontal => {
             state.set_tab_arrangement(Arrangement::Horizontal);
-            state.split_pane(terminal_runtimes, Direction::Vertical);
+            if !state.float_layer_has_focus() {
+                state.split_pane(terminal_runtimes, Direction::Vertical);
+            }
             leave_navigate_mode(state);
         }
         NavigateAction::ArrangementNext => {
@@ -1882,10 +1898,9 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::NewPane => {
-            // Mirrors the App path: with the floating layer up, creation targets
-            // it, which this harness cannot do — see NewFloat below. Splitting a
-            // tiled pane here instead would diverge from production.
-            if !state.float_layer_is_open() {
+            // Mirrors the App path: with the float layer focused, creation
+            // targets it, which this harness cannot do — see NewFloat below.
+            if !state.float_layer_has_focus() {
                 state.new_pane_in_arrangement(terminal_runtimes);
             }
             leave_navigate_mode(state);
@@ -1909,7 +1924,7 @@ pub(super) fn execute_navigate_action_in_context(
                 .active
                 .and_then(|ws_idx| state.workspaces.get(ws_idx))
                 .and_then(|ws| ws.active_tab())
-                .map(|tab| tab.floats.is_empty())
+                .map(|tab| tab.floats().is_empty())
                 .unwrap_or(true);
             if !floats_empty {
                 if !state.focus_floats_in_active_tab() {
@@ -2120,6 +2135,130 @@ mod tests {
         app.state.active = (!app.state.workspaces.is_empty()).then_some(0);
         app.state.selected = 0;
         app
+    }
+
+    #[test]
+    fn candidates_are_the_focused_layers_panes_only() {
+        let mut workspace = Workspace::test_new("layers");
+        let tab = workspace.tabs.get_mut(0).expect("a tab");
+        let tiled = tab.layout.focused();
+        let floats: Vec<_> = (0..2).map(|_| crate::layout::PaneId::alloc()).collect();
+        for id in &floats {
+            tab.push_float(
+                *id,
+                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+            );
+        }
+
+        // A mixed view, as compute_view produces: tiled panes then floats.
+        let infos: Vec<crate::layout::PaneInfo> = std::iter::once(tiled)
+            .chain(floats.iter().copied())
+            .map(|id| crate::layout::PaneInfo {
+                id,
+                rect: ratatui::layout::Rect::new(0, 0, 10, 10),
+                inner_rect: ratatui::layout::Rect::new(0, 0, 10, 10),
+                scrollbar_rect: None,
+                borders: ratatui::widgets::Borders::NONE,
+                is_focused: false,
+            })
+            .collect();
+
+        let float_side = candidates_for_layer(&infos, tab, true);
+        assert_eq!(
+            float_side.iter().map(|i| i.id).collect::<Vec<_>>(),
+            floats,
+            "float layer sees only floats"
+        );
+
+        let tiled_side = candidates_for_layer(&infos, tab, false);
+        assert_eq!(
+            tiled_side.iter().map(|i| i.id).collect::<Vec<_>>(),
+            vec![tiled],
+            "tiled layer sees only tiled panes, which is the pre-existing behaviour"
+        );
+    }
+
+    /// Two tiled panes side by side, plus a float further right, with a
+    /// synthetic mixed view like `compute_view` produces (tiled then floats).
+    /// The right tiled pane is focused. A float positioned further right
+    /// would win `NavDirection::Right` if `want_floats` were derived from
+    /// `float_focused` alone, ignoring `floats_hidden`.
+    fn app_with_tiled_pair_and_stale_float_focus() -> (App, crate::layout::PaneId) {
+        let mut app = app_with_test_workspaces(&["layers"]);
+        let left_tiled = app.state.workspaces[0].tabs[0].root_pane;
+        let right_tiled = app.state.workspaces[0].test_split(Direction::Horizontal);
+        let float_id = crate::layout::PaneId::alloc();
+        let tab = app.state.workspaces[0].active_tab_mut().expect("a tab");
+        tab.push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        // A stale focus flag on a hidden layer must not win.
+        tab.floats_hidden = true;
+        assert!(tab.float_focused, "push_float focuses the new float");
+
+        let rect_at = |x: u16| ratatui::layout::Rect::new(x, 0, 10, 10);
+        app.state.view.pane_infos = vec![
+            crate::layout::PaneInfo {
+                id: left_tiled,
+                rect: rect_at(0),
+                inner_rect: rect_at(0),
+                scrollbar_rect: None,
+                borders: ratatui::widgets::Borders::NONE,
+                is_focused: false,
+            },
+            crate::layout::PaneInfo {
+                id: right_tiled,
+                rect: rect_at(10),
+                inner_rect: rect_at(10),
+                scrollbar_rect: None,
+                borders: ratatui::widgets::Borders::NONE,
+                is_focused: true,
+            },
+            crate::layout::PaneInfo {
+                id: float_id,
+                rect: rect_at(20),
+                inner_rect: rect_at(20),
+                scrollbar_rect: None,
+                borders: ratatui::widgets::Borders::NONE,
+                is_focused: false,
+            },
+        ];
+        (app, float_id)
+    }
+
+    #[test]
+    fn a_hidden_float_layer_does_not_capture_directional_focus() {
+        let (app, float_id) = app_with_tiled_pair_and_stale_float_focus();
+
+        let target = app.directional_pane_target_from_view(NavDirection::Right);
+
+        assert_ne!(
+            target.map(|(_, id)| id),
+            Some(float_id),
+            "hidden float layer must not be a focus candidate"
+        );
+        assert_eq!(
+            target, None,
+            "no tiled pane sits to the right of the focused one"
+        );
+    }
+
+    #[test]
+    fn a_hidden_float_layer_does_not_capture_directional_swap() {
+        let (app, float_id) = app_with_tiled_pair_and_stale_float_focus();
+
+        let target = app.directional_pane_swap_from_view(NavDirection::Right);
+
+        assert_ne!(
+            target.map(|(_, _, id)| id),
+            Some(float_id),
+            "hidden float layer must not be a swap candidate"
+        );
+        assert_eq!(
+            target, None,
+            "no tiled pane sits to the right of the focused one"
+        );
     }
 
     #[test]
@@ -3812,7 +3951,7 @@ navigate_pane_down = "ctrl+j"
         assert!(state.workspaces[0].tabs[0].floats_hidden);
         assert!(!state.workspaces[0].tabs[0].float_focused);
         assert_eq!(
-            state.workspaces[0].tabs[0].floats.len(),
+            state.workspaces[0].tabs[0].floats().len(),
             1,
             "hiding must not close the float"
         );

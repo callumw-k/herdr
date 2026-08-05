@@ -460,26 +460,16 @@ fn restore_tab(
     let (node, mut id_map) = restore_node_remapped(&snap.layout);
     let pane_ids = collect_pane_ids(&node);
 
-    // Floats are not in the layout tree, so they need their own remapped ids or
-    // the restore loop below would silently drop them.
-    let mut float_ids = Vec::with_capacity(snap.floats.len());
-    let mut seen_floats = HashSet::new();
-    for old_float in &snap.floats {
-        if !snap.panes.contains_key(old_float) || !seen_floats.insert(*old_float) {
-            continue;
-        }
-        if id_map.contains_key(old_float) {
-            warn!(
-                tab = ?snap.custom_name,
-                pane_id = old_float,
-                "float id also appears in the layout tree, dropping the float"
-            );
-            continue;
-        }
-        let new_id = PaneId::alloc();
-        id_map.insert(*old_float, new_id);
-        float_ids.push(new_id);
-    }
+    // The float layer is a second tree, remapped into the same id_map as the
+    // tiled tree so a pane id never collides between the two layers.
+    let float_node = snap
+        .float_layout
+        .as_ref()
+        .map(|layout| remap_inner(layout, &mut id_map));
+    let float_ids = float_node
+        .as_ref()
+        .map(collect_pane_ids)
+        .unwrap_or_default();
 
     let reverse_id_map: HashMap<PaneId, u32> = id_map
         .iter()
@@ -720,10 +710,18 @@ fn restore_tab(
     }
 
     let surviving: HashSet<PaneId> = panes.keys().copied().collect();
-    let restored_floats: Vec<PaneId> = float_ids
-        .into_iter()
-        .filter(|id| surviving.contains(id))
-        .collect();
+    // Prune the float layer through the same surviving-pane walk as the tiled
+    // layout. Focus prefers the saved `float_focused_pane`; a Stack's `active`
+    // index says which member is expanded, not which pane was focused, so it
+    // is only a fallback (and the only fallback that exists for older
+    // snapshots saved before `float_focused_pane`).
+    let restored_float_layout = float_node
+        .and_then(|root| prune_restored_node(root, &surviving))
+        .and_then(|root| {
+            let focus =
+                resolve_restored_float_focus(snap.float_focused_pane, &id_map, &surviving, &root)?;
+            Some(TileLayout::from_saved(root, focus))
+        });
     let Some(node) = prune_restored_node(node, &surviving) else {
         warn!(
             tab = ?snap.custom_name,
@@ -752,11 +750,13 @@ fn restore_tab(
                 #[cfg(test)]
                 runtimes: HashMap::new(),
                 zoomed: snap.zoomed,
-                floats: restored_floats,
+                float_layout: restored_float_layout,
+                float_arrangement: snap.float_arrangement.into(),
                 floats_hidden: snap.floats_hidden,
                 float_focused: false,
                 arrangement: snap.arrangement.into(),
                 needs_reflow: false,
+                float_needs_reflow: false,
                 events: runtime_context.events.clone(),
                 render_notify: runtime_context.render_notify.clone(),
                 render_dirty: runtime_context.render_dirty.clone(),
@@ -905,6 +905,27 @@ pub(super) fn resolve_restored_pane(
         .and_then(|old_id| id_map.get(&old_id).copied())
         .filter(|pane_id| surviving.contains(pane_id))
         .or_else(|| pane_ids.first().copied())
+}
+
+/// Like `resolve_restored_pane`, but with a float-specific middle fallback: a
+/// `Stack`'s `active` index says which member was expanded, which is the best
+/// guess at focus for snapshots saved before `float_focused_pane` existed.
+/// Arrangements without a `Stack` node (Grid, Vertical, Horizontal) skip
+/// straight to the first-surviving-pane fallback.
+pub(super) fn resolve_restored_float_focus(
+    saved_old_id: Option<u32>,
+    id_map: &HashMap<u32, PaneId>,
+    surviving: &HashSet<PaneId>,
+    root: &Node,
+) -> Option<PaneId> {
+    saved_old_id
+        .and_then(|old_id| id_map.get(&old_id).copied())
+        .filter(|pane_id| surviving.contains(pane_id))
+        .or_else(|| match root {
+            Node::Stack { panes, active } => panes.get(*active).copied(),
+            _ => None,
+        })
+        .or_else(|| collect_pane_ids(root).first().copied())
 }
 
 /// Restore a layout tree, remapping every pane ID to a fresh globally unique one.
@@ -1138,6 +1159,49 @@ mod tests {
     }
 
     #[test]
+    fn resolve_restored_float_focus_falls_back_through_stack_active_then_first_survivor() {
+        // `missing` stands for a saved focus pane that is not in the tree at
+        // all (e.g. it failed to spawn), so tier 1 always misses below.
+        let missing = PaneId::from_raw(30);
+        let b = PaneId::from_raw(32);
+        let c = PaneId::from_raw(33);
+        let id_map = HashMap::from([(0_u32, missing)]);
+
+        // The saved focus doesn't survive; falls back to the stack's active
+        // member (b).
+        let surviving = HashSet::from([b, c]);
+        let pruned = prune_restored_node(
+            Node::Stack {
+                panes: vec![b, c],
+                active: 0,
+            },
+            &surviving,
+        )
+        .expect("stack survives");
+        assert_eq!(
+            resolve_restored_float_focus(Some(0), &id_map, &surviving, &pruned),
+            Some(b)
+        );
+
+        // The active member is also pruned away, collapsing the stack to a
+        // single pane; falls back to the first remaining pane, without
+        // panicking.
+        let surviving = HashSet::from([c]);
+        let pruned = prune_restored_node(
+            Node::Stack {
+                panes: vec![b, c],
+                active: 0,
+            },
+            &surviving,
+        )
+        .expect("one pane survives");
+        assert_eq!(
+            resolve_restored_float_focus(Some(0), &id_map, &surviving, &pruned),
+            Some(c)
+        );
+    }
+
+    #[test]
     fn restored_worktree_space_membership_drops_missing_checkout() {
         let missing =
             std::env::temp_dir().join(format!("herdr-missing-worktree-{}", std::process::id()));
@@ -1346,7 +1410,9 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
-                    floats: Vec::new(),
+                    float_layout: None,
+                    float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+                    float_focused_pane: None,
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: super::super::snapshot::ArrangementSnapshot::default(),
@@ -1443,7 +1509,9 @@ mod tests {
                     zoomed: false,
                     focused: Some(10),
                     root_pane: Some(10),
-                    floats: Vec::new(),
+                    float_layout: None,
+                    float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+                    float_focused_pane: None,
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: super::super::snapshot::ArrangementSnapshot::default(),
@@ -1529,7 +1597,9 @@ mod tests {
                         zoomed: false,
                         focused: Some(10),
                         root_pane: Some(10),
-                        floats: Vec::new(),
+                        float_layout: None,
+                        float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+                        float_focused_pane: None,
                         floats_hidden: false,
                         float_focused: false,
                         arrangement: super::super::snapshot::ArrangementSnapshot::default(),
@@ -1541,7 +1611,9 @@ mod tests {
                         zoomed: false,
                         focused: Some(11),
                         root_pane: Some(11),
-                        floats: Vec::new(),
+                        float_layout: None,
+                        float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+                        float_focused_pane: None,
                         floats_hidden: false,
                         float_focused: false,
                         arrangement: super::super::snapshot::ArrangementSnapshot::default(),
@@ -1553,7 +1625,9 @@ mod tests {
                         zoomed: false,
                         focused: Some(12),
                         root_pane: Some(12),
-                        floats: Vec::new(),
+                        float_layout: None,
+                        float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+                        float_focused_pane: None,
                         floats_hidden: false,
                         float_focused: false,
                         arrangement: super::super::snapshot::ArrangementSnapshot::default(),
@@ -1565,7 +1639,9 @@ mod tests {
                         zoomed: false,
                         focused: Some(13),
                         root_pane: Some(13),
-                        floats: Vec::new(),
+                        float_layout: None,
+                        float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+                        float_focused_pane: None,
                         floats_hidden: false,
                         float_focused: false,
                         arrangement: super::super::snapshot::ArrangementSnapshot::default(),
@@ -1632,7 +1708,9 @@ mod tests {
                 zoomed: false,
                 focused: Some(10),
                 root_pane: Some(10),
-                floats: Vec::new(),
+                float_layout: None,
+                float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+                float_focused_pane: None,
                 floats_hidden: false,
                 float_focused: false,
                 arrangement: super::super::snapshot::ArrangementSnapshot::default(),
@@ -1685,7 +1763,9 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
-                    floats: Vec::new(),
+                    float_layout: None,
+                    float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+                    float_focused_pane: None,
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: super::super::snapshot::ArrangementSnapshot::default(),
@@ -1883,7 +1963,9 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
-                    floats: Vec::new(),
+                    float_layout: None,
+                    float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+                    float_focused_pane: None,
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: super::super::snapshot::ArrangementSnapshot::default(),
@@ -1952,7 +2034,9 @@ mod tests {
             zoomed: false,
             focused: Some(1),
             root_pane: Some(1),
-            floats: vec![2],
+            float_layout: Some(LayoutSnapshot::Pane(2)),
+            float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+            float_focused_pane: None,
             floats_hidden: true,
             float_focused: true,
             arrangement: super::super::snapshot::ArrangementSnapshot::default(),
@@ -1960,14 +2044,148 @@ mod tests {
 
         let tab = restore_tab_for_test(&snap).expect("tab restores");
 
-        assert_eq!(tab.floats.len(), 1, "the float survives restore");
+        assert_eq!(tab.floats().len(), 1, "the float survives restore");
         assert_eq!(
             tab.layout.pane_count(),
             1,
             "the float stays out of the tree"
         );
-        assert!(tab.panes.contains_key(&tab.floats[0]));
+        assert!(tab.panes.contains_key(&tab.floats()[0]));
         assert!(tab.floats_hidden);
         assert!(!tab.float_focused, "float focus is not restored");
+    }
+
+    #[tokio::test]
+    async fn restore_reads_float_arrangement_from_the_snapshot_instead_of_hardcoding_stacked() {
+        let snap = TabSnapshot {
+            custom_name: None,
+            layout: LayoutSnapshot::Pane(1),
+            panes: HashMap::from([
+                (1, pane_snapshot_for_test("/")),
+                (2, pane_snapshot_for_test("/")),
+            ]),
+            zoomed: false,
+            focused: Some(1),
+            root_pane: Some(1),
+            float_layout: Some(LayoutSnapshot::Pane(2)),
+            float_arrangement: super::super::snapshot::ArrangementSnapshot::Vertical,
+            float_focused_pane: None,
+            floats_hidden: false,
+            float_focused: false,
+            arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+        };
+
+        let tab = restore_tab_for_test(&snap).expect("tab restores");
+
+        assert_eq!(tab.float_arrangement, crate::layout::Arrangement::Vertical);
+    }
+
+    #[tokio::test]
+    async fn restore_of_a_stacked_float_layout_keeps_the_active_member_focused() {
+        let snap = TabSnapshot {
+            custom_name: None,
+            layout: LayoutSnapshot::Pane(1),
+            panes: HashMap::from([
+                (1, pane_snapshot_for_test("/")),
+                (10, pane_snapshot_for_test("/")),
+                (11, pane_snapshot_for_test("/")),
+                (12, pane_snapshot_for_test("/")),
+            ]),
+            zoomed: false,
+            focused: Some(1),
+            root_pane: Some(1),
+            float_layout: Some(LayoutSnapshot::Stack {
+                panes: vec![10, 11, 12],
+                active: 2,
+            }),
+            float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+            float_focused_pane: None,
+            floats_hidden: false,
+            float_focused: false,
+            arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+        };
+
+        let tab = restore_tab_for_test(&snap).expect("tab restores");
+        let float_layout = tab.float_layout.as_ref().expect("float layer restores");
+
+        let restored_active = match float_layout.root() {
+            Node::Stack { panes, active } => {
+                assert_eq!(
+                    *active, 2,
+                    "the persisted active index must survive restore"
+                );
+                panes[2]
+            }
+            other => panic!("expected a stack, got {other:?}"),
+        };
+        assert_eq!(
+            float_layout.focused(),
+            restored_active,
+            "the active member must also hold focus"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_of_a_non_stacked_float_layout_round_trips_focus() {
+        let snap = TabSnapshot {
+            custom_name: None,
+            layout: LayoutSnapshot::Pane(1),
+            panes: HashMap::from([
+                (1, pane_snapshot_for_test("/")),
+                (20, pane_snapshot_for_test("/")),
+                (21, pane_snapshot_for_test("/")),
+            ]),
+            zoomed: false,
+            focused: Some(1),
+            root_pane: Some(1),
+            float_layout: Some(LayoutSnapshot::Split {
+                direction: DirectionSnapshot::Vertical,
+                ratio: 0.5,
+                first: Box::new(LayoutSnapshot::Pane(20)),
+                second: Box::new(LayoutSnapshot::Pane(21)),
+            }),
+            float_arrangement: super::super::snapshot::ArrangementSnapshot::Vertical,
+            float_focused_pane: Some(21),
+            floats_hidden: false,
+            float_focused: false,
+            arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+        };
+
+        let tab = restore_tab_for_test(&snap).expect("tab restores");
+        let float_layout = tab.float_layout.as_ref().expect("float layer restores");
+        let restored_second = float_layout
+            .pane_ids()
+            .into_iter()
+            .nth(1)
+            .expect("both float panes restore");
+
+        assert_eq!(
+            float_layout.focused(),
+            restored_second,
+            "float_focused_pane must survive restore for arrangements with no Stack node"
+        );
+    }
+
+    #[test]
+    fn collect_layout_snapshot_pane_ids_ignores_a_legacy_float_pane() {
+        // The removed `floats` field is an unknown key now; pane 2 only ever
+        // reached the tree through that field, so it must not turn up here.
+        let json = r#"{
+            "layout": {"Pane": 1},
+            "panes": {
+                "1": {"cwd": "/tmp"},
+                "2": {"cwd": "/tmp"}
+            },
+            "zoomed": false,
+            "floats": [2],
+            "floats_hidden": false,
+            "float_focused": true
+        }"#;
+        let snapshot: TabSnapshot = serde_json::from_str(json).expect("legacy snapshot parses");
+
+        let mut ids = Vec::new();
+        collect_layout_snapshot_pane_ids(&snapshot.layout, &mut ids);
+
+        assert_eq!(ids, vec![1], "pane 2 was a float and must not become tiled");
     }
 }

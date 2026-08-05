@@ -2056,7 +2056,7 @@ mod tests {
 
         assert!(app.state.selection.is_none());
         let ws = &app.state.workspaces[0];
-        assert_eq!(ws.tabs[0].top_float(), Some(hidden_float));
+        assert_eq!(ws.tabs[0].focused_float(), Some(hidden_float));
         assert_eq!(ws.focused_pane_id(), Some(hidden_float));
     }
 
@@ -2162,7 +2162,7 @@ mod tests {
         // selection in it; nothing at all should have happened.
         assert!(app.state.selection.is_none());
         let ws = &app.state.workspaces[0];
-        assert_eq!(ws.tabs[0].top_float(), Some(top_float));
+        assert_eq!(ws.tabs[0].focused_float(), Some(top_float));
         assert_eq!(ws.focused_pane_id(), focused_before);
     }
 }

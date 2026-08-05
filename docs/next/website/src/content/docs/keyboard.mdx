@@ -75,19 +75,21 @@ Each tab lays its panes out under one arrangement: even columns, even rows, a gr
 
 Rebuilding a tab discards manual sizing. A border you drag, or resize with `prefix+r`, holds until the next pane is created or closed, and then the arrangement's even sizing takes over.
 
+The floating layer keeps its own arrangement, separate from the tab's tiled layout. `prefix+]`, `prefix+[`, `prefix+v`, `prefix+minus`, and `prefix+enter` all act on whichever layer currently holds focus, the floating layer when a float is focused, the tiled panes otherwise. See [Floating panes](#floating-panes).
+
 ## Copy mode
 
 Press `prefix+u` to enter copy mode for the focused pane. Use `h/j/k/l`, tmux-style `w/b/e`, `{`/`}`, `PageUp`/`PageDown`, `ctrl+b`/`ctrl+f`, and `ctrl+u`/`ctrl+d` to move. Press `/` or `?` for forward or backward literal search, then `n` or `N` to repeat in the same or opposite direction. Search is case-insensitive unless the query contains an uppercase letter. Use `v` or Space to start a selection, `y` or Enter to copy it, and `q` or Esc to leave without copying. Esc clears an active selection or search before exiting. Copy mode does not pause the pane process: output remains live, follows at the bottom, and stays pinned when you navigate into history. The configured prefix keeps its normal meaning in copy mode; with the default prefix, `ctrl+b` enters prefix mode instead of paging up, so use a different prefix if you want `ctrl+b` for copy-mode page-up. Mouse drag-select copies without entering copy mode at all.
 
 ## Floating panes
 
-A floating pane sits above the tab's normal split layout in a centred box, instead of taking a slot in the grid. Press `prefix+f` to open one. Floats stack per tab, and only the topmost one is drawn, so `prefix+ctrl+f` cycles the stack to bring the next float to the top. `prefix+shift+f` hides or shows the whole floating layer for the tab without closing anything underneath it.
+The floating layer sits above the tab's normal split layout in a centred region, instead of taking slots in the grid. Press `prefix+f` to open a float. A tab's floats share that one region and are laid out inside it under the floating layer's own arrangement, so more than one can be visible at once. The layer starts stacked, which fills the region with the focused float and collapses the others to single-row title bars, and `prefix+]` and `prefix+[` cycle it through the same four arrangements the tiled panes use while the layer holds focus. `prefix+ctrl+f` moves focus to the next float in the layer's order. `prefix+shift+f` hides or shows the whole floating layer for the tab without closing anything underneath it.
 
 `toggle_float` is unbound by default and combines opening and hiding into one key: it opens a float if none exists, focuses the floating layer if it's hidden, or hides it if it's already focused and visible. Nothing is ever closed by this action.
 
 While a floating pane is visible, `prefix+c` opens another floating pane instead of a new tab. Hide the floating layer first if you want `prefix+c` to create a tab as usual.
 
-`prefix+enter` follows the same rule: with the floating layer up it adds another float rather than a tiled pane. When the floating layer holds focus, `focus_pane_up` and `focus_pane_down` move through the float stack instead of the tiled panes, up towards the preview bars and down back to the front.
+`prefix+enter` follows a stricter rule than `prefix+c`: it needs the floating layer *focused*, not merely visible, before it adds another float. If a tiled pane is focused while a float sits visible behind it, `prefix+enter` adds a tiled pane instead. Cycling the arrangement (`prefix+]` / `prefix+[`) and the split keys (`prefix+v` / `prefix+minus`) follow the same focus rule. When the floating layer holds focus, `focus_pane_up` and `focus_pane_down` move between floats rather than tiled panes, following the layer's own geometry. Directional movement never crosses between the layers; use the float toggles for that.
 
 Floats persist across a server restart along with their scrollback, and Herdr treats them as ordinary panes for agent detection. This is different from the session-modal popup opened by a `type = "popup"` custom command (see [Custom command keybindings](/docs/configuration/#custom-command-keybindings)): that popup takes over all terminal input until its command exits, while a floating pane is a regular interactive pane you can leave running.
 

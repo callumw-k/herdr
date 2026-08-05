@@ -995,6 +995,50 @@ fn a_stack_layout_node_round_trips_through_json() {
 }
 
 #[test]
+fn layout_export_describes_the_float_layer() {
+    let description = LayoutDescription {
+        workspace_id: "w".into(),
+        tab_id: "t".into(),
+        zoomed: false,
+        focused_pane_id: "1".into(),
+        arrangement: ArrangementSchema::Grid,
+        float_arrangement: ArrangementSchema::Stacked,
+        float_root: Some(LayoutNode::Stack {
+            panes: vec![LayoutPane {
+                pane_id: Some("2".into()),
+                ..Default::default()
+            }],
+            active: 0,
+        }),
+        root: LayoutNode::Pane {
+            pane: LayoutPane {
+                pane_id: Some("1".into()),
+                ..Default::default()
+            },
+        },
+    };
+    let json = serde_json::to_string(&description).expect("serialises");
+    assert!(json.contains(r#""float_arrangement":"stacked""#));
+    let back: LayoutDescription = serde_json::from_str(&json).expect("deserialises");
+    assert_eq!(back, description);
+}
+
+#[test]
+fn a_description_without_float_fields_still_deserialises() {
+    let json = r#"{
+        "workspace_id": "w",
+        "tab_id": "t",
+        "zoomed": false,
+        "focused_pane_id": "1",
+        "arrangement": "grid",
+        "root": {"type": "pane", "pane_id": "1"}
+    }"#;
+    let description: LayoutDescription = serde_json::from_str(json).expect("parses");
+    assert!(description.float_root.is_none());
+    assert_eq!(description.float_arrangement, ArrangementSchema::Stacked);
+}
+
+#[test]
 fn arrangement_serialises_as_snake_case() {
     let json = serde_json::to_string(&ArrangementSchema::Stacked).expect("serialises");
     assert_eq!(json, r#""stacked""#);
@@ -1042,6 +1086,7 @@ fn layout_export_apply_round_trip() {
             tab_label: Some("dev".into()),
             focus: true,
             root: root.clone(),
+            float_root: None,
         }),
     };
     let json = serde_json::to_string(&apply).unwrap();
@@ -1058,6 +1103,8 @@ fn layout_export_apply_round_trip() {
                 zoomed: false,
                 focused_pane_id: "w1-1".into(),
                 arrangement: ArrangementSchema::Grid,
+                float_arrangement: ArrangementSchema::Stacked,
+                float_root: None,
                 root,
             },
         },
@@ -1075,6 +1122,8 @@ fn layout_export_apply_round_trip() {
                 zoomed: false,
                 focused_pane_id: "w1-1".into(),
                 arrangement: ArrangementSchema::Grid,
+                float_arrangement: ArrangementSchema::Stacked,
+                float_root: None,
                 root: LayoutNode::Pane {
                     pane: LayoutPane {
                         pane_id: Some("w1-1".into()),

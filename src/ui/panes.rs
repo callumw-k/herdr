@@ -301,33 +301,42 @@ pub(super) fn compute_pane_infos(
         pane_infos
     };
 
-    // The float is appended last so hit-tests that iterate in reverse find it first.
-    if let Some(float_id) = ws.top_float() {
+    // Floats are appended last so hit-tests that iterate in reverse find them
+    // before any tiled pane underneath. Every member gets a `PaneInfo` — even
+    // a collapsed or folded one — the same way a tiled `Node::Stack` does, so
+    // the render pass can reuse that stack's bar/fold handling unchanged.
+    //
+    // A hidden layer emits nothing at all. Drawing, PTY resizing, mouse
+    // hit-testing, hyperlink scanning and graphics all key off this list, so
+    // this one gate is what `floats_hidden` means everywhere downstream.
+    if let Some(layout) = ws.float_layout.as_ref().filter(|_| !ws.floats_hidden) {
         if let Some(geometry) =
             resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
         {
-            if resize_panes {
-                if let Some(rt) =
-                    app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, float_id)
-                {
-                    rt.resize(
-                        geometry.inner.height,
-                        geometry.inner.width,
-                        cell_size.width_px,
-                        cell_size.height_px,
-                    );
+            let focused_float = ws.focused_float();
+            for mut info in layout.panes(geometry.outer) {
+                info.borders = Borders::ALL;
+                // Floats get no scrollbar lane, matching the old popup pane;
+                // `layout.panes` already leaves `scrollbar_rect: None`.
+                info.inner_rect = pane_inner_rect(info.rect, info.borders);
+                info.is_focused = ws.float_focused && Some(info.id) == focused_float;
+                // Only the expanded member has content to display; resizing a
+                // collapsed or folded float's PTY to its near-zero box would
+                // reflow it for nothing.
+                if resize_panes && info.rect.height > 1 {
+                    if let Some(rt) =
+                        app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
+                    {
+                        rt.resize(
+                            info.inner_rect.height,
+                            info.inner_rect.width,
+                            cell_size.width_px,
+                            cell_size.height_px,
+                        );
+                    }
                 }
+                pane_infos.push(info);
             }
-            pane_infos.push(PaneInfo {
-                id: float_id,
-                rect: geometry.outer,
-                inner_rect: geometry.inner,
-                // Floats get no scrollbar lane, matching the popup pane. Scrollback
-                // still works; only the lane is absent.
-                scrollbar_rect: None,
-                borders: Borders::ALL,
-                is_focused: ws.float_focused,
-            });
         }
     }
 
@@ -412,54 +421,53 @@ pub(super) fn render_panes(
         }
     }
 
-    if let Some(float_id) = ws.top_float() {
-        if let Some(info) = pane_infos.iter().find(|info| info.id == float_id) {
-            if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, float_id)
-            {
-                let float_terminal = ws
-                    .terminal_id(float_id)
-                    .and_then(|terminal_id| app.terminals.get(terminal_id));
-                let title = float_terminal
-                    .and_then(|terminal| {
-                        terminal.border_label(app.show_agent_labels_on_pane_borders)
-                    })
-                    .or_else(|| {
-                        float_terminal.and_then(|terminal| terminal.foreground_process_name.clone())
-                    })
-                    .or_else(|| {
-                        float_terminal.and_then(|terminal| terminal.terminal_title_stripped())
-                    })
-                    .or_else(|| {
-                        float_terminal.and_then(|terminal| {
-                            terminal.cwd.file_name()?.to_str().map(str::to_string)
-                        })
-                    })
-                    .unwrap_or_else(|| "float".to_string());
-                let block = Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(if info.is_focused {
-                        app.palette.accent
-                    } else {
-                        app.palette.overlay0
-                    }))
-                    .title(
-                        pane_border_title(&title, info.rect.width, info.is_focused)
-                            .unwrap_or_default(),
-                    )
-                    .style(Style::default().bg(app.palette.panel_bg));
-                frame.render_widget(Clear, info.rect);
-                frame.render_widget(block, info.rect);
-                let show_cursor = info.is_focused
-                    && terminal_active
-                    && !pane_is_scrolled_back(rt)
-                    && app.pane_exposes_host_cursor(ws_idx, info.id);
-                rt.render(frame, info.inner_rect, show_cursor);
-            }
+    for info in pane_infos
+        .iter()
+        .filter(|info| ws.is_float(info.id) && info.rect.height > 1)
+    {
+        if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
+            let float_terminal = ws
+                .terminal_id(info.id)
+                .and_then(|terminal_id| app.terminals.get(terminal_id));
+            let title = float_terminal
+                .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders))
+                .or_else(|| {
+                    float_terminal.and_then(|terminal| terminal.foreground_process_name.clone())
+                })
+                .or_else(|| float_terminal.and_then(|terminal| terminal.terminal_title_stripped()))
+                .or_else(|| {
+                    float_terminal
+                        .and_then(|terminal| terminal.cwd.file_name()?.to_str().map(str::to_string))
+                })
+                .unwrap_or_else(|| "float".to_string());
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(if info.is_focused {
+                    app.palette.accent
+                } else {
+                    app.palette.overlay0
+                }))
+                .title(
+                    pane_border_title(&title, info.rect.width, info.is_focused).unwrap_or_default(),
+                )
+                .style(Style::default().bg(app.palette.panel_bg));
+            frame.render_widget(Clear, info.rect);
+            frame.render_widget(block, info.rect);
+            let show_cursor = info.is_focused
+                && terminal_active
+                && !pane_is_scrolled_back(rt)
+                && app.pane_exposes_host_cursor(ws_idx, info.id);
+            rt.render(frame, info.inner_rect, show_cursor);
         }
     }
 
     let tiled_bars = tiled_stack_bars(ws, pane_infos);
-    for bar in stack_bars.iter().chain(tiled_bars.iter()) {
+    let float_bars = stack_bars_for(pane_infos.iter().filter(|info| ws.is_float(info.id)));
+    for bar in stack_bars
+        .iter()
+        .chain(tiled_bars.iter())
+        .chain(float_bars.iter())
+    {
         render_stack_bar(app, ws, frame, bar);
     }
 
@@ -483,15 +491,14 @@ struct ZeroRun {
     predecessor: Option<FoldAnchor>,
 }
 
-/// Bars for tiled `Node::Stack` members whose rect signals a collapsed
-/// (height 1) or folded (height 0) row. Unlike floats, every stack member
-/// keeps a `PaneInfo` entry — this derives bars from that instead of tracking
-/// them separately, so navigation and hit-testing keep seeing the full stack.
-/// A run of consecutive height-0 entries sharing a rect position is one
-/// fold; a run interrupted by the active member (a different rect) is a
-/// second, separate fold, since they are genuinely different screen
-/// locations.
-fn tiled_stack_bars(ws: &crate::workspace::Workspace, pane_infos: &[PaneInfo]) -> Vec<StackBar> {
+/// Derives collapsed (height 1) and folded (height 0) rows into `StackBar`s
+/// from a set of already-laid-out stack members. `stack_rects` lays out a
+/// tiled `Node::Stack` and the floating layer's stacked arrangement
+/// identically, so this fold-detection is shared between them: a run of
+/// consecutive height-0 entries sharing a rect position is one fold; a run
+/// interrupted by the active member (a different rect) is a second, separate
+/// fold, since they are genuinely different screen locations.
+fn stack_bars_for<'a>(infos: impl Iterator<Item = &'a PaneInfo>) -> Vec<StackBar> {
     let mut bars: Vec<StackBar> = Vec::new();
     // The most recent non-folded (height >= 1) entry seen, and its x — a
     // fold's predecessor candidate, valid only while still inside the same
@@ -499,11 +506,7 @@ fn tiled_stack_bars(ws: &crate::workspace::Workspace, pane_infos: &[PaneInfo]) -
     let mut last_real: Option<(u16, FoldAnchor)> = None;
     let mut zero_run: Option<ZeroRun> = None;
 
-    for info in pane_infos {
-        if ws.is_float(info.id) {
-            continue;
-        }
-
+    for info in infos {
         if info.rect.height == 0 {
             let continues = zero_run
                 .as_ref()
@@ -546,6 +549,12 @@ fn tiled_stack_bars(ws: &crate::workspace::Workspace, pane_infos: &[PaneInfo]) -
         close_fold_run(&mut bars, run, None);
     }
     bars
+}
+
+/// Bars for tiled `Node::Stack` members whose rect signals a collapsed or
+/// folded row.
+fn tiled_stack_bars(ws: &crate::workspace::Workspace, pane_infos: &[PaneInfo]) -> Vec<StackBar> {
+    stack_bars_for(pane_infos.iter().filter(|info| !ws.is_float(info.id)))
 }
 
 /// `stack_rects` always consumes the whole stack area once any folding
@@ -693,11 +702,13 @@ struct LineCell {
     right: bool,
 }
 
-/// The bounding box of the float stack — the visible popup plus every
-/// stack-preview bar above it, summary rows included. Tiled-pane border
+/// The bounding box of the floating layer — every float's own rect, expanded
+/// or collapsed, plus any externally supplied `stack_bars`. Tiled-pane border
 /// decorations must avoid drawing into this area so they don't punch through
-/// the stack, which is drawn earlier in `render_panes`. Summary rows have no
-/// `PaneInfo`, so `stack_bars` is the only source that covers them.
+/// the floats, which are drawn earlier in `render_panes`. Folded members have
+/// a zero-height `PaneInfo` of their own, so a `+N more` summary row's rect
+/// (borrowed from a neighbour, see `close_fold_run`) always lands inside the
+/// union already.
 fn float_rect(
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
@@ -2372,7 +2383,7 @@ mod tests {
             .split_focused(ratatui::layout::Direction::Horizontal);
         tab.arrangement = crate::layout::Arrangement::Stacked;
         tab.needs_reflow = true;
-        tab.reflow(area);
+        tab.reflow(area, None);
 
         let infos = tab.layout.panes(area);
         let bars: Vec<_> = infos.iter().filter(|p| p.rect.height == 1).collect();
@@ -2393,7 +2404,7 @@ mod tests {
             .split_focused(ratatui::layout::Direction::Horizontal);
         tab.arrangement = crate::layout::Arrangement::Stacked;
         tab.needs_reflow = true;
-        tab.reflow(area);
+        tab.reflow(area, None);
         tab.zoomed = true;
 
         // Zoom already renders only the focused pane, and the focused pane is
@@ -2490,6 +2501,388 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_float_gets_a_rect_inside_the_region() {
+        let region = Rect::new(10, 5, 40, 10);
+        let mut workspace = Workspace::test_new("floats");
+        let tab = workspace.tabs.get_mut(0).expect("a tab");
+        let ids: Vec<_> = (0..3).map(|_| PaneId::alloc()).collect();
+        for id in &ids {
+            tab.push_float(
+                *id,
+                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+            );
+        }
+        tab.float_arrangement = crate::layout::Arrangement::Stacked;
+        tab.needs_reflow = true;
+        tab.reflow(Rect::new(0, 0, 80, 20), Some(region));
+
+        let infos = tab
+            .float_layout
+            .as_ref()
+            .expect("a float layout")
+            .panes(region);
+        assert_eq!(
+            infos.len(),
+            3,
+            "every float is laid out, not just the top one"
+        );
+        for info in &infos {
+            assert!(info.rect.y >= region.y);
+            assert!(info.rect.y + info.rect.height <= region.y + region.height);
+        }
+        let expanded: Vec<_> = infos.iter().filter(|i| i.rect.height > 1).collect();
+        assert_eq!(
+            expanded.len(),
+            1,
+            "stacked shows exactly one expanded member"
+        );
+    }
+
+    #[test]
+    fn compute_pane_infos_appends_every_float_after_the_tiled_panes_with_its_own_rect() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let area = Rect::new(0, 0, 60, 20);
+        app.view.terminal_area = area;
+
+        let mut ws = Workspace::test_new("test");
+        let root_pane = ws.tabs[0].root_pane;
+        let float_ids: Vec<_> = (0..3).map(|_| PaneId::alloc()).collect();
+        for id in &float_ids {
+            ws.tabs[0].push_float(
+                *id,
+                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+            );
+        }
+        ws.tabs[0].float_arrangement = crate::layout::Arrangement::Grid;
+        let float_region =
+            resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
+                .map(|geometry| geometry.outer);
+        ws.tabs[0].needs_reflow = true;
+        ws.tabs[0].reflow(area, float_region);
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let pane_infos = compute_pane_infos(
+            &app,
+            &terminal_runtimes,
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        // The tiled root pane comes first; every float comes after it, so a
+        // reverse-order hit test finds any float before the tiled pane it covers.
+        assert_eq!(pane_infos[0].id, root_pane);
+        let float_infos: Vec<_> = pane_infos[1..].iter().collect();
+        assert_eq!(float_infos.len(), 3);
+        let ids: std::collections::HashSet<_> = float_infos.iter().map(|info| info.id).collect();
+        assert_eq!(ids, float_ids.iter().copied().collect());
+
+        // Grid keeps every float expanded at once, each with a real, distinct box.
+        for info in &float_infos {
+            assert!(
+                info.rect.height > 1,
+                "float {:?} should be expanded",
+                info.id
+            );
+        }
+        let rects: std::collections::HashSet<_> = float_infos
+            .iter()
+            .map(|info| (info.rect.x, info.rect.y, info.rect.width, info.rect.height))
+            .collect();
+        assert_eq!(
+            rects.len(),
+            3,
+            "every float gets its own rect, not a shared one"
+        );
+    }
+
+    #[tokio::test]
+    async fn compute_pane_infos_resizes_every_visible_floats_runtime_to_its_own_box() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let area = Rect::new(0, 0, 60, 20);
+        app.view.terminal_area = area;
+
+        let mut ws = Workspace::test_new("test");
+        let float_ids: Vec<_> = (0..2).map(|_| PaneId::alloc()).collect();
+        for id in &float_ids {
+            ws.tabs[0].push_float(
+                *id,
+                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+            );
+        }
+        ws.tabs[0].float_arrangement = crate::layout::Arrangement::Grid;
+        let float_region =
+            resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
+                .map(|geometry| geometry.outer);
+        ws.tabs[0].needs_reflow = true;
+        ws.tabs[0].reflow(area, float_region);
+
+        // Seed both runtimes at a row count no real box in this layout could
+        // produce, so a per-float resize is the only way their viewport ends
+        // up matching the layout.
+        for id in &float_ids {
+            ws.tabs[0]
+                .runtimes
+                .insert(*id, TerminalRuntime::test_with_screen_bytes(5, 1, b""));
+        }
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let cell_size = crate::kitty_graphics::HostCellSize::default();
+        let pane_infos = compute_pane_infos(&app, &terminal_runtimes, area, true, cell_size);
+
+        let float_infos: Vec<_> = pane_infos
+            .iter()
+            .filter(|info| float_ids.contains(&info.id))
+            .collect();
+        assert_eq!(
+            float_infos.len(),
+            2,
+            "grid keeps both floats expanded at once"
+        );
+
+        for info in float_infos {
+            assert!(
+                info.rect.height > 1,
+                "float {:?} should be expanded",
+                info.id
+            );
+            let rt = app
+                .runtime_for_pane_in_workspace(&terminal_runtimes, 0, info.id)
+                .expect("runtime");
+            let metrics = rt.scroll_metrics().expect("scroll metrics");
+            assert_eq!(
+                metrics.viewport_rows, info.inner_rect.height as usize,
+                "float {:?} was not resized to its own box",
+                info.id
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn render_panes_draws_every_floats_content_not_just_one() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 40, 10);
+
+        let left_id = PaneId::from_raw(700);
+        let right_id = PaneId::from_raw(701);
+        let mut ws = Workspace::test_new("test");
+        for id in [left_id, right_id] {
+            ws.tabs[0].push_float(
+                id,
+                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+            );
+        }
+        ws.tabs[0].runtimes.insert(
+            left_id,
+            TerminalRuntime::test_with_screen_bytes(18, 8, b"LEFTFLOAT"),
+        );
+        ws.tabs[0].runtimes.insert(
+            right_id,
+            TerminalRuntime::test_with_screen_bytes(18, 8, b"RIGHTFLOAT"),
+        );
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        // Two members that would come from a Stacked layout with only the
+        // bar collapsed away — both above height 1, so both must draw.
+        let pane_infos = vec![
+            PaneInfo {
+                id: left_id,
+                rect: Rect::new(0, 0, 20, 10),
+                inner_rect: Rect::new(1, 1, 18, 8),
+                scrollbar_rect: None,
+                borders: Borders::ALL,
+                is_focused: false,
+            },
+            PaneInfo {
+                id: right_id,
+                rect: Rect::new(20, 0, 20, 10),
+                inner_rect: Rect::new(21, 1, 18, 8),
+                scrollbar_rect: None,
+                borders: Borders::ALL,
+                is_focused: true,
+            },
+        ];
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    &pane_infos,
+                    &[],
+                    &[],
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = (0..10)
+            .flat_map(|y| (0..40).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol())
+            .collect();
+        assert!(
+            content.contains("LEFTFLOAT"),
+            "left float missing: {content:?}"
+        );
+        assert!(
+            content.contains("RIGHTFLOAT"),
+            "right float missing: {content:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_hidden_float_layer_is_neither_laid_out_nor_drawn() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let area = Rect::new(0, 0, 40, 12);
+        app.view.terminal_area = area;
+
+        let float_id = PaneId::from_raw(720);
+        let mut ws = Workspace::test_new("test");
+        let root_pane = ws.tabs[0].root_pane;
+        let float_terminal_id = crate::terminal::TerminalId::alloc();
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(float_terminal_id.clone()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_screen_bytes(18, 8, b"HIDDENFLOAT"),
+        );
+        let mut float_terminal = TerminalState::new(float_terminal_id.clone(), "/tmp".into());
+        float_terminal.set_manual_label("hiddenlabel".into());
+        app.terminals.insert(float_terminal_id, float_terminal);
+
+        // `assert_invariants_for_test` permits a hidden layer that still holds
+        // its layout, so this state is legal and must render nothing.
+        ws.tabs[0].set_floats_hidden(true);
+        let float_region =
+            resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
+                .map(|geometry| geometry.outer);
+        ws.tabs[0].reflow(area, float_region);
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let pane_infos = compute_pane_infos(
+            &app,
+            &terminal_runtimes,
+            area,
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        assert_eq!(
+            pane_infos.iter().map(|info| info.id).collect::<Vec<_>>(),
+            vec![root_pane],
+            "a hidden float layer contributes no pane info"
+        );
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|frame| render_panes(&app, &terminal_runtimes, frame, &pane_infos, &[], &[]))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let content: String = (0..12)
+            .flat_map(|y| (0..40).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol())
+            .collect();
+        assert!(
+            !content.contains("HIDDENFLOAT"),
+            "hidden float content drawn: {content:?}"
+        );
+        assert!(
+            !content.contains("hiddenlabel"),
+            "hidden float title drawn: {content:?}"
+        );
+        // The lone tiled pane draws no border, so any box corner on screen can
+        // only have come from the float's block.
+        assert!(
+            !content.contains('┌'),
+            "hidden float border drawn: {content:?}"
+        );
+    }
+
+    #[test]
+    fn render_panes_draws_a_bar_for_a_collapsed_float_without_an_external_stack_bar() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 30, 10);
+
+        let mut ws = Workspace::test_new("test");
+        let collapsed_id = PaneId::from_raw(710);
+        let active_id = PaneId::from_raw(711);
+        let collapsed_terminal_id = crate::terminal::TerminalId::alloc();
+        ws.tabs[0].push_float(
+            collapsed_id,
+            crate::pane::PaneState::new(collapsed_terminal_id.clone()),
+        );
+        ws.tabs[0].push_float(
+            active_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        let mut terminal_state = TerminalState::new(collapsed_terminal_id.clone(), "/tmp".into());
+        terminal_state.set_manual_label("hidden-float".into());
+        app.terminals.insert(collapsed_terminal_id, terminal_state);
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        // Hand-built as `stack_rects` would lay out a two-member stack: one
+        // expanded, one collapsed to a single row. Passing `&[]` for the
+        // external `stack_bars` proves the bar is derived from `pane_infos`
+        // at render time instead.
+        let pane_infos = vec![
+            PaneInfo {
+                id: collapsed_id,
+                rect: Rect::new(5, 3, 20, 1),
+                inner_rect: Rect::new(5, 3, 20, 1),
+                scrollbar_rect: None,
+                borders: Borders::ALL,
+                is_focused: false,
+            },
+            PaneInfo {
+                id: active_id,
+                rect: Rect::new(5, 4, 20, 6),
+                inner_rect: Rect::new(6, 5, 18, 4),
+                scrollbar_rect: None,
+                borders: Borders::ALL,
+                is_focused: true,
+            },
+        ];
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    &pane_infos,
+                    &[],
+                    &[],
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let row: String = (5..25).map(|x| buffer[(x, 3)].symbol()).collect();
+        assert!(row.contains("hidden-float"), "bar row: {row:?}");
+    }
+
     /// Builds a real `count`-member stack, focuses the member that ends up
     /// at `active_index` in `TileLayout::pane_ids()` order, reflows it under
     /// `area`, and returns the resulting `PaneInfo`s straight from
@@ -2512,7 +2905,7 @@ mod tests {
         tab.layout.focus_pane(ids[active_index]);
         tab.arrangement = crate::layout::Arrangement::Stacked;
         tab.needs_reflow = true;
-        tab.reflow(area);
+        tab.reflow(area, None);
         tab.layout.panes(area)
     }
 

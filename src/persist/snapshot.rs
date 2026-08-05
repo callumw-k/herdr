@@ -93,7 +93,14 @@ pub struct TabSnapshot {
     #[serde(default)]
     pub root_pane: Option<u32>,
     #[serde(default)]
-    pub floats: Vec<u32>,
+    pub float_layout: Option<LayoutSnapshot>,
+    #[serde(default = "stacked_arrangement")]
+    pub float_arrangement: ArrangementSnapshot,
+    /// Which float held focus. A `Stack`'s `active` index says which member is
+    /// expanded, not which pane has keyboard focus, and non-stack arrangements
+    /// have no `active` at all, so focus needs its own field.
+    #[serde(default)]
+    pub float_focused_pane: Option<u32>,
     #[serde(default)]
     pub floats_hidden: bool,
     #[serde(default)]
@@ -165,6 +172,11 @@ pub enum ArrangementSnapshot {
     Stacked,
 }
 
+/// The float layer defaults to Stacked, unlike the tiled layer's Grid.
+fn stacked_arrangement() -> ArrangementSnapshot {
+    ArrangementSnapshot::Stacked
+}
+
 impl From<Arrangement> for ArrangementSnapshot {
     fn from(arrangement: Arrangement) -> Self {
         match arrangement {
@@ -197,7 +209,9 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             zoomed: snap.zoomed,
             focused: snap.focused,
             root_pane: snap.root_pane,
-            floats: Vec::new(),
+            float_layout: None,
+            float_arrangement: ArrangementSnapshot::Stacked,
+            float_focused_pane: None,
             floats_hidden: false,
             float_focused: false,
             arrangement: ArrangementSnapshot::default(),
@@ -429,7 +443,15 @@ fn capture_tab(
         zoomed: tab.zoomed,
         focused: Some(tab.layout.focused().raw()),
         root_pane: Some(tab.root_pane.raw()),
-        floats: tab.floats.iter().map(|id| id.raw()).collect(),
+        float_layout: tab
+            .float_layout
+            .as_ref()
+            .map(|layout| capture_node(layout.root())),
+        float_arrangement: tab.float_arrangement.into(),
+        float_focused_pane: tab
+            .float_layout
+            .as_ref()
+            .map(|layout| layout.focused().raw()),
         floats_hidden: tab.floats_hidden,
         float_focused: tab.float_focused,
         arrangement: tab.arrangement.into(),
@@ -743,7 +765,9 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
-                    floats: Vec::new(),
+                    float_layout: None,
+                    float_arrangement: ArrangementSnapshot::Stacked,
+                    float_focused_pane: None,
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: ArrangementSnapshot::default(),
@@ -1309,7 +1333,9 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
-                    floats: Vec::new(),
+                    float_layout: None,
+                    float_arrangement: ArrangementSnapshot::Stacked,
+                    float_focused_pane: None,
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: ArrangementSnapshot::default(),
@@ -1333,7 +1359,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_preserves_float_ids_and_flags() {
+    fn capture_preserves_float_layout_and_flags() {
         let mut ws = Workspace::test_new("float-capture");
         let float = crate::layout::PaneId::alloc();
         ws.register_new_pane_with_number(float, ws.next_public_pane_number);
@@ -1346,7 +1372,11 @@ mod tests {
         let terminal_runtimes = TerminalRuntimeRegistry::new();
         let snap = capture_tab(&ws.tabs[0], &HashMap::new(), &terminal_runtimes);
 
-        assert_eq!(snap.floats, vec![float.raw()]);
+        match &snap.float_layout {
+            Some(LayoutSnapshot::Pane(id)) => assert_eq!(*id, float.raw()),
+            other => panic!("expected a single-pane float layout, got {other:?}"),
+        }
+        assert_eq!(snap.float_focused_pane, Some(float.raw()));
         assert!(!snap.floats_hidden);
         assert!(!snap.float_focused);
         assert!(
@@ -1365,7 +1395,7 @@ mod tests {
 
         let snap: TabSnapshot = serde_json::from_value(json).expect("legacy snapshot loads");
 
-        assert!(snap.floats.is_empty());
+        assert!(snap.float_layout.is_none());
         assert!(!snap.floats_hidden);
         assert!(!snap.float_focused);
     }
@@ -1379,5 +1409,53 @@ mod tests {
         }"#;
         let snapshot: TabSnapshot = serde_json::from_str(json).expect("legacy snapshot parses");
         assert_eq!(snapshot.arrangement, ArrangementSnapshot::Grid);
+    }
+
+    #[test]
+    fn an_old_snapshot_parses_with_no_float_layer() {
+        // The removed `floats` field is an unknown key now. Serde ignores unknown
+        // fields (snapshot.rs sets no deny_unknown_fields anywhere), so the file
+        // still loads and simply carries no floats.
+        let json = r#"{
+            "layout": {"Pane": 1},
+            "panes": {
+                "1": {"cwd": "/tmp"},
+                "2": {"cwd": "/tmp"}
+            },
+            "zoomed": false,
+            "floats": [2],
+            "floats_hidden": false,
+            "float_focused": true
+        }"#;
+        let snapshot: TabSnapshot = serde_json::from_str(json).expect("legacy snapshot parses");
+        assert!(snapshot.float_layout.is_none());
+        assert_eq!(snapshot.float_arrangement, ArrangementSnapshot::Stacked);
+    }
+
+    #[test]
+    fn a_float_layout_round_trips_through_a_snapshot() {
+        let ids = vec![
+            crate::layout::PaneId::from_raw(7),
+            crate::layout::PaneId::from_raw(8),
+        ];
+        let node = Node::Stack {
+            panes: ids.clone(),
+            active: 1,
+        };
+        let snapshot = capture_node(&node);
+        match &snapshot {
+            LayoutSnapshot::Stack { panes, active } => {
+                assert_eq!(panes, &vec![7, 8]);
+                assert_eq!(*active, 1);
+            }
+            other => panic!("expected a stack snapshot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn float_arrangement_defaults_to_stacked_when_absent() {
+        let json = r#"{"layout": {"Pane": 1}, "panes": {}, "zoomed": false}"#;
+        let snapshot: TabSnapshot = serde_json::from_str(json).expect("parses");
+        assert_eq!(snapshot.float_arrangement, ArrangementSnapshot::Stacked);
     }
 }
