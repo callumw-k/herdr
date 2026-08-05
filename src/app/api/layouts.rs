@@ -1471,7 +1471,7 @@ mod tests {
         let float_pane = tab.floats()[0];
         // layout.apply installs the float layer but does not move focus onto
         // it; simulate the layer already holding focus the way a real client
-        // interaction (e.g. pane.float or the float-cycle keybind) would.
+        // interaction (e.g. pane.float or the toggle-float keybind) would.
         tab.float_focused = true;
 
         let response = app.handle_layout_export(

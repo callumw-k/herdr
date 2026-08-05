@@ -336,36 +336,6 @@ impl Tab {
         Some((pane_id, pane.attached_terminal_id))
     }
 
-    /// Moves focus through the float order rather than rotating a z-order.
-    pub fn cycle_floats(&mut self, forward: bool) -> bool {
-        let Some(layout) = self.float_layout.as_mut() else {
-            return false;
-        };
-        let ids = layout.pane_ids();
-        if ids.len() < 2 && !self.floats_hidden {
-            return false;
-        }
-        self.floats_hidden = false;
-        self.float_focused = true;
-        if ids.len() < 2 {
-            return true;
-        }
-        let current = ids
-            .iter()
-            .position(|id| *id == layout.focused())
-            .unwrap_or(0);
-        let next = if forward {
-            (current + 1) % ids.len()
-        } else {
-            (current + ids.len() - 1) % ids.len()
-        };
-        layout.focus_pane(ids[next]);
-        true
-    }
-
-    /// Bring the floating layer into focus without creating or closing anything.
-    /// Returns false when there is nothing to do: no floats exist, or the
-    /// layer is already focused and visible.
     pub fn focus_floats(&mut self) -> bool {
         if self.float_layout.is_none() || (self.float_focused && !self.floats_hidden) {
             return false;
@@ -923,28 +893,6 @@ mod tests {
     }
 
     #[test]
-    fn cycle_floats_moves_focus_through_the_float_order() {
-        let mut tab = test_tab();
-        let ids: Vec<_> = (0..3).map(|_| PaneId::alloc()).collect();
-        for id in &ids {
-            tab.push_float(*id, PaneState::new(TerminalId::alloc()));
-        }
-        assert_eq!(tab.focused_float(), Some(ids[2]));
-        assert!(tab.cycle_floats(true));
-        assert_eq!(
-            tab.focused_float(),
-            Some(ids[0]),
-            "forward wraps to the start"
-        );
-        assert!(tab.cycle_floats(false));
-        assert_eq!(
-            tab.focused_float(),
-            Some(ids[2]),
-            "backward wraps to the end"
-        );
-    }
-
-    #[test]
     fn is_float_and_all_pane_ids_see_the_float_layout() {
         let mut tab = test_tab();
         let tiled = tab.layout.focused();
@@ -1011,22 +959,6 @@ mod tests {
         tab.push_float(float, PaneState::new(TerminalId::alloc()));
 
         assert!(!tab.focus_floats(), "already focused, nothing to do");
-    }
-
-    #[test]
-    fn cycle_floats_rotates_stack_and_unhides() {
-        let mut tab = test_tab();
-        let first = PaneId::alloc();
-        let second = PaneId::alloc();
-        tab.push_float(first, PaneState::new(TerminalId::alloc()));
-        tab.push_float(second, PaneState::new(TerminalId::alloc()));
-        tab.set_floats_hidden(true);
-
-        assert!(tab.cycle_floats(true));
-
-        assert!(!tab.floats_hidden, "cycling brings the layer back");
-        assert_eq!(tab.focused_float(), Some(first));
-        assert_eq!(tab.focused_pane(), first);
     }
 
     #[test]
@@ -1177,8 +1109,11 @@ mod tests {
         for id in &ids {
             tab.push_float(*id, PaneState::new(TerminalId::alloc()));
         }
-        tab.cycle_floats(true);
-        let focused = tab.focused_float().expect("a focused float");
+        let focused = ids[1];
+        tab.float_layout
+            .as_mut()
+            .expect("a float layout")
+            .focus_pane(focused);
         tab.float_arrangement = Arrangement::Grid;
         tab.float_needs_reflow = true;
 

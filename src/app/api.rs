@@ -1049,9 +1049,6 @@ impl App {
             Method::PaneMove(params) => return self.handle_pane_move(request.id, params),
             Method::PaneZoom(params) => return self.handle_pane_zoom(request.id, params),
             Method::PaneFloat(params) => return self.handle_pane_float(request.id, params),
-            Method::PaneFloatCycle(params) => {
-                return self.handle_pane_float_cycle(request.id, params)
-            }
             Method::TabFloatsToggle(params) => {
                 return self.handle_tab_floats_toggle(request.id, params)
             }

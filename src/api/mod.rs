@@ -54,7 +54,6 @@ pub(crate) fn request_changes_ui(request: &Request) -> bool {
             | Method::PaneMove(_)
             | Method::PaneZoom(_)
             | Method::PaneFloat(_)
-            | Method::PaneFloatCycle(_)
             | Method::TabFloatsToggle(_)
             | Method::PaneFocusDirection(_)
             | Method::PaneResize(_)

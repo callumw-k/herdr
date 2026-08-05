@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- Added floating panes: `prefix+f` opens one, `prefix+ctrl+f` cycles the stack, and `prefix+shift+f` shows or hides the layer. Configure their default size with `ui.floating_pane_width` and `ui.floating_pane_height`.
+- Added floating panes: `prefix+f` opens one, `prefix+ctrl+f` moves focus into the floating layer or back out, and `prefix+shift+f` shows or hides the layer. A tab's floats share one region and are arranged inside it, so more than one can be visible at once, and they are navigated with the same keys as tiled panes. Configure the region's default size with `ui.floating_pane_width` and `ui.floating_pane_height`.
 - The plugin marketplace now discovers valid manifests at repository roots and subdirectories, groups multiple plugins under each repository, and publishes their versions and exact default-branch commits.
 
 ### Fixed

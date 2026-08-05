@@ -43,7 +43,6 @@ Panes:
 | Resize mode | `prefix+r` |
 | Copy mode | `prefix+u` |
 | New floating pane | `prefix+f` |
-| Cycle floating panes | `prefix+ctrl+f` |
 | Show/hide floating panes | `prefix+shift+f` |
 
 Tabs:
@@ -83,9 +82,9 @@ Press `prefix+u` to enter copy mode for the focused pane. Use `h/j/k/l`, tmux-st
 
 ## Floating panes
 
-The floating layer sits above the tab's normal split layout in a centred region, instead of taking slots in the grid. Press `prefix+f` to open a float. A tab's floats share that one region and are laid out inside it under the floating layer's own arrangement, so more than one can be visible at once. The layer starts stacked, which fills the region with the focused float and collapses the others to single-row title bars, and `prefix+]` and `prefix+[` cycle it through the same four arrangements the tiled panes use while the layer holds focus. `prefix+ctrl+f` moves focus to the next float in the layer's order. `prefix+shift+f` hides or shows the whole floating layer for the tab without closing anything underneath it.
+The floating layer sits above the tab's normal split layout in a centred region, instead of taking slots in the grid. Press `prefix+f` to open a float. A tab's floats share that one region and are laid out inside it under the floating layer's own arrangement, so more than one can be visible at once. The layer starts stacked, which fills the region with the focused float and collapses the others to single-row title bars, and `prefix+]` and `prefix+[` cycle it through the same four arrangements the tiled panes use while the layer holds focus. `prefix+ctrl+f` moves focus into the floating layer, or back out of it if you are already there. `prefix+shift+f` hides or shows the whole floating layer for the tab without closing anything underneath it. Once the layer holds focus, walk it with the same keys as tiled panes: `prefix+h/j/k/l` and `prefix+tab`.
 
-`toggle_float` is unbound by default and combines opening and hiding into one key: it opens a float if none exists, focuses the floating layer if it's hidden, or hides it if it's already focused and visible. Nothing is ever closed by this action.
+`toggle_float`, bound to `prefix+ctrl+f`, combines opening and hiding into one key: it opens a float if none exists, focuses the floating layer if it's hidden, or hides it if it's already focused and visible. Nothing is ever closed by this action.
 
 While a floating pane is visible, `prefix+c` opens another floating pane instead of a new tab. Hide the floating layer first if you want `prefix+c` to create a tab as usual.
 

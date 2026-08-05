@@ -423,12 +423,10 @@ pub struct KeysConfig {
     /// Open a new floating pane. Default: "prefix+f"
     pub new_float: BindingConfig,
     /// Open a floating pane if none exist, focus the floating layer if it is
-    /// unfocused, otherwise hide it. Unset by default.
+    /// unfocused, otherwise hide it. Default: "prefix+ctrl+f"
     pub toggle_float: BindingConfig,
     /// Show or hide the floating layer. Default: "prefix+shift+f"
     pub toggle_floats: BindingConfig,
-    /// Move focus to the next floating pane. Default: "prefix+ctrl+f"
-    pub cycle_float: BindingConfig,
     /// Enter resize mode. Default: "prefix+r"
     pub resize_mode: BindingConfig,
     /// Toggle sidebar collapse. Default: "prefix+b"
@@ -560,8 +558,6 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_floats: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    cycle_float: Option<BindingConfig>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     resize_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     toggle_sidebar: Option<BindingConfig>,
@@ -645,7 +641,6 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(new_float);
         apply_field!(toggle_float);
         apply_field!(toggle_floats);
-        apply_field!(cycle_float);
         apply_field!(resize_mode);
         apply_field!(toggle_sidebar);
         apply_field!(indexed);
@@ -750,7 +745,6 @@ impl KeysConfig {
         copy_effective_action_field!(new_float, keybinds.new_float);
         copy_effective_action_field!(toggle_float, keybinds.toggle_float);
         copy_effective_action_field!(toggle_floats, keybinds.toggle_floats);
-        copy_effective_action_field!(cycle_float, keybinds.cycle_float);
         copy_effective_action_field!(resize_mode, keybinds.resize_mode);
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
         copy_user_field!(indexed);
@@ -1042,9 +1036,8 @@ impl Default for KeysConfig {
             close_pane: BindingConfig::one("prefix+x"),
             zoom: BindingConfig::one("prefix+z"),
             new_float: BindingConfig::one("prefix+f"),
-            toggle_float: BindingConfig::empty(),
+            toggle_float: BindingConfig::one("prefix+ctrl+f"),
             toggle_floats: BindingConfig::one("prefix+shift+f"),
-            cycle_float: BindingConfig::one("prefix+ctrl+f"),
             resize_mode: BindingConfig::one("prefix+r"),
             toggle_sidebar: BindingConfig::one("prefix+b"),
             indexed: IndexedKeysConfig::default(),

@@ -390,7 +390,6 @@ fn api_method_name(method: &Method) -> &'static str {
         Method::PaneMove(_) => "pane.move",
         Method::PaneZoom(_) => "pane.zoom",
         Method::PaneFloat(_) => "pane.float",
-        Method::PaneFloatCycle(_) => "pane.float_cycle",
         Method::TabFloatsToggle(_) => "tab.floats_toggle",
         Method::PaneLayout(_) => "pane.layout",
         Method::PaneProcessInfo(_) => "pane.process_info",

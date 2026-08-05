@@ -35,24 +35,6 @@ pub struct PaneFloatParams {
     pub focus: bool,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum FloatCycleDirection {
-    #[default]
-    Next,
-    Previous,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
-pub struct PaneFloatCycleParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<String>,
-    #[serde(default)]
-    pub direction: FloatCycleDirection,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
 pub struct TabFloatsToggleParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]

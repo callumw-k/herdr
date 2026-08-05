@@ -473,10 +473,6 @@ impl App {
                 self.state.set_floats_hidden_in_active_tab(!hidden);
                 leave_navigate_mode(&mut self.state);
             }
-            NavigateAction::CycleFloat => {
-                self.state.cycle_floats_in_active_tab(true);
-                leave_navigate_mode(&mut self.state);
-            }
             NavigateAction::EnterResizeMode => self.state.mode = Mode::Resize,
             NavigateAction::ToggleSidebar => {
                 self.state.sidebar_collapsed = !self.state.sidebar_collapsed;
@@ -1502,7 +1498,6 @@ pub(crate) enum NavigateAction {
     NewFloat,
     ToggleFloat,
     ToggleFloats,
-    CycleFloat,
     EnterResizeMode,
     ToggleSidebar,
     CyclePaneNext,
@@ -1656,7 +1651,6 @@ fn non_indexed_action_for_key(
         (&kb.new_float, NavigateAction::NewFloat),
         (&kb.toggle_float, NavigateAction::ToggleFloat),
         (&kb.toggle_floats, NavigateAction::ToggleFloats),
-        (&kb.cycle_float, NavigateAction::CycleFloat),
         (&kb.resize_mode, NavigateAction::EnterResizeMode),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
         (&kb.reload_config, NavigateAction::ReloadConfig),
@@ -1941,10 +1935,6 @@ pub(super) fn execute_navigate_action_in_context(
                 .map(|tab| tab.floats_hidden)
                 .unwrap_or(false);
             state.set_floats_hidden_in_active_tab(!hidden);
-            leave_navigate_mode(state);
-        }
-        NavigateAction::CycleFloat => {
-            state.cycle_floats_in_active_tab(true);
             leave_navigate_mode(state);
         }
         NavigateAction::EnterResizeMode => state.mode = Mode::Resize,

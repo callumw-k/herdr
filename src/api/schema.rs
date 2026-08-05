@@ -137,8 +137,6 @@ pub enum Method {
     PaneZoom(PaneZoomParams),
     #[serde(rename = "pane.float")]
     PaneFloat(PaneFloatParams),
-    #[serde(rename = "pane.float_cycle")]
-    PaneFloatCycle(PaneFloatCycleParams),
     #[serde(rename = "tab.floats_toggle")]
     TabFloatsToggle(TabFloatsToggleParams),
     #[serde(rename = "pane.layout")]

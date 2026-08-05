@@ -538,7 +538,7 @@
         {
           "key": "keys.toggle_float",
           "type": "keybinding",
-          "default": "\"\"",
+          "default": "\"prefix+ctrl+f\"",
           "description": "Open a floating pane if none exist, focus the floating layer if it is unfocused, otherwise hide it. Unset by default."
         },
         {
@@ -546,12 +546,6 @@
           "type": "keybinding",
           "default": "\"prefix+shift+f\"",
           "description": "Show or hide the floating layer."
-        },
-        {
-          "key": "keys.cycle_float",
-          "type": "keybinding",
-          "default": "\"prefix+ctrl+f\"",
-          "description": "Move focus to the next floating pane."
         },
         {
           "key": "keys.resize_mode",

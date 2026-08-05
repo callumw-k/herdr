@@ -377,23 +377,6 @@ impl AppState {
             .is_some_and(|tab| tab.float_focused && !tab.floats_hidden)
     }
 
-    pub(crate) fn cycle_floats_in_active_tab(&mut self, forward: bool) -> bool {
-        let Some(ws_idx) = self.active else {
-            return false;
-        };
-        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
-            return false;
-        };
-        let Some(tab) = ws.active_tab_mut() else {
-            return false;
-        };
-        if tab.cycle_floats(forward) {
-            self.mark_session_dirty();
-            return true;
-        }
-        false
-    }
-
     pub(crate) fn focus_floats_in_active_tab(&mut self) -> bool {
         let Some(ws_idx) = self.active else {
             return false;

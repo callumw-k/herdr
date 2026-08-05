@@ -185,7 +185,6 @@ herdr pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--n
 herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]
 herdr pane close <pane_id>
 herdr pane float [--workspace <workspace_id>] [--cwd PATH] [--focus] [--no-focus]
-herdr pane float-cycle [--workspace <workspace_id>] [--next|--previous]
 ```
 
 For pane commands that accept `--current`, Herdr uses the calling pane's
@@ -195,7 +194,7 @@ calling pane, and an omitted target keeps using the UI-focused pane.
 The split response exposes the new pane ID as `.result.pane.pane_id`.
 After `pane move`, use `.result.move_result.pane.pane_id` for later commands. A cross-workspace move changes the workspace-qualified pane ID; the prior value remains at `.result.move_result.previous_pane_id`. The running process keeps its launch-time `HERDR_PANE_ID`, `HERDR_TAB_ID`, and `HERDR_WORKSPACE_ID`; Herdr retains the old pane ID as an alias for that terminal, so pane commands using `--current` still resolve it. A live agent name follows the terminal and continues to resolve after the move.
 
-`pane float` opens a new floating pane on the active tab of the target (or active) workspace; without `--workspace` it fails if no workspace is active. A tab's floats share one region and are laid out inside it under the floating layer's own arrangement, so more than one can be visible at once; `pane float-cycle` moves focus to the next float in the layer's order, and `--next` is the default direction. Cycling always acts on the active tab, so a `--workspace` other than the active one returns `workspace_not_active`.
+`pane float` opens a new floating pane on the active tab of the target (or active) workspace; without `--workspace` it fails if no workspace is active. A tab's floats share one region and are laid out inside it under the floating layer's own arrangement, so more than one can be visible at once. Use `pane focus` to move between floats, the same way you would between tiled panes.
 
 Read output:
 

@@ -2095,13 +2095,6 @@
           ],
           "type": "object"
         },
-        "FloatCycleDirection": {
-          "enum": [
-            "next",
-            "previous"
-          ],
-          "type": "string"
-        },
         "IntegrationInstallParams": {
           "properties": {
             "target": {
@@ -2508,21 +2501,6 @@
         "PaneEdgesParams": {
           "properties": {
             "pane_id": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "PaneFloatCycleParams": {
-          "properties": {
-            "direction": {
-              "$ref": "#/schemas/request/$defs/FloatCycleDirection",
-              "default": "next"
-            },
-            "workspace_id": {
               "type": [
                 "string",
                 "null"
@@ -5260,22 +5238,6 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/PaneFloatParams"
-            }
-          },
-          "required": [
-            "method",
-            "params"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "method": {
-              "const": "pane.float_cycle",
-              "type": "string"
-            },
-            "params": {
-              "$ref": "#/schemas/request/$defs/PaneFloatCycleParams"
             }
           },
           "required": [

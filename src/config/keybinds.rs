@@ -355,7 +355,6 @@ pub struct Keybinds {
     pub new_float: ActionKeybinds,
     pub toggle_float: ActionKeybinds,
     pub toggle_floats: ActionKeybinds,
-    pub cycle_float: ActionKeybinds,
     pub resize_mode: ActionKeybinds,
     pub toggle_sidebar: ActionKeybinds,
     pub custom_commands: Vec<CustomCommandKeybind>,
@@ -524,7 +523,6 @@ impl Config {
             new_float: empty_action!(),
             toggle_float: empty_action!(),
             toggle_floats: empty_action!(),
-            cycle_float: empty_action!(),
             resize_mode: empty_action!(),
             toggle_sidebar: empty_action!(),
             custom_commands: Vec::new(),
@@ -672,7 +670,6 @@ impl Config {
             apply_action!(keybinds.new_float, new_float, source);
             apply_action!(keybinds.toggle_float, toggle_float, source);
             apply_action!(keybinds.toggle_floats, toggle_floats, source);
-            apply_action!(keybinds.cycle_float, cycle_float, source);
             apply_action!(keybinds.resize_mode, resize_mode, source);
             apply_action!(keybinds.toggle_sidebar, toggle_sidebar, source);
 
