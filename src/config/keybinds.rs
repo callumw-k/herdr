@@ -1600,13 +1600,15 @@ next_tab = "prefix+n"
         assert!(kb.remove_worktree.bindings.is_empty());
     }
 
+    // Copy mode sat on the tmux-conventional `prefix+[` until arrangement
+    // cycling claimed the bracket pair, which only reads right as a pair.
     #[test]
-    fn copy_mode_uses_tmux_prefix_bracket_by_default() {
+    fn copy_mode_uses_prefix_u_by_default() {
         let kb = Config::default().keybinds();
         assert_eq!(
             binding_triggers(&kb.copy_mode),
             vec![BindingTrigger::Prefix((
-                KeyCode::Char('['),
+                KeyCode::Char('u'),
                 KeyModifiers::empty()
             ))]
         );
@@ -1621,10 +1623,10 @@ next_tab = "prefix+n"
     #[test]
     fn arrangement_keybinds_have_defaults() {
         let config = Config::default();
-        assert_eq!(config.keys.arrangement_next, BindingConfig::one("prefix+a"));
+        assert_eq!(config.keys.arrangement_next, BindingConfig::one("prefix+]"));
         assert_eq!(
             config.keys.arrangement_previous,
-            BindingConfig::one("prefix+shift+a")
+            BindingConfig::one("prefix+[")
         );
         assert_eq!(config.keys.new_pane, BindingConfig::one("prefix+enter"));
     }
@@ -1633,7 +1635,7 @@ next_tab = "prefix+n"
     fn the_new_arrangement_bindings_parse() {
         // parse_key_combo parses the body after "prefix+"; the prefix token
         // itself is stripped by parse_binding_string before this is called.
-        for combo in ["prefix+a", "prefix+shift+a", "prefix+enter"] {
+        for combo in ["prefix+]", "prefix+[", "prefix+enter"] {
             let body = combo.strip_prefix("prefix+").unwrap_or(combo);
             assert!(
                 parse_key_combo(body).is_some(),

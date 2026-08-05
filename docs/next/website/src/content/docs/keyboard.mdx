@@ -38,10 +38,10 @@ Panes:
 | Zoom the focused pane | `prefix+z` |
 | Close pane | `prefix+x` |
 | Swap panes | `prefix+shift+h/j/k/l` |
-| Cycle pane arrangement | `prefix+a` / `prefix+shift+a` |
+| Cycle pane arrangement | `prefix+]` / `prefix+[` |
 | New pane in the current arrangement | `prefix+enter` |
 | Resize mode | `prefix+r` |
-| Copy mode | `prefix+[` |
+| Copy mode | `prefix+u` |
 | New floating pane | `prefix+f` |
 | Cycle floating panes | `prefix+ctrl+f` |
 | Show/hide floating panes | `prefix+shift+f` |
@@ -69,7 +69,7 @@ The full keymap and the binding syntax live in the [keybinding reference](/docs/
 
 ## Pane arrangements
 
-Each tab lays its panes out under one arrangement: even columns, even rows, a grid, or a single stack. `prefix+a` and `prefix+shift+a` cycle through them, rebuilding the tab from its panes in order, so a full lap brings back the layout you started with. [Concepts](/docs/concepts/) describes what each one looks like.
+Each tab lays its panes out under one arrangement: even columns, even rows, a grid, or a single stack. `prefix+]` and `prefix+[` cycle through them, rebuilding the tab from its panes in order, so a full lap brings back the layout you started with. [Concepts](/docs/concepts/) describes what each one looks like.
 
 `prefix+v` and `prefix+minus` set the arrangement as well as adding a pane: `prefix+v` switches the tab to even columns, `prefix+minus` to even rows, and the whole tab is rebuilt either way. Pressing `prefix+v` twice gives three even columns rather than a split nested inside a split. Use `prefix+enter` when you want another pane in the shape the tab already has.
 
@@ -77,7 +77,7 @@ Rebuilding a tab discards manual sizing. A border you drag, or resize with `pref
 
 ## Copy mode
 
-Press `prefix+[` to enter copy mode for the focused pane. Use `h/j/k/l`, tmux-style `w/b/e`, `{`/`}`, `PageUp`/`PageDown`, `ctrl+b`/`ctrl+f`, and `ctrl+u`/`ctrl+d` to move. Press `/` or `?` for forward or backward literal search, then `n` or `N` to repeat in the same or opposite direction. Search is case-insensitive unless the query contains an uppercase letter. Use `v` or Space to start a selection, `y` or Enter to copy it, and `q` or Esc to leave without copying. Esc clears an active selection or search before exiting. Copy mode does not pause the pane process: output remains live, follows at the bottom, and stays pinned when you navigate into history. The configured prefix keeps its normal meaning in copy mode; with the default prefix, `ctrl+b` enters prefix mode instead of paging up, so use a different prefix if you want `ctrl+b` for copy-mode page-up. Mouse drag-select copies without entering copy mode at all.
+Press `prefix+u` to enter copy mode for the focused pane. Use `h/j/k/l`, tmux-style `w/b/e`, `{`/`}`, `PageUp`/`PageDown`, `ctrl+b`/`ctrl+f`, and `ctrl+u`/`ctrl+d` to move. Press `/` or `?` for forward or backward literal search, then `n` or `N` to repeat in the same or opposite direction. Search is case-insensitive unless the query contains an uppercase letter. Use `v` or Space to start a selection, `y` or Enter to copy it, and `q` or Esc to leave without copying. Esc clears an active selection or search before exiting. Copy mode does not pause the pane process: output remains live, follows at the bottom, and stays pinned when you navigate into history. The configured prefix keeps its normal meaning in copy mode; with the default prefix, `ctrl+b` enters prefix mode instead of paging up, so use a different prefix if you want `ctrl+b` for copy-mode page-up. Mouse drag-select copies without entering copy mode at all.
 
 ## Floating panes
 

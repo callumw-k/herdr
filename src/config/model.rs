@@ -381,7 +381,7 @@ pub struct KeysConfig {
     pub rename_pane: BindingConfig,
     /// Open the focused pane scrollback in $EDITOR. Default: "prefix+e".
     pub edit_scrollback: BindingConfig,
-    /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
+    /// Enter keyboard copy mode for the focused pane. Default: "prefix+u".
     pub copy_mode: BindingConfig,
     /// Focus the pane to the left. Default: "prefix+h".
     pub focus_pane_left: BindingConfig,
@@ -409,9 +409,9 @@ pub struct KeysConfig {
     pub split_vertical: BindingConfig,
     /// Set the tab to the horizontal arrangement and add a pane. Default: "prefix+minus"
     pub split_horizontal: BindingConfig,
-    /// Cycle the tab to the next pane arrangement. Default: "prefix+a"
+    /// Cycle the tab to the next pane arrangement. Default: "prefix+]"
     pub arrangement_next: BindingConfig,
-    /// Cycle the tab to the previous pane arrangement. Default: "prefix+shift+a"
+    /// Cycle the tab to the previous pane arrangement. Default: "prefix+["
     pub arrangement_previous: BindingConfig,
     /// Add a pane without changing the tab's arrangement. Default: "prefix+enter"
     pub new_pane: BindingConfig,
@@ -1022,7 +1022,7 @@ impl Default for KeysConfig {
             close_tab: BindingConfig::one("prefix+shift+x"),
             rename_pane: BindingConfig::one("prefix+shift+p"),
             edit_scrollback: BindingConfig::one("prefix+e"),
-            copy_mode: BindingConfig::one("prefix+["),
+            copy_mode: BindingConfig::one("prefix+u"),
             focus_pane_left: BindingConfig::one("prefix+h"),
             focus_pane_down: BindingConfig::one("prefix+j"),
             focus_pane_up: BindingConfig::one("prefix+k"),
@@ -1036,8 +1036,8 @@ impl Default for KeysConfig {
             last_pane: BindingConfig::empty(),
             split_vertical: BindingConfig::one("prefix+v"),
             split_horizontal: BindingConfig::one("prefix+minus"),
-            arrangement_next: BindingConfig::one("prefix+a"),
-            arrangement_previous: BindingConfig::one("prefix+shift+a"),
+            arrangement_next: BindingConfig::one("prefix+]"),
+            arrangement_previous: BindingConfig::one("prefix+["),
             new_pane: BindingConfig::one("prefix+enter"),
             close_pane: BindingConfig::one("prefix+x"),
             zoom: BindingConfig::one("prefix+z"),

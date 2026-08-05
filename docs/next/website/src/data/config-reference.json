@@ -418,7 +418,7 @@
         {
           "key": "keys.copy_mode",
           "type": "keybinding",
-          "default": "\"prefix+[\"",
+          "default": "\"prefix+u\"",
           "description": "Enter keyboard copy mode for the focused pane."
         },
         {
@@ -502,13 +502,13 @@
         {
           "key": "keys.arrangement_next",
           "type": "keybinding",
-          "default": "\"prefix+a\"",
+          "default": "\"prefix+]\"",
           "description": "Cycle the tab to the next pane arrangement."
         },
         {
           "key": "keys.arrangement_previous",
           "type": "keybinding",
-          "default": "\"prefix+shift+a\"",
+          "default": "\"prefix+[\"",
           "description": "Cycle the tab to the previous pane arrangement."
         },
         {
