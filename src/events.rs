@@ -138,6 +138,12 @@ pub enum AppEvent {
         pane_id: PaneId,
         cwd: std::path::PathBuf,
     },
+    /// A pane's foreground process (other than its own shell) changed, as
+    /// observed by the agent-detection process probe.
+    ForegroundProcessReported {
+        pane_id: PaneId,
+        name: Option<String>,
+    },
     /// Background git status refresh completed for workspaces.
     GitStatusRefreshed {
         results: Vec<WorkspaceGitStatus>,

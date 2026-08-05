@@ -128,6 +128,7 @@ pub struct TerminalState {
     pub metadata_tokens: crate::metadata_tokens::MetadataTokens,
     pub persisted_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
     pub terminal_title: Option<String>,
+    pub foreground_process_name: Option<String>,
     pub manual_label: Option<String>,
     pub agent_name: Option<String>,
     agent_name_owner: Option<AgentNameOwner>,
@@ -161,6 +162,7 @@ impl TerminalState {
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             persisted_agent_session: None,
             terminal_title: None,
+            foreground_process_name: None,
             manual_label: None,
             agent_name: None,
             agent_name_owner: None,
@@ -1991,8 +1993,9 @@ impl TerminalState {
     }
 
     pub fn border_label(&self, show_agent_labels: bool) -> Option<String> {
-        self.effective_title().or_else(|| {
-            self.manual_label.clone().or_else(|| {
+        self.effective_title()
+            .or_else(|| self.manual_label.clone())
+            .or_else(|| {
                 show_agent_labels
                     .then(|| {
                         self.effective_display_agent()
@@ -2000,7 +2003,6 @@ impl TerminalState {
                     })
                     .flatten()
             })
-        })
     }
 
     fn recompute_effective_state(
@@ -3792,6 +3794,15 @@ mod tests {
         terminal.set_manual_label("reviewer".into());
         terminal.clear_manual_label();
         assert_eq!(terminal.border_label(true).as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn border_label_does_not_fall_back_to_the_osc_title() {
+        let mut terminal = test_terminal();
+        terminal.set_terminal_title(Some("some-shell-title".into()));
+
+        assert_eq!(terminal.border_label(false), None);
+        assert_eq!(terminal.border_label(true), None);
     }
 
     #[test]

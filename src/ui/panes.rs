@@ -413,11 +413,25 @@ pub(super) fn render_panes(
         if let Some(info) = pane_infos.iter().find(|info| info.id == float_id) {
             if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, float_id)
             {
-                let title = ws
+                let float_terminal = ws
                     .terminal_id(float_id)
-                    .and_then(|terminal_id| app.terminals.get(terminal_id))
-                    .and_then(|terminal| terminal.manual_label.as_deref())
-                    .unwrap_or("float");
+                    .and_then(|terminal_id| app.terminals.get(terminal_id));
+                let title = float_terminal
+                    .and_then(|terminal| {
+                        terminal.border_label(app.show_agent_labels_on_pane_borders)
+                    })
+                    .or_else(|| {
+                        float_terminal.and_then(|terminal| terminal.terminal_title_stripped())
+                    })
+                    .or_else(|| {
+                        float_terminal.and_then(|terminal| terminal.foreground_process_name.clone())
+                    })
+                    .or_else(|| {
+                        float_terminal.and_then(|terminal| {
+                            terminal.cwd.file_name()?.to_str().map(str::to_string)
+                        })
+                    })
+                    .unwrap_or_else(|| "float".to_string());
                 let block = Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(if info.is_focused {
@@ -426,7 +440,7 @@ pub(super) fn render_panes(
                         app.palette.overlay0
                     }))
                     .title(
-                        pane_border_title(title, info.rect.width, info.is_focused)
+                        pane_border_title(&title, info.rect.width, info.is_focused)
                             .unwrap_or_default(),
                     )
                     .style(Style::default().bg(app.palette.panel_bg));
@@ -1693,6 +1707,167 @@ mod tests {
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
         assert_eq!(info.inner_rect, area);
+    }
+
+    #[tokio::test]
+    async fn render_panes_falls_back_to_cwd_basename_for_an_unlabeled_float() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 40, 12);
+
+        let mut ws = Workspace::test_new("test");
+        let float_id = PaneId::from_raw(60);
+        let float_terminal_id = crate::terminal::TerminalId::alloc();
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(float_terminal_id.clone()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b""),
+        );
+
+        let terminal_state =
+            TerminalState::new(float_terminal_id.clone(), "/home/user/zellij".into());
+        app.terminals.insert(float_terminal_id, terminal_state);
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let area = app.view.terminal_area;
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let pane_infos = compute_pane_infos(
+            &app,
+            &terminal_runtimes,
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let float_rect = pane_infos
+            .iter()
+            .find(|info| info.id == float_id)
+            .expect("float pane info")
+            .rect;
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|frame| render_panes(&app, &terminal_runtimes, frame, &pane_infos, &[], &[]))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let row: String = (float_rect.x..float_rect.x + float_rect.width)
+            .map(|x| buffer[(x, float_rect.y)].symbol())
+            .collect();
+        assert!(row.contains("zellij"), "float border row: {row:?}");
+    }
+
+    #[tokio::test]
+    async fn render_panes_prefers_foreground_process_name_over_cwd_basename_for_an_unlabeled_float()
+    {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 40, 12);
+
+        let mut ws = Workspace::test_new("test");
+        let float_id = PaneId::from_raw(61);
+        let float_terminal_id = crate::terminal::TerminalId::alloc();
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(float_terminal_id.clone()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b""),
+        );
+
+        let mut terminal_state =
+            TerminalState::new(float_terminal_id.clone(), "/home/user/herdr".into());
+        terminal_state.foreground_process_name = Some("nvim".to_string());
+        app.terminals.insert(float_terminal_id, terminal_state);
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let area = app.view.terminal_area;
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let pane_infos = compute_pane_infos(
+            &app,
+            &terminal_runtimes,
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let float_rect = pane_infos
+            .iter()
+            .find(|info| info.id == float_id)
+            .expect("float pane info")
+            .rect;
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|frame| render_panes(&app, &terminal_runtimes, frame, &pane_infos, &[], &[]))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let row: String = (float_rect.x..float_rect.x + float_rect.width)
+            .map(|x| buffer[(x, float_rect.y)].symbol())
+            .collect();
+        assert!(row.contains("nvim"), "float border row: {row:?}");
+        assert!(!row.contains("herdr"), "float border row: {row:?}");
+    }
+
+    #[tokio::test]
+    async fn render_panes_prefers_osc_title_over_cwd_basename_for_an_unlabeled_float() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 40, 12);
+
+        let mut ws = Workspace::test_new("test");
+        let float_id = PaneId::from_raw(62);
+        let float_terminal_id = crate::terminal::TerminalId::alloc();
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(float_terminal_id.clone()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b""),
+        );
+
+        let mut terminal_state =
+            TerminalState::new(float_terminal_id.clone(), "/home/user/herdr".into());
+        terminal_state.set_terminal_title(Some("ssh remote-host".to_string()));
+        app.terminals.insert(float_terminal_id, terminal_state);
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let area = app.view.terminal_area;
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let pane_infos = compute_pane_infos(
+            &app,
+            &terminal_runtimes,
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let float_rect = pane_infos
+            .iter()
+            .find(|info| info.id == float_id)
+            .expect("float pane info")
+            .rect;
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|frame| render_panes(&app, &terminal_runtimes, frame, &pane_infos, &[], &[]))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let row: String = (float_rect.x..float_rect.x + float_rect.width)
+            .map(|x| buffer[(x, float_rect.y)].symbol())
+            .collect();
+        assert!(row.contains("ssh remote-host"), "float border row: {row:?}");
+        assert!(!row.contains("herdr"), "float border row: {row:?}");
     }
 
     #[test]

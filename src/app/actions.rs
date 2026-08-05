@@ -2997,6 +2997,19 @@ impl AppState {
                 let _ = cache_updates;
                 Vec::new()
             }
+            AppEvent::ForegroundProcessReported { pane_id, name } => {
+                let Some(terminal_id) = self.workspaces.iter().find_map(|ws| {
+                    ws.pane_state(pane_id)
+                        .map(|pane| pane.attached_terminal_id.clone())
+                }) else {
+                    return Vec::new();
+                };
+                let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+                    return Vec::new();
+                };
+                terminal.foreground_process_name = name;
+                Vec::new()
+            }
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
             AppEvent::PluginCommandFinished { .. } => Vec::new(),
@@ -5502,6 +5515,53 @@ mod tests {
         assert_eq!(state.terminals.get(&terminal_id).unwrap().cwd, cwd);
         assert!(state.session_dirty);
         let _ = std::fs::remove_dir_all(cwd);
+    }
+
+    #[test]
+    fn foreground_process_report_updates_terminal_foreground_process_name() {
+        let mut state = app_with_workspaces(&["active"]);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        let terminal_id = state.workspaces[0]
+            .pane_state(pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        state.session_dirty = false;
+
+        let updates = state.handle_app_event(AppEvent::ForegroundProcessReported {
+            pane_id,
+            name: Some("nvim".to_string()),
+        });
+
+        assert!(updates.is_empty());
+        assert_eq!(
+            state
+                .terminals
+                .get(&terminal_id)
+                .unwrap()
+                .foreground_process_name
+                .as_deref(),
+            Some("nvim")
+        );
+        assert!(
+            !state.session_dirty,
+            "foreground process name must not be persisted"
+        );
+
+        let updates = state.handle_app_event(AppEvent::ForegroundProcessReported {
+            pane_id,
+            name: None,
+        });
+
+        assert!(updates.is_empty());
+        assert_eq!(
+            state
+                .terminals
+                .get(&terminal_id)
+                .unwrap()
+                .foreground_process_name,
+            None
+        );
     }
 
     #[test]
