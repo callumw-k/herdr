@@ -1997,8 +1997,8 @@ impl AppState {
         let Some(tab) = self.workspaces.get(ws_idx).and_then(|ws| ws.active_tab()) else {
             return;
         };
-        let ids = tab.layout.pane_ids();
-        if let Some(pos) = ids.iter().position(|id| *id == tab.layout.focused()) {
+        let ids = tab.focused_layer_pane_ids();
+        if let Some(pos) = ids.iter().position(|id| *id == tab.focused_pane()) {
             let target = if reverse {
                 ids[(pos + ids.len() - 1) % ids.len()]
             } else {
@@ -5917,6 +5917,58 @@ mod tests {
         let tab = state.workspaces[0].active_tab().expect("a tab");
         assert_eq!(tab.float_arrangement, float_before, "float layer untouched");
         assert_ne!(tab.arrangement, Arrangement::Grid, "tiled layer cycled");
+    }
+
+    #[test]
+    fn cycling_panes_walks_the_focused_float_layer() {
+        let (mut state, ids) = app_with_float_stack(3);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert!(tab.float_focused);
+        assert_eq!(tab.focused_pane(), ids[2]);
+
+        state.cycle_pane(false);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(
+            tab.focused_pane(),
+            ids[0],
+            "forward wraps within the float layer"
+        );
+
+        state.cycle_pane(true);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(tab.focused_pane(), ids[2], "backward wraps the other way");
+    }
+
+    #[test]
+    fn cycling_panes_never_leaves_the_float_layer_for_a_tiled_pane() {
+        let (mut state, ids) = app_with_float_stack(2);
+        let tiled = state.workspaces[0]
+            .active_tab()
+            .expect("a tab")
+            .layout
+            .focused();
+        for _ in 0..4 {
+            state.cycle_pane(false);
+            let tab = state.workspaces[0].active_tab().expect("a tab");
+            assert_ne!(tab.focused_pane(), tiled, "cycling must not cross layers");
+            assert!(ids.contains(&tab.focused_pane()));
+        }
+    }
+
+    #[test]
+    fn cycling_panes_walks_the_tiled_layer_when_floats_are_hidden() {
+        let (mut state, _) = app_with_float_stack(2);
+        let tiled = {
+            let tab = state.workspaces[0].active_tab_mut().expect("a tab");
+            // A stale focus flag on a hidden layer must not capture cycling.
+            tab.floats_hidden = true;
+            tab.layout.focused()
+        };
+
+        state.cycle_pane(false);
+
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(tab.focused_pane(), tiled, "single tiled pane stays focused");
     }
 
     #[test]

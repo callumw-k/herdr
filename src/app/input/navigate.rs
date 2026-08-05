@@ -735,7 +735,7 @@ impl App {
         let Some(tab) = self.state.workspaces[ws_idx].active_tab() else {
             return;
         };
-        let ids = tab.layout.pane_ids();
+        let ids = tab.focused_layer_pane_ids();
         let Some(pos) = ids.iter().position(|id| *id == pane_id) else {
             return;
         };

@@ -265,6 +265,16 @@ impl Tab {
     /// Focus resolves to the focused float when the floating layer holds focus,
     /// otherwise to the tiled layer. `layout.focused()` keeps tracking the
     /// tiled focus independently, so returning to it needs no saved-focus field.
+    /// The pane ids of whichever layer holds focus. Cycling and directional
+    /// movement both stay within one layer, because the layers overlap.
+    pub fn focused_layer_pane_ids(&self) -> Vec<PaneId> {
+        if self.float_focused && !self.floats_hidden {
+            self.floats()
+        } else {
+            self.layout.pane_ids()
+        }
+    }
+
     pub fn focused_pane(&self) -> PaneId {
         self.float_focused
             .then(|| self.focused_float())
