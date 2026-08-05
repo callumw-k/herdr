@@ -393,8 +393,20 @@ impl App {
                 leave_navigate_mode(&mut self.state);
             }
             NavigateAction::NewPane => {
-                let direction = self.new_pane_split_direction();
-                self.split_focused_pane_via_api(direction);
+                // Same rule as NewTab: while the floating layer is up, creation
+                // acts on it rather than on the tiled panes underneath.
+                if let Some(ws_idx) = self
+                    .state
+                    .active
+                    .filter(|_| self.state.float_layer_is_open())
+                {
+                    if let Err(err) = self.open_float_pane(ws_idx, None) {
+                        tracing::warn!(%err, "failed to open floating pane");
+                    }
+                } else {
+                    let direction = self.new_pane_split_direction();
+                    self.split_focused_pane_via_api(direction);
+                }
                 leave_navigate_mode(&mut self.state);
             }
             NavigateAction::ClosePane => {
@@ -583,6 +595,9 @@ impl App {
     }
 
     pub(crate) fn focus_pane_direction_via_api(&mut self, direction: NavDirection) {
+        if self.state.cycle_float_stack_for_direction(direction) {
+            return;
+        }
         if let Some((ws_idx, target)) = self.directional_pane_target_from_view(direction) {
             self.focus_pane_internal_via_api(ws_idx, target);
             return;
@@ -1867,7 +1882,12 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::NewPane => {
-            state.new_pane_in_arrangement(terminal_runtimes);
+            // Mirrors the App path: with the floating layer up, creation targets
+            // it, which this harness cannot do — see NewFloat below. Splitting a
+            // tiled pane here instead would diverge from production.
+            if !state.float_layer_is_open() {
+                state.new_pane_in_arrangement(terminal_runtimes);
+            }
             leave_navigate_mode(state);
         }
         NavigateAction::ClosePane => {

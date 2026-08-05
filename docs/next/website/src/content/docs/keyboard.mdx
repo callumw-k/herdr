@@ -87,6 +87,8 @@ A floating pane sits above the tab's normal split layout in a centred box, inste
 
 While a floating pane is visible, `prefix+c` opens another floating pane instead of a new tab. Hide the floating layer first if you want `prefix+c` to create a tab as usual.
 
+`prefix+enter` follows the same rule: with the floating layer up it adds another float rather than a tiled pane. When the floating layer holds focus, `focus_pane_up` and `focus_pane_down` move through the float stack instead of the tiled panes, up towards the preview bars and down back to the front.
+
 Floats persist across a server restart along with their scrollback, and Herdr treats them as ordinary panes for agent detection. This is different from the session-modal popup opened by a `type = "popup"` custom command (see [Custom command keybindings](/docs/configuration/#custom-command-keybindings)): that popup takes over all terminal input until its command exits, while a floating pane is a regular interactive pane you can leave running.
 
 Configure the default float size with `ui.floating_pane_width` and `ui.floating_pane_height`; see [UI and sidebar](/docs/configuration/#ui-and-sidebar).

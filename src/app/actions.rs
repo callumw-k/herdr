@@ -357,6 +357,38 @@ impl AppState {
     }
 
     #[allow(dead_code)] // consumed by later floating-panes tasks (input/render layers)
+    /// True when the floating layer has something visible. Creation keys act on
+    /// the float layer while this holds, matching the existing new-tab rule.
+    pub(crate) fn float_layer_is_open(&self) -> bool {
+        self.active
+            .and_then(|ws_idx| self.workspaces.get(ws_idx))
+            .and_then(|ws| ws.active_tab())
+            .is_some_and(|tab| tab.top_float().is_some())
+    }
+
+    /// Floats are a z-order stack drawn as preview bars above the visible one,
+    /// so up moves towards those bars and down comes back. Only applies while
+    /// the floating layer holds focus; the tiled layer keeps its own geometry.
+    /// Returns true when it consumed the direction.
+    pub(crate) fn cycle_float_stack_for_direction(
+        &mut self,
+        direction: crate::layout::NavDirection,
+    ) -> bool {
+        use crate::layout::NavDirection;
+        if !matches!(direction, NavDirection::Up | NavDirection::Down) {
+            return false;
+        }
+        let cycles = self
+            .active
+            .and_then(|ws_idx| self.workspaces.get(ws_idx))
+            .and_then(|ws| ws.active_tab())
+            .is_some_and(|tab| tab.float_focused && !tab.floats_hidden && tab.floats.len() > 1);
+        if !cycles {
+            return false;
+        }
+        self.cycle_floats_in_active_tab(matches!(direction, NavDirection::Up))
+    }
+
     pub(crate) fn cycle_floats_in_active_tab(&mut self, forward: bool) -> bool {
         let Some(ws_idx) = self.active else {
             return false;
@@ -3490,6 +3522,89 @@ mod tests {
     use crate::detect::{Agent, AgentState};
     use crate::workspace::Workspace;
     use ratatui::layout::Direction;
+
+    fn app_with_float_stack(count: usize) -> (AppState, Vec<crate::layout::PaneId>) {
+        use crate::pane::PaneState;
+        use crate::terminal::TerminalId;
+
+        let mut state = app_with_workspaces(&["ws"]);
+        state.active = Some(0);
+        let mut ids = Vec::new();
+        let tab = state.workspaces[0].active_tab_mut().expect("a tab");
+        for _ in 0..count {
+            let id = crate::layout::PaneId::alloc();
+            tab.push_float(id, PaneState::new(TerminalId::alloc()));
+            ids.push(id);
+        }
+        (state, ids)
+    }
+
+    #[test]
+    fn up_moves_towards_the_float_preview_bars_and_down_comes_back() {
+        use crate::layout::NavDirection;
+        let (mut state, ids) = app_with_float_stack(3);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(tab.top_float(), Some(ids[2]));
+
+        assert!(state.cycle_float_stack_for_direction(NavDirection::Up));
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(tab.top_float(), Some(ids[1]), "up shows the bar just above");
+
+        assert!(state.cycle_float_stack_for_direction(NavDirection::Down));
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(
+            tab.top_float(),
+            Some(ids[2]),
+            "down returns to where we were"
+        );
+    }
+
+    #[test]
+    fn new_pane_targets_the_float_layer_while_it_is_open() {
+        let (mut state, _) = app_with_float_stack(2);
+        assert!(state.float_layer_is_open());
+
+        // Hiding the layer hands creation back to the tiled panes.
+        state.workspaces[0]
+            .active_tab_mut()
+            .expect("a tab")
+            .set_floats_hidden(true);
+        assert!(!state.float_layer_is_open());
+    }
+
+    #[test]
+    fn left_and_right_never_cycle_the_float_stack() {
+        use crate::layout::NavDirection;
+        let (mut state, ids) = app_with_float_stack(3);
+        for direction in [NavDirection::Left, NavDirection::Right] {
+            assert!(!state.cycle_float_stack_for_direction(direction));
+        }
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(tab.top_float(), Some(ids[2]));
+    }
+
+    #[test]
+    fn the_tiled_layer_keeps_its_own_up_and_down() {
+        use crate::layout::NavDirection;
+        // A single float, the layer hidden, or focus back on the tiled panes all
+        // leave directional navigation to the tiled geometry.
+        let (mut state, _) = app_with_float_stack(1);
+        assert!(!state.cycle_float_stack_for_direction(NavDirection::Up));
+
+        let (mut state, _) = app_with_float_stack(3);
+        state.workspaces[0]
+            .active_tab_mut()
+            .expect("a tab")
+            .floats_hidden = true;
+        assert!(!state.cycle_float_stack_for_direction(NavDirection::Up));
+
+        let (mut state, _) = app_with_float_stack(3);
+        state.workspaces[0]
+            .active_tab_mut()
+            .expect("a tab")
+            .float_focused = false;
+        assert!(!state.cycle_float_stack_for_direction(NavDirection::Up));
+    }
 
     fn app_with_workspaces(names: &[&str]) -> AppState {
         let mut state = AppState::test_new();
