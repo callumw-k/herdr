@@ -974,6 +974,33 @@ fn plugin_link_list_unlink_round_trip() {
 }
 
 #[test]
+fn a_stack_layout_node_round_trips_through_json() {
+    let node = LayoutNode::Stack {
+        panes: vec![
+            LayoutPane {
+                pane_id: Some("1".into()),
+                ..Default::default()
+            },
+            LayoutPane {
+                pane_id: Some("2".into()),
+                ..Default::default()
+            },
+        ],
+        active: 1,
+    };
+    let json = serde_json::to_string(&node).expect("serialises");
+    assert!(json.contains(r#""type":"stack""#));
+    let back: LayoutNode = serde_json::from_str(&json).expect("deserialises");
+    assert_eq!(back, node);
+}
+
+#[test]
+fn arrangement_serialises_as_snake_case() {
+    let json = serde_json::to_string(&ArrangementSchema::Stacked).expect("serialises");
+    assert_eq!(json, r#""stacked""#);
+}
+
+#[test]
 fn layout_export_apply_round_trip() {
     let root = LayoutNode::Split {
         direction: SplitDirection::Right,
@@ -1030,6 +1057,7 @@ fn layout_export_apply_round_trip() {
                 tab_id: "w1:1".into(),
                 zoomed: false,
                 focused_pane_id: "w1-1".into(),
+                arrangement: ArrangementSchema::Grid,
                 root,
             },
         },
@@ -1046,6 +1074,7 @@ fn layout_export_apply_round_trip() {
                 tab_id: "w1:1".into(),
                 zoomed: false,
                 focused_pane_id: "w1-1".into(),
+                arrangement: ArrangementSchema::Grid,
                 root: LayoutNode::Pane {
                     pane: LayoutPane {
                         pane_id: Some("w1-1".into()),

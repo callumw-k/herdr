@@ -491,13 +491,31 @@
           "key": "keys.split_vertical",
           "type": "keybinding",
           "default": "\"prefix+v\"",
-          "description": "Split pane vertically (side by side)."
+          "description": "Set the tab to the vertical arrangement (even columns) and add a pane."
         },
         {
           "key": "keys.split_horizontal",
           "type": "keybinding",
           "default": "\"prefix+minus\"",
-          "description": "Split pane horizontally (stacked)."
+          "description": "Set the tab to the horizontal arrangement (even rows) and add a pane."
+        },
+        {
+          "key": "keys.arrangement_next",
+          "type": "keybinding",
+          "default": "\"prefix+a\"",
+          "description": "Cycle the tab to the next pane arrangement."
+        },
+        {
+          "key": "keys.arrangement_previous",
+          "type": "keybinding",
+          "default": "\"prefix+shift+a\"",
+          "description": "Cycle the tab to the previous pane arrangement."
+        },
+        {
+          "key": "keys.new_pane",
+          "type": "keybinding",
+          "default": "\"prefix+enter\"",
+          "description": "Add a pane without changing the tab's arrangement."
         },
         {
           "key": "keys.close_pane",

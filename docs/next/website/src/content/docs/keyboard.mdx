@@ -38,6 +38,8 @@ Panes:
 | Zoom the focused pane | `prefix+z` |
 | Close pane | `prefix+x` |
 | Swap panes | `prefix+shift+h/j/k/l` |
+| Cycle pane arrangement | `prefix+a` / `prefix+shift+a` |
+| New pane in the current arrangement | `prefix+enter` |
 | Resize mode | `prefix+r` |
 | Copy mode | `prefix+[` |
 | New floating pane | `prefix+f` |
@@ -64,6 +66,14 @@ Workspaces and session:
 | Toggle sidebar | `prefix+b` |
 
 The full keymap and the binding syntax live in the [keybinding reference](/docs/configuration/#keybindings).
+
+## Pane arrangements
+
+Each tab lays its panes out under one arrangement: even columns, even rows, a grid, or a single stack. `prefix+a` and `prefix+shift+a` cycle through them, rebuilding the tab from its panes in order, so a full lap brings back the layout you started with. [Concepts](/docs/concepts/) describes what each one looks like.
+
+`prefix+v` and `prefix+minus` set the arrangement as well as adding a pane: `prefix+v` switches the tab to even columns, `prefix+minus` to even rows, and the whole tab is rebuilt either way. Pressing `prefix+v` twice gives three even columns rather than a split nested inside a split. Use `prefix+enter` when you want another pane in the shape the tab already has.
+
+Rebuilding a tab discards manual sizing. A border you drag, or resize with `prefix+r`, holds until the next pane is created or closed, and then the arrangement's even sizing takes over.
 
 ## Copy mode
 

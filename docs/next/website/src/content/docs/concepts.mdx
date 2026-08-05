@@ -23,6 +23,21 @@ A pane is a real terminal. Herdr renders the terminal output, sends input back t
 
 Panes can be split right or down. They can be renamed manually, read from the CLI, sent input, and closed.
 
+## Arrangement
+
+An arrangement is the shape a tab lays its panes out in. Every tab always has exactly one, and a new tab starts in `grid`.
+
+| Arrangement | Layout |
+| --- | --- |
+| `vertical` | Even columns side by side. |
+| `horizontal` | Even rows top to bottom. |
+| `grid` | A balanced rectangular grid. |
+| `stacked` | One stack. The focused pane fills the tab and the others collapse to single-row title bars above and below it. Click a bar to focus that pane. |
+
+`prefix+a` and `prefix+shift+a` cycle a tab through them. Cycling regenerates the tab from its panes in order, so a full lap returns the layout you started with. Splitting right or down sets the arrangement as well as adding a pane, which means `prefix+v` twice gives three even columns rather than a split nested inside a split. `prefix+enter` adds a pane without changing the arrangement.
+
+Regenerating discards manual sizing. A split border you drag holds until the next pane is created or closed, then the arrangement's even sizing takes over. Arbitrary tree shapes are still reachable through the socket API's `layout.apply`.
+
 ## Mouse UI
 
 Herdr is mouse-native. You can click panes, tabs, workspaces, and agents. You can drag split borders, select text, and use right-click menus. Everything below is also reachable by mouse; keyboard bindings are an optional layer.

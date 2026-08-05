@@ -7,9 +7,9 @@ use tracing::{info, warn};
 
 use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
-use crate::layout::PaneId;
 #[cfg(test)]
 use crate::layout::{find_in_direction, NavDirection};
+use crate::layout::{Arrangement, PaneId};
 use crate::selection::Selection;
 use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
 use crate::workspace::WorkspaceGitStatus;
@@ -408,6 +408,35 @@ impl AppState {
             return true;
         }
         false
+    }
+
+    pub(crate) fn set_tab_arrangement(&mut self, arrangement: Arrangement) {
+        let Some(ws_idx) = self.active else {
+            return;
+        };
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return;
+        };
+        let Some(tab) = ws.active_tab_mut() else {
+            return;
+        };
+        tab.arrangement = arrangement;
+        tab.needs_reflow = true;
+        self.mark_session_dirty();
+    }
+
+    pub(crate) fn cycle_tab_arrangement(&mut self, forward: bool) {
+        let Some(ws_idx) = self.active else {
+            return;
+        };
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return;
+        };
+        let Some(tab) = ws.active_tab_mut() else {
+            return;
+        };
+        tab.cycle_arrangement(forward);
+        self.mark_session_dirty();
     }
 
     #[cfg(test)]
@@ -5769,6 +5798,28 @@ mod tests {
         assert_eq!(toast.kind, ToastKind::UpdateInstalled);
         assert_eq!(toast.title, "Agent detection rules updated");
         assert_eq!(toast.context, "codex 2026.06.10.1");
+    }
+
+    #[test]
+    fn set_tab_arrangement_updates_active_tab_and_marks_reflow() {
+        let mut state = app_with_workspaces(&["test"]);
+        state.set_tab_arrangement(Arrangement::Stacked);
+        let tab = &state.workspaces[0].tabs[0];
+        assert_eq!(tab.arrangement, Arrangement::Stacked);
+        assert!(tab.needs_reflow);
+    }
+
+    #[test]
+    fn cycle_tab_arrangement_advances_and_wraps() {
+        let mut state = app_with_workspaces(&["test"]);
+        assert_eq!(state.workspaces[0].tabs[0].arrangement, Arrangement::Grid);
+        state.cycle_tab_arrangement(true);
+        assert_eq!(
+            state.workspaces[0].tabs[0].arrangement,
+            Arrangement::Stacked
+        );
+        state.cycle_tab_arrangement(false);
+        assert_eq!(state.workspaces[0].tabs[0].arrangement, Arrangement::Grid);
     }
 
     #[test]

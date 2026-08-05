@@ -172,7 +172,7 @@ CLI 的 `herdr api snapshot` 会把当前 `session.snapshot` 响应输出为 JSO
 {"id":"req_export","method":"layout.export","params":{"tab_id":"w1:t1"}}
 ```
 
-响应包含 `workspace_id`、`tab_id`、`zoomed`、`focused_pane_id` 和 `root`。`root` 是由 `pane` 和 `split` 节点组成的 BSP 树。窗格节点可以包含 `pane_id`、`label`、`cwd` 和 argv `command`。分割节点使用 `direction` (`right` 或 `down`)、`ratio`、`first` 和 `second`。
+响应包含 `workspace_id`、`tab_id`、`zoomed`、`focused_pane_id`、`arrangement` 和 `root`。`arrangement` 是标签页的窗格排布,取值为 `vertical`、`horizontal`、`grid` 或 `stacked`。`root` 是由 `pane`、`split` 和 `stack` 节点组成的 BSP 树。窗格节点可以包含 `pane_id`、`label`、`cwd` 和 argv `command`。分割节点使用 `direction` (`right` 或 `down`)、`ratio`、`first` 和 `second`。堆叠节点使用 `panes` (窗格节点的扁平列表) 和 `active` (展开成员的下标)。堆叠不能嵌套,也不能包含分割。`arrangement` 表示标签页如何重新流动；`layout.apply` 以 `Split` 根调用后，标签页保留既有的排布值，直到下一个窗格创建或关闭。
 
 `layout.apply` 从声明式的树创建一个新标签页。提供 `tab_id` 时,Herdr 先创建替代标签页,再关闭旧标签页。它会恢复结构、标签、cwd、env 和可选的 argv 命令;不会保留活跃的 PTY、回滚内容或运行中的进程。
 

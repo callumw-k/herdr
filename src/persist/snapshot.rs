@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use ratatui::layout::Direction;
 use serde::{Deserialize, Serialize};
 
-use crate::layout::Node;
+use crate::layout::{Arrangement, Node};
 use crate::terminal::TerminalRuntimeRegistry;
 use crate::workspace::Workspace;
 
@@ -98,6 +98,8 @@ pub struct TabSnapshot {
     pub floats_hidden: bool,
     #[serde(default)]
     pub float_focused: bool,
+    #[serde(default)]
+    pub arrangement: ArrangementSnapshot,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -130,7 +132,7 @@ pub struct PaneHistorySnapshot {
 }
 
 /// Serializable BSP tree.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum LayoutSnapshot {
     Pane(u32),
     Split {
@@ -139,12 +141,50 @@ pub enum LayoutSnapshot {
         first: Box<LayoutSnapshot>,
         second: Box<LayoutSnapshot>,
     },
+    Stack {
+        panes: Vec<u32>,
+        active: usize,
+    },
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum DirectionSnapshot {
     Horizontal,
     Vertical,
+}
+
+/// Mirrors `Arrangement` for the on-disk format so a session snapshot round
+/// trips the tab's arrangement without depending on the layout module's enum
+/// representation.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArrangementSnapshot {
+    Vertical,
+    Horizontal,
+    #[default]
+    Grid,
+    Stacked,
+}
+
+impl From<Arrangement> for ArrangementSnapshot {
+    fn from(arrangement: Arrangement) -> Self {
+        match arrangement {
+            Arrangement::Vertical => ArrangementSnapshot::Vertical,
+            Arrangement::Horizontal => ArrangementSnapshot::Horizontal,
+            Arrangement::Grid => ArrangementSnapshot::Grid,
+            Arrangement::Stacked => ArrangementSnapshot::Stacked,
+        }
+    }
+}
+
+impl From<ArrangementSnapshot> for Arrangement {
+    fn from(snapshot: ArrangementSnapshot) -> Self {
+        match snapshot {
+            ArrangementSnapshot::Vertical => Arrangement::Vertical,
+            ArrangementSnapshot::Horizontal => Arrangement::Horizontal,
+            ArrangementSnapshot::Grid => Arrangement::Grid,
+            ArrangementSnapshot::Stacked => Arrangement::Stacked,
+        }
+    }
 }
 
 impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
@@ -160,6 +200,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             floats: Vec::new(),
             floats_hidden: false,
             float_focused: false,
+            arrangement: ArrangementSnapshot::default(),
         };
 
         Self {
@@ -254,6 +295,7 @@ fn first_pane_id_in_layout(layout: &LayoutSnapshot) -> Option<u32> {
         LayoutSnapshot::Split { first, second, .. } => {
             first_pane_id_in_layout(first).or_else(|| first_pane_id_in_layout(second))
         }
+        LayoutSnapshot::Stack { panes, .. } => panes.first().copied(),
     }
 }
 
@@ -390,6 +432,7 @@ fn capture_tab(
         floats: tab.floats.iter().map(|id| id.raw()).collect(),
         floats_hidden: tab.floats_hidden,
         float_focused: tab.float_focused,
+        arrangement: tab.arrangement.into(),
     }
 }
 
@@ -455,6 +498,10 @@ pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
             ratio: *ratio,
             first: Box::new(capture_node(first)),
             second: Box::new(capture_node(second)),
+        },
+        Node::Stack { panes, active } => LayoutSnapshot::Stack {
+            panes: panes.iter().map(|id| id.raw()).collect(),
+            active: *active,
         },
     }
 }
@@ -566,7 +613,7 @@ mod tests {
     fn root_split_ratio(tab: &TabSnapshot) -> Option<f32> {
         match &tab.layout {
             LayoutSnapshot::Split { ratio, .. } => Some(*ratio),
-            LayoutSnapshot::Pane(_) => None,
+            LayoutSnapshot::Pane(_) | LayoutSnapshot::Stack { .. } => None,
         }
     }
 
@@ -699,6 +746,7 @@ mod tests {
                     floats: Vec::new(),
                     floats_hidden: false,
                     float_focused: false,
+                    arrangement: ArrangementSnapshot::default(),
                 }],
                 active_tab: 0,
             }],
@@ -1264,6 +1312,7 @@ mod tests {
                     floats: Vec::new(),
                     floats_hidden: false,
                     float_focused: false,
+                    arrangement: ArrangementSnapshot::default(),
                 }],
                 active_tab: 0,
             }],
@@ -1319,5 +1368,16 @@ mod tests {
         assert!(snap.floats.is_empty());
         assert!(!snap.floats_hidden);
         assert!(!snap.float_focused);
+    }
+
+    #[test]
+    fn a_snapshot_without_an_arrangement_restores_as_grid() {
+        let json = r#"{
+            "layout": {"Pane": 1},
+            "panes": {},
+            "zoomed": false
+        }"#;
+        let snapshot: TabSnapshot = serde_json::from_str(json).expect("legacy snapshot parses");
+        assert_eq!(snapshot.arrangement, ArrangementSnapshot::Grid);
     }
 }

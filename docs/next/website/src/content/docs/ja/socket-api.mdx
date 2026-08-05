@@ -172,7 +172,7 @@ CLI の `herdr api snapshot` は、クライアントやエージェントが簡
 {"id":"req_export","method":"layout.export","params":{"tab_id":"w1:t1"}}
 ```
 
-レスポンスには `workspace_id`、`tab_id`、`zoomed`、`focused_pane_id`、`root` が含まれます。`root` は `pane` ノードと `split` ノードの BSP ツリーです。ペインノードは `pane_id`、`label`、`cwd`、argv の `command` を含められます。分割ノードは `direction` (`right` または `down`)、`ratio`、`first`、`second` を使います。
+レスポンスには `workspace_id`、`tab_id`、`zoomed`、`focused_pane_id`、`arrangement`、`root` が含まれます。`arrangement` はタブのペインアレンジメントで、`vertical`、`horizontal`、`grid`、`stacked` のいずれかです。`root` は `pane`、`split`、`stack` ノードの BSP ツリーです。ペインノードは `pane_id`、`label`、`cwd`、argv の `command` を含められます。分割ノードは `direction` (`right` または `down`)、`ratio`、`first`、`second` を使います。スタックノードは、ペインノードのフラットなリストである `panes` と、展開されているメンバーのインデックスである `active` を使います。スタックは入れ子にできず、分割を含められません。`arrangement` はタブの再レイアウト方法を示します。`layout.apply` が `Split` ルートで呼ばれた場合、次のペインの作成または削除までタブは既存のアレンジメント値を保ちます。
 
 `layout.apply` は宣言的なツリーから新しいタブを作成します。`tab_id` が与えられた場合、Herdr は先に置き換え用のタブを作成してから古いタブを閉じます。これは構造、ラベル、cwd、env、任意の argv コマンドを復元しますが、ライブの PTY、スクロールバック、実行中プロセスは保存しません。
 

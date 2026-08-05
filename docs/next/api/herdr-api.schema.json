@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "protocol": 19,
+  "protocol": 20,
   "schema_version": 1,
   "schemas": {
     "error_response": {
@@ -2270,8 +2270,71 @@
                 "second"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "active": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "panes": {
+                  "items": {
+                    "$ref": "#/schemas/request/$defs/LayoutPane"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "stack",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "panes",
+                "active"
+              ],
+              "type": "object"
             }
           ]
+        },
+        "LayoutPane": {
+          "properties": {
+            "command": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
         },
         "LayoutSetSplitRatioParams": {
           "properties": {
@@ -6385,6 +6448,16 @@
           ],
           "type": "string"
         },
+        "ArrangementSchema": {
+          "description": "The whole-tab pane arrangement. A shared runtime fact: it determines the\nshape of the server-owned pane tree, so it is exposed on the API rather\nthan kept as TUI-only state.",
+          "enum": [
+            "vertical",
+            "horizontal",
+            "grid",
+            "stacked"
+          ],
+          "type": "string"
+        },
         "ClientWindowTitleReason": {
           "enum": [
             "set",
@@ -7244,6 +7317,9 @@
         },
         "LayoutDescription": {
           "properties": {
+            "arrangement": {
+              "$ref": "#/schemas/success_response/$defs/ArrangementSchema"
+            },
             "focused_pane_id": {
               "type": "string"
             },
@@ -7265,6 +7341,7 @@
             "tab_id",
             "zoomed",
             "focused_pane_id",
+            "arrangement",
             "root"
           ],
           "type": "object"
@@ -7344,8 +7421,71 @@
                 "second"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "active": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "panes": {
+                  "items": {
+                    "$ref": "#/schemas/success_response/$defs/LayoutPane"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "const": "stack",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "panes",
+                "active"
+              ],
+              "type": "object"
             }
           ]
+        },
+        "LayoutPane": {
+          "properties": {
+            "command": {
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "env": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
         },
         "NotificationShowReason": {
           "enum": [

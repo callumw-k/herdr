@@ -243,6 +243,14 @@ fn compute_view_internal(
         .map(|ws| desktop_tab_bar_and_terminal_area(app, ws, main_area))
         .unwrap_or((Rect::default(), main_area));
 
+    if let Some(tab) = app
+        .active
+        .and_then(|i| app.workspaces.get_mut(i))
+        .and_then(|ws| ws.active_tab_mut())
+    {
+        tab.reflow(terminal_area);
+    }
+
     if !app.sidebar_collapsed {
         app.workspace_scroll = normalized_workspace_scroll(app, sidebar_area, app.workspace_scroll);
         let (_, detail_area) = expanded_sidebar_sections(sidebar_area, app.sidebar_section_split);
@@ -345,6 +353,14 @@ fn compute_mobile_view(
         let switcher_viewport_h = area.height.saturating_sub(header_h + 1);
         let max_scroll = mobile_switcher_max_scroll_for_height(app, switcher_viewport_h);
         app.mobile_switcher_scroll = app.mobile_switcher_scroll.min(max_scroll);
+    }
+
+    if let Some(tab) = app
+        .active
+        .and_then(|i| app.workspaces.get_mut(i))
+        .and_then(|ws| ws.active_tab_mut())
+    {
+        tab.reflow(terminal_area);
     }
 
     let TabSurfaceLayout {

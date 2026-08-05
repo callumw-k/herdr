@@ -2443,6 +2443,44 @@ mod tests {
         );
     }
 
+    // Collapsed stack bars are ordinary `PaneInfo` rects (`stack_rects`
+    // assigns every stack member one), so the general click-to-focus path
+    // needs no stack-specific handling: this only characterizes that it
+    // already covers a click on the bar's rect.
+    #[tokio::test]
+    async fn clicking_a_collapsed_stack_bar_focuses_that_pane() {
+        let mut app = app_for_mouse_test();
+        let mut ws = Workspace::test_new("test");
+        let first = ws.tabs[0].root_pane;
+        let second = ws.test_split(Direction::Horizontal);
+        ws.tabs[0].layout.focus_pane(second);
+        ws.tabs[0].arrangement = crate::layout::Arrangement::Stacked;
+        ws.tabs[0].needs_reflow = true;
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 100, 20));
+
+        let collapsed = app
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.rect.height == 1)
+            .expect("a collapsed stack bar")
+            .clone();
+        assert_eq!(collapsed.id, first, "the non-active member collapses");
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            collapsed.rect.x,
+            collapsed.rect.y,
+        ));
+
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(first));
+    }
+
     #[tokio::test]
     async fn normal_right_click_keeps_focus_and_exposes_swap_for_reporting_pane() {
         let mut app = app_for_mouse_test();

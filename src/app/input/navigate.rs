@@ -17,7 +17,7 @@ use crate::{
         App,
     },
     input::TerminalKey,
-    layout::NavDirection,
+    layout::{Arrangement, NavDirection},
     terminal::TerminalRuntimeRegistry,
 };
 
@@ -375,11 +375,26 @@ impl App {
                 leave_navigate_mode(&mut self.state);
             }
             NavigateAction::SplitVertical => {
+                self.state.set_tab_arrangement(Arrangement::Vertical);
                 self.split_focused_pane_via_api(crate::api::schema::SplitDirection::Right);
                 leave_navigate_mode(&mut self.state);
             }
             NavigateAction::SplitHorizontal => {
+                self.state.set_tab_arrangement(Arrangement::Horizontal);
                 self.split_focused_pane_via_api(crate::api::schema::SplitDirection::Down);
+                leave_navigate_mode(&mut self.state);
+            }
+            NavigateAction::ArrangementNext => {
+                self.state.cycle_tab_arrangement(true);
+                leave_navigate_mode(&mut self.state);
+            }
+            NavigateAction::ArrangementPrevious => {
+                self.state.cycle_tab_arrangement(false);
+                leave_navigate_mode(&mut self.state);
+            }
+            NavigateAction::NewPane => {
+                let direction = self.new_pane_split_direction();
+                self.split_focused_pane_via_api(direction);
                 leave_navigate_mode(&mut self.state);
             }
             NavigateAction::ClosePane => {
@@ -634,6 +649,23 @@ impl App {
                 env: Default::default(),
             },
         );
+    }
+
+    /// The direction implied by the tab's current arrangement, used only as
+    /// the new pane's initial tree slot: `Tab::reflow` rebuilds the tree
+    /// under the arrangement on the next render regardless of this choice.
+    fn new_pane_split_direction(&self) -> crate::api::schema::SplitDirection {
+        let arrangement = self
+            .state
+            .active
+            .and_then(|ws_idx| self.state.workspaces.get(ws_idx))
+            .and_then(|ws| ws.active_tab())
+            .map(|tab| tab.arrangement)
+            .unwrap_or_default();
+        match arrangement {
+            Arrangement::Vertical => crate::api::schema::SplitDirection::Right,
+            _ => crate::api::schema::SplitDirection::Down,
+        }
     }
 
     pub(crate) fn close_focused_pane_via_api_requires_confirmation(&mut self) -> bool {
@@ -1430,6 +1462,9 @@ pub(crate) enum NavigateAction {
     SwapPaneRight,
     SplitVertical,
     SplitHorizontal,
+    ArrangementNext,
+    ArrangementPrevious,
+    NewPane,
     ClosePane,
     EditScrollback,
     CopyMode,
@@ -1580,6 +1615,12 @@ fn non_indexed_action_for_key(
         (&kb.cycle_pane_previous, NavigateAction::CyclePanePrevious),
         (&kb.split_vertical, NavigateAction::SplitVertical),
         (&kb.split_horizontal, NavigateAction::SplitHorizontal),
+        (&kb.arrangement_next, NavigateAction::ArrangementNext),
+        (
+            &kb.arrangement_previous,
+            NavigateAction::ArrangementPrevious,
+        ),
+        (&kb.new_pane, NavigateAction::NewPane),
         (&kb.close_pane, NavigateAction::ClosePane),
         (&kb.zoom, NavigateAction::Zoom),
         (&kb.new_float, NavigateAction::NewFloat),
@@ -1808,11 +1849,25 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::SplitVertical => {
+            state.set_tab_arrangement(Arrangement::Vertical);
             state.split_pane(terminal_runtimes, Direction::Horizontal);
             leave_navigate_mode(state);
         }
         NavigateAction::SplitHorizontal => {
+            state.set_tab_arrangement(Arrangement::Horizontal);
             state.split_pane(terminal_runtimes, Direction::Vertical);
+            leave_navigate_mode(state);
+        }
+        NavigateAction::ArrangementNext => {
+            state.cycle_tab_arrangement(true);
+            leave_navigate_mode(state);
+        }
+        NavigateAction::ArrangementPrevious => {
+            state.cycle_tab_arrangement(false);
+            leave_navigate_mode(state);
+        }
+        NavigateAction::NewPane => {
+            state.new_pane_in_arrangement(terminal_runtimes);
             leave_navigate_mode(state);
         }
         NavigateAction::ClosePane => {
@@ -3298,6 +3353,88 @@ navigate_pane_down = "ctrl+j"
         assert_eq!(app.state.selected, 0);
         assert_eq!(app.state.mode, Mode::ConfirmClose);
         assert_eq!(app.state.workspaces.len(), 2);
+    }
+
+    #[test]
+    fn arrangement_next_and_previous_cycle_the_active_tab() {
+        let mut state = state_with_workspaces(&["test"]);
+        assert_eq!(state.workspaces[0].tabs[0].arrangement, Arrangement::Grid);
+
+        execute_navigate_action(&mut state, NavigateAction::ArrangementNext);
+        assert_eq!(
+            state.workspaces[0].tabs[0].arrangement,
+            Arrangement::Stacked
+        );
+
+        execute_navigate_action(&mut state, NavigateAction::ArrangementPrevious);
+        assert_eq!(state.workspaces[0].tabs[0].arrangement, Arrangement::Grid);
+    }
+
+    #[test]
+    fn tui_arrangement_next_cycles_the_active_tab_via_api() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.mode = Mode::Navigate;
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].arrangement,
+            Arrangement::Grid
+        );
+
+        app.execute_tui_navigate_action(NavigateAction::ArrangementNext, ActionContext::Navigate);
+
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].arrangement,
+            Arrangement::Stacked
+        );
+    }
+
+    #[tokio::test]
+    async fn split_vertical_and_horizontal_set_the_tab_arrangement() {
+        let mut state = state_with_workspaces(&["test"]);
+        let mut terminal_runtimes = TerminalRuntimeRegistry::new();
+
+        execute_navigate_action_in_context(
+            &mut state,
+            &mut terminal_runtimes,
+            NavigateAction::SplitHorizontal,
+            ActionContext::Navigate,
+        );
+        assert_eq!(
+            state.workspaces[0].tabs[0].arrangement,
+            Arrangement::Horizontal
+        );
+
+        execute_navigate_action_in_context(
+            &mut state,
+            &mut terminal_runtimes,
+            NavigateAction::SplitVertical,
+            ActionContext::Navigate,
+        );
+        assert_eq!(
+            state.workspaces[0].tabs[0].arrangement,
+            Arrangement::Vertical
+        );
+    }
+
+    #[tokio::test]
+    async fn new_pane_adds_a_pane_without_changing_the_arrangement() {
+        let mut state = state_with_workspaces(&["test"]);
+        state.set_tab_arrangement(Arrangement::Stacked);
+        state.workspaces[0].tabs[0].needs_reflow = false;
+        let mut terminal_runtimes = TerminalRuntimeRegistry::new();
+
+        execute_navigate_action_in_context(
+            &mut state,
+            &mut terminal_runtimes,
+            NavigateAction::NewPane,
+            ActionContext::Navigate,
+        );
+
+        assert_eq!(
+            state.workspaces[0].tabs[0].arrangement,
+            Arrangement::Stacked
+        );
+        assert_eq!(state.workspaces[0].tabs[0].panes.len(), 2);
+        assert!(state.workspaces[0].tabs[0].needs_reflow);
     }
 
     #[cfg(unix)]

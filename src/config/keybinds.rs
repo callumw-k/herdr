@@ -347,6 +347,9 @@ pub struct Keybinds {
     pub last_pane: ActionKeybinds,
     pub split_vertical: ActionKeybinds,
     pub split_horizontal: ActionKeybinds,
+    pub arrangement_next: ActionKeybinds,
+    pub arrangement_previous: ActionKeybinds,
+    pub new_pane: ActionKeybinds,
     pub close_pane: ActionKeybinds,
     pub zoom: ActionKeybinds,
     pub new_float: ActionKeybinds,
@@ -513,6 +516,9 @@ impl Config {
             last_pane: empty_action!(),
             split_vertical: empty_action!(),
             split_horizontal: empty_action!(),
+            arrangement_next: empty_action!(),
+            arrangement_previous: empty_action!(),
+            new_pane: empty_action!(),
             close_pane: empty_action!(),
             zoom: empty_action!(),
             new_float: empty_action!(),
@@ -658,6 +664,9 @@ impl Config {
             apply_action!(keybinds.cycle_pane_previous, cycle_pane_previous, source);
             apply_action!(keybinds.split_vertical, split_vertical, source);
             apply_action!(keybinds.split_horizontal, split_horizontal, source);
+            apply_action!(keybinds.arrangement_next, arrangement_next, source);
+            apply_action!(keybinds.arrangement_previous, arrangement_previous, source);
+            apply_action!(keybinds.new_pane, new_pane, source);
             apply_action!(keybinds.close_pane, close_pane, source);
             apply_action!(keybinds.zoom, zoom, source);
             apply_action!(keybinds.new_float, new_float, source);
@@ -1607,6 +1616,30 @@ next_tab = "prefix+n"
     fn back_and_forth_keybinds_are_unset_by_default() {
         let kb = Config::default().keybinds();
         assert!(kb.last_pane.bindings.is_empty());
+    }
+
+    #[test]
+    fn arrangement_keybinds_have_defaults() {
+        let config = Config::default();
+        assert_eq!(config.keys.arrangement_next, BindingConfig::one("prefix+a"));
+        assert_eq!(
+            config.keys.arrangement_previous,
+            BindingConfig::one("prefix+shift+a")
+        );
+        assert_eq!(config.keys.new_pane, BindingConfig::one("prefix+enter"));
+    }
+
+    #[test]
+    fn the_new_arrangement_bindings_parse() {
+        // parse_key_combo parses the body after "prefix+"; the prefix token
+        // itself is stripped by parse_binding_string before this is called.
+        for combo in ["prefix+a", "prefix+shift+a", "prefix+enter"] {
+            let body = combo.strip_prefix("prefix+").unwrap_or(combo);
+            assert!(
+                parse_key_combo(body).is_some(),
+                "{combo} should parse as a key combo"
+            );
+        }
     }
 
     #[test]

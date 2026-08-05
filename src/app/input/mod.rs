@@ -787,6 +787,27 @@ impl AppState {
             }
         }
     }
+
+    /// Add a pane without changing the tab's arrangement. Direction only
+    /// affects the pane's initial slot in the tree; `Tab::reflow` rebuilds
+    /// the whole tree under the current arrangement on the next render.
+    #[cfg(test)]
+    pub(crate) fn new_pane_in_arrangement(
+        &mut self,
+        terminal_runtimes: &mut crate::terminal::TerminalRuntimeRegistry,
+    ) {
+        let arrangement = self
+            .active
+            .and_then(|ws_idx| self.workspaces.get(ws_idx))
+            .and_then(|ws| ws.active_tab())
+            .map(|tab| tab.arrangement)
+            .unwrap_or_default();
+        let direction = match arrangement {
+            crate::layout::Arrangement::Vertical => Direction::Horizontal,
+            _ => Direction::Vertical,
+        };
+        self.split_pane(terminal_runtimes, direction);
+    }
 }
 
 #[cfg(test)]
@@ -863,7 +884,9 @@ fn capture_snapshot(state: &AppState) -> crate::persist::SessionSnapshot {
 fn root_layout_ratio(snapshot: &crate::persist::SessionSnapshot) -> Option<f32> {
     match &snapshot.workspaces.first()?.tabs.first()?.layout {
         crate::persist::LayoutSnapshot::Split { ratio, .. } => Some(*ratio),
-        crate::persist::LayoutSnapshot::Pane(_) => None,
+        crate::persist::LayoutSnapshot::Pane(_) | crate::persist::LayoutSnapshot::Stack { .. } => {
+            None
+        }
     }
 }
 

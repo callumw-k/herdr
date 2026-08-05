@@ -183,6 +183,7 @@ pub struct LayoutDescription {
     pub tab_id: String,
     pub zoomed: bool,
     pub focused_pane_id: String,
+    pub arrangement: ArrangementSchema,
     pub root: LayoutNode,
 }
 
@@ -199,6 +200,22 @@ pub enum LayoutNode {
         first: Box<LayoutNode>,
         second: Box<LayoutNode>,
     },
+    Stack {
+        panes: Vec<LayoutPane>,
+        active: usize,
+    },
+}
+
+/// The whole-tab pane arrangement. A shared runtime fact: it determines the
+/// shape of the server-owned pane tree, so it is exposed on the API rather
+/// than kept as TUI-only state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrangementSchema {
+    Vertical,
+    Horizontal,
+    Grid,
+    Stacked,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, Default)]

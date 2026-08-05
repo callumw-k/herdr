@@ -405,10 +405,16 @@ pub struct KeysConfig {
     pub cycle_pane_previous: BindingConfig,
     /// Focus the last focused pane across workspaces and tabs. Unset by default.
     pub last_pane: BindingConfig,
-    /// Split pane vertically (side by side). Default: "prefix+v"
+    /// Set the tab to the vertical arrangement and add a pane. Default: "prefix+v"
     pub split_vertical: BindingConfig,
-    /// Split pane horizontally (stacked). Default: "prefix+minus"
+    /// Set the tab to the horizontal arrangement and add a pane. Default: "prefix+minus"
     pub split_horizontal: BindingConfig,
+    /// Cycle the tab to the next pane arrangement. Default: "prefix+a"
+    pub arrangement_next: BindingConfig,
+    /// Cycle the tab to the previous pane arrangement. Default: "prefix+shift+a"
+    pub arrangement_previous: BindingConfig,
+    /// Add a pane without changing the tab's arrangement. Default: "prefix+enter"
+    pub new_pane: BindingConfig,
     /// Close the focused pane. Default: "prefix+x"
     pub close_pane: BindingConfig,
     /// Toggle zoom for the focused pane. Default: "prefix+z"
@@ -538,6 +544,12 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     split_horizontal: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    arrangement_next: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arrangement_previous: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_pane: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     close_pane: Option<BindingConfig>,
     #[serde(alias = "fullscreen", skip_serializing_if = "Option::is_none")]
     zoom: Option<BindingConfig>,
@@ -625,6 +637,9 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(last_pane);
         apply_field!(split_vertical);
         apply_field!(split_horizontal);
+        apply_field!(arrangement_next);
+        apply_field!(arrangement_previous);
+        apply_field!(new_pane);
         apply_field!(close_pane);
         apply_field!(zoom);
         apply_field!(new_float);
@@ -727,6 +742,9 @@ impl KeysConfig {
         copy_effective_action_field!(last_pane, keybinds.last_pane);
         copy_effective_action_field!(split_vertical, keybinds.split_vertical);
         copy_effective_action_field!(split_horizontal, keybinds.split_horizontal);
+        copy_effective_action_field!(arrangement_next, keybinds.arrangement_next);
+        copy_effective_action_field!(arrangement_previous, keybinds.arrangement_previous);
+        copy_effective_action_field!(new_pane, keybinds.new_pane);
         copy_effective_action_field!(close_pane, keybinds.close_pane);
         copy_effective_action_field!(zoom, keybinds.zoom);
         copy_effective_action_field!(new_float, keybinds.new_float);
@@ -1018,6 +1036,9 @@ impl Default for KeysConfig {
             last_pane: BindingConfig::empty(),
             split_vertical: BindingConfig::one("prefix+v"),
             split_horizontal: BindingConfig::one("prefix+minus"),
+            arrangement_next: BindingConfig::one("prefix+a"),
+            arrangement_previous: BindingConfig::one("prefix+shift+a"),
+            new_pane: BindingConfig::one("prefix+enter"),
             close_pane: BindingConfig::one("prefix+x"),
             zoom: BindingConfig::one("prefix+z"),
             new_float: BindingConfig::one("prefix+f"),

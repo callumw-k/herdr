@@ -152,6 +152,7 @@ fn collect_snapshot_ids_inner(node: &LayoutSnapshot, ids: &mut Vec<u32>) {
             collect_snapshot_ids_inner(first, ids);
             collect_snapshot_ids_inner(second, ids);
         }
+        LayoutSnapshot::Stack { panes, .. } => ids.extend(panes.iter().copied()),
     }
 }
 
@@ -181,6 +182,7 @@ fn collect_layout_snapshot_pane_ids(node: &LayoutSnapshot, ids: &mut Vec<u32>) {
             collect_layout_snapshot_pane_ids(first, ids);
             collect_layout_snapshot_pane_ids(second, ids);
         }
+        LayoutSnapshot::Stack { panes, .. } => ids.extend(panes.iter().copied()),
     }
 }
 
@@ -753,6 +755,8 @@ fn restore_tab(
                 floats: restored_floats,
                 floats_hidden: snap.floats_hidden,
                 float_focused: false,
+                arrangement: snap.arrangement.into(),
+                needs_reflow: false,
                 events: runtime_context.events.clone(),
                 render_notify: runtime_context.render_notify.clone(),
                 render_dirty: runtime_context.render_dirty.clone(),
@@ -874,6 +878,20 @@ pub(super) fn prune_restored_node(node: Node, surviving: &HashSet<PaneId>) -> Op
                 (None, None) => None,
             }
         }
+        Node::Stack { panes, active } => {
+            let panes: Vec<PaneId> = panes
+                .into_iter()
+                .filter(|id| surviving.contains(id))
+                .collect();
+            match panes.len() {
+                0 => None,
+                1 => Some(Node::Pane(panes[0])),
+                len => Some(Node::Stack {
+                    panes,
+                    active: active.min(len - 1),
+                }),
+            }
+        }
     }
 }
 
@@ -923,6 +941,20 @@ fn remap_inner(snap: &LayoutSnapshot, id_map: &mut HashMap<u32, PaneId>) -> Node
                 second: Box::new(second_node),
             }
         }
+        LayoutSnapshot::Stack { panes, active } => {
+            let members = panes
+                .iter()
+                .map(|old_id| {
+                    let new_id = PaneId::alloc();
+                    id_map.insert(*old_id, new_id);
+                    new_id
+                })
+                .collect();
+            Node::Stack {
+                panes: members,
+                active: *active,
+            }
+        }
     }
 }
 
@@ -939,6 +971,7 @@ fn collect_ids_inner(node: &Node, ids: &mut Vec<PaneId>) {
             collect_ids_inner(first, ids);
             collect_ids_inner(second, ids);
         }
+        Node::Stack { panes, .. } => ids.extend(panes.iter().copied()),
     }
 }
 
@@ -986,6 +1019,87 @@ mod tests {
         assert_eq!(ids.len(), 3);
         let unique: std::collections::HashSet<u32> = ids.iter().map(|id| id.raw()).collect();
         assert_eq!(unique.len(), 3);
+    }
+
+    #[test]
+    fn a_stack_survives_a_snapshot_round_trip() {
+        let panes = vec![
+            PaneId::from_raw(1),
+            PaneId::from_raw(2),
+            PaneId::from_raw(3),
+        ];
+        let node = Node::Stack {
+            panes: panes.clone(),
+            active: 1,
+        };
+        let snapshot = super::super::snapshot::capture_node(&node);
+        match &snapshot {
+            LayoutSnapshot::Stack { panes: raw, active } => {
+                assert_eq!(raw, &vec![1, 2, 3]);
+                assert_eq!(*active, 1);
+            }
+            other => panic!("expected a stack snapshot, got {other:?}"),
+        }
+
+        // remap_inner allocates fresh ids, so assert on shape and arity rather
+        // than on id equality.
+        let mut id_map = HashMap::new();
+        let restored = remap_inner(&snapshot, &mut id_map);
+        match &restored {
+            Node::Stack {
+                panes: members,
+                active,
+            } => {
+                assert_eq!(members.len(), 3);
+                assert_eq!(*active, 1);
+                assert_eq!(id_map.len(), 3);
+            }
+            other => panic!("expected a stack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pruning_drops_missing_stack_members_and_clamps_active() {
+        let surviving = [PaneId::from_raw(1), PaneId::from_raw(3)]
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let node = Node::Stack {
+            panes: vec![
+                PaneId::from_raw(1),
+                PaneId::from_raw(2),
+                PaneId::from_raw(3),
+            ],
+            active: 2,
+        };
+        let pruned = prune_restored_node(node, &surviving).expect("stack survives");
+        match pruned {
+            Node::Stack { panes, active } => {
+                assert_eq!(panes, vec![PaneId::from_raw(1), PaneId::from_raw(3)]);
+                assert_eq!(active, 1);
+            }
+            other => panic!("expected a stack, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pruning_a_stack_to_one_survivor_yields_a_plain_pane() {
+        let surviving = [PaneId::from_raw(3)].into_iter().collect::<HashSet<_>>();
+        let node = Node::Stack {
+            panes: vec![PaneId::from_raw(1), PaneId::from_raw(3)],
+            active: 0,
+        };
+        let pruned = prune_restored_node(node, &surviving).expect("pane survives");
+        assert!(matches!(pruned, Node::Pane(id) if id == PaneId::from_raw(3)));
+    }
+
+    #[test]
+    fn pruning_a_stack_with_no_survivors_removes_it() {
+        let surviving = HashSet::new();
+        let node = Node::Stack {
+            panes: vec![PaneId::from_raw(1), PaneId::from_raw(2)],
+            active: 0,
+        };
+        assert!(prune_restored_node(node, &surviving).is_none());
     }
 
     #[test]
@@ -1235,6 +1349,7 @@ mod tests {
                     floats: Vec::new(),
                     floats_hidden: false,
                     float_focused: false,
+                    arrangement: super::super::snapshot::ArrangementSnapshot::default(),
                 }],
                 active_tab: 0,
             }],
@@ -1331,6 +1446,7 @@ mod tests {
                     floats: Vec::new(),
                     floats_hidden: false,
                     float_focused: false,
+                    arrangement: super::super::snapshot::ArrangementSnapshot::default(),
                 }],
                 active_tab: 0,
             }],
@@ -1416,6 +1532,7 @@ mod tests {
                         floats: Vec::new(),
                         floats_hidden: false,
                         float_focused: false,
+                        arrangement: super::super::snapshot::ArrangementSnapshot::default(),
                     },
                     TabSnapshot {
                         custom_name: None,
@@ -1427,6 +1544,7 @@ mod tests {
                         floats: Vec::new(),
                         floats_hidden: false,
                         float_focused: false,
+                        arrangement: super::super::snapshot::ArrangementSnapshot::default(),
                     },
                     TabSnapshot {
                         custom_name: None,
@@ -1438,6 +1556,7 @@ mod tests {
                         floats: Vec::new(),
                         floats_hidden: false,
                         float_focused: false,
+                        arrangement: super::super::snapshot::ArrangementSnapshot::default(),
                     },
                     TabSnapshot {
                         custom_name: None,
@@ -1449,6 +1568,7 @@ mod tests {
                         floats: Vec::new(),
                         floats_hidden: false,
                         float_focused: false,
+                        arrangement: super::super::snapshot::ArrangementSnapshot::default(),
                     },
                 ],
                 active_tab: 3,
@@ -1515,6 +1635,7 @@ mod tests {
                 floats: Vec::new(),
                 floats_hidden: false,
                 float_focused: false,
+                arrangement: super::super::snapshot::ArrangementSnapshot::default(),
             }],
             active_tab: 0,
         };
@@ -1567,6 +1688,7 @@ mod tests {
                     floats: Vec::new(),
                     floats_hidden: false,
                     float_focused: false,
+                    arrangement: super::super::snapshot::ArrangementSnapshot::default(),
                 }],
                 active_tab: 0,
             }],
@@ -1764,6 +1886,7 @@ mod tests {
                     floats: Vec::new(),
                     floats_hidden: false,
                     float_focused: false,
+                    arrangement: super::super::snapshot::ArrangementSnapshot::default(),
                 }],
                 active_tab: 0,
             }],
@@ -1832,6 +1955,7 @@ mod tests {
             floats: vec![2],
             floats_hidden: true,
             float_focused: true,
+            arrangement: super::super::snapshot::ArrangementSnapshot::default(),
         };
 
         let tab = restore_tab_for_test(&snap).expect("tab restores");

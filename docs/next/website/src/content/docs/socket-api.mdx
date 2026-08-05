@@ -207,10 +207,15 @@ export the tab containing that pane.
 {"id":"req_export","method":"layout.export","params":{"tab_id":"w1:t1"}}
 ```
 
-The response includes `workspace_id`, `tab_id`, `zoomed`, `focused_pane_id`, and
-`root`. `root` is a BSP tree of `pane` and `split` nodes. Pane nodes can include
-`pane_id`, `label`, `cwd`, and argv `command`. Split nodes use
-`direction` (`right` or `down`), `ratio`, `first`, and `second`.
+The response includes `workspace_id`, `tab_id`, `zoomed`, `focused_pane_id`,
+`arrangement`, and `root`. `arrangement` is the tab's pane arrangement:
+`vertical`, `horizontal`, `grid`, or `stacked`. `root` is a BSP tree of `pane`,
+`split`, and `stack` nodes. Pane nodes can include `pane_id`, `label`, `cwd`,
+and argv `command`. Split nodes use `direction` (`right` or `down`), `ratio`,
+`first`, and `second`. Stack nodes use `panes`, a flat list of pane nodes, and
+`active`, the index of the expanded member. Stacks do not nest and cannot
+contain a split. `arrangement` describes how the tab will be reflowed; after a
+`layout.apply` call with a `Split` root, the tab retains its existing arrangement value until the next pane is created or closed.
 
 `layout.apply` creates a fresh tab from a declarative tree. If `tab_id` is
 provided, Herdr creates the replacement tab first and then closes the old tab.

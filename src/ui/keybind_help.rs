@@ -139,6 +139,12 @@ pub(super) fn keybind_help_groups(app: &AppState) -> Vec<HelpGroup> {
     let panes = vec![
         help_entry(keybind_label(&kb.split_vertical), "split vertical"),
         help_entry(keybind_label(&kb.split_horizontal), "split horizontal"),
+        help_entry(keybind_label(&kb.arrangement_next), "next arrangement"),
+        help_entry(
+            keybind_label(&kb.arrangement_previous),
+            "previous arrangement",
+        ),
+        help_entry(keybind_label(&kb.new_pane), "new pane"),
         help_entry(keybind_label(&kb.close_pane), "close pane"),
         help_entry(keybind_label(&kb.rename_pane), "rename pane"),
         help_entry(keybind_label(&kb.edit_scrollback), "edit scrollback"),
