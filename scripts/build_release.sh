@@ -12,6 +12,7 @@ for name in $(herdr session list --json | jq -r '.sessions[] | select(.running) 
 done
 
 mkdir -p "$(dirname -- "$DEST")"
+rm -f "$DEST"
 cp target/release/herdr "$DEST"
 
 echo "installed herdr ($(git rev-parse --short HEAD)) to $DEST"
