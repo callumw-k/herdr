@@ -421,10 +421,10 @@ pub(super) fn render_panes(
                         terminal.border_label(app.show_agent_labels_on_pane_borders)
                     })
                     .or_else(|| {
-                        float_terminal.and_then(|terminal| terminal.terminal_title_stripped())
+                        float_terminal.and_then(|terminal| terminal.foreground_process_name.clone())
                     })
                     .or_else(|| {
-                        float_terminal.and_then(|terminal| terminal.foreground_process_name.clone())
+                        float_terminal.and_then(|terminal| terminal.terminal_title_stripped())
                     })
                     .or_else(|| {
                         float_terminal.and_then(|terminal| {
@@ -1868,6 +1868,64 @@ mod tests {
             .collect();
         assert!(row.contains("ssh remote-host"), "float border row: {row:?}");
         assert!(!row.contains("herdr"), "float border row: {row:?}");
+    }
+
+    #[tokio::test]
+    async fn render_panes_prefers_foreground_process_name_over_a_shell_set_osc_title() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 40, 12);
+
+        let mut ws = Workspace::test_new("test");
+        let float_id = PaneId::from_raw(63);
+        let float_terminal_id = crate::terminal::TerminalId::alloc();
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(float_terminal_id.clone()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b""),
+        );
+
+        // A shell prompt commonly sets the OSC title on every command (to the
+        // command it just ran, here an alias) even while something else is
+        // the actual foreground process — the process name must still win.
+        let mut terminal_state =
+            TerminalState::new(float_terminal_id.clone(), "/home/user/herdr".into());
+        terminal_state.set_terminal_title(Some("lg ~/herdr".to_string()));
+        terminal_state.foreground_process_name = Some("lazygit".to_string());
+        app.terminals.insert(float_terminal_id, terminal_state);
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let area = app.view.terminal_area;
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let pane_infos = compute_pane_infos(
+            &app,
+            &terminal_runtimes,
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let float_rect = pane_infos
+            .iter()
+            .find(|info| info.id == float_id)
+            .expect("float pane info")
+            .rect;
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|frame| render_panes(&app, &terminal_runtimes, frame, &pane_infos, &[], &[]))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let row: String = (float_rect.x..float_rect.x + float_rect.width)
+            .map(|x| buffer[(x, float_rect.y)].symbol())
+            .collect();
+        assert!(row.contains("lazygit"), "float border row: {row:?}");
+        assert!(!row.contains("lg "), "float border row: {row:?}");
     }
 
     #[test]
