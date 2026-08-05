@@ -659,12 +659,7 @@ impl AppState {
                         self.pane_scroll_metrics(terminal_runtimes, info.id),
                     ));
                     return self.mouse_pane_focus_action(info.id);
-                } else if let Some(info) = self.view.pane_infos.iter().rev().find(|p| {
-                    mouse.column >= p.rect.x
-                        && mouse.column < p.rect.x + p.rect.width
-                        && mouse.row >= p.rect.y
-                        && mouse.row < p.rect.y + p.rect.height
-                }) {
+                } else if let Some(info) = self.pane_frame_at(mouse.column, mouse.row) {
                     let id = info.id;
                     if self.mode != Mode::Terminal {
                         self.mode = Mode::Terminal;
