@@ -2005,6 +2005,16 @@ impl TerminalState {
             })
     }
 
+    /// `border_label` widened with the weaker signals a pane can still be
+    /// recognised by. Shared by float borders and stack bars so both name a
+    /// pane the same way.
+    pub fn pane_label(&self, show_agent_labels: bool) -> Option<String> {
+        self.border_label(show_agent_labels)
+            .or_else(|| self.foreground_process_name.clone())
+            .or_else(|| self.terminal_title_stripped())
+            .or_else(|| self.cwd.file_name()?.to_str().map(str::to_string))
+    }
+
     fn recompute_effective_state(
         &mut self,
         previous_agent_label: Option<String>,

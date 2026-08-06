@@ -22,6 +22,25 @@ pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
         .is_some_and(|metrics| metrics.offset_from_bottom > 0)
 }
 
+/// The name to draw on a pane's own chrome. Falls back to the pane's public
+/// number rather than its layer, so a stacked tiled pane is never called
+/// "float".
+fn pane_label(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    pane_id: crate::layout::PaneId,
+) -> String {
+    ws.terminal_id(pane_id)
+        .and_then(|terminal_id| app.terminals.get(terminal_id))
+        .and_then(|terminal| terminal.pane_label(app.show_agent_labels_on_pane_borders))
+        .or_else(|| {
+            ws.public_pane_numbers
+                .get(&pane_id)
+                .map(|number| format!("pane {number}"))
+        })
+        .unwrap_or_default()
+}
+
 fn pane_border_title(label: &str, pane_width: u16, _focused: bool) -> Option<String> {
     let label = label.trim();
     if label.is_empty() || pane_width <= 4 {
@@ -426,20 +445,7 @@ pub(super) fn render_panes(
         .filter(|info| ws.is_float(info.id) && info.rect.height > 1)
     {
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
-            let float_terminal = ws
-                .terminal_id(info.id)
-                .and_then(|terminal_id| app.terminals.get(terminal_id));
-            let title = float_terminal
-                .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders))
-                .or_else(|| {
-                    float_terminal.and_then(|terminal| terminal.foreground_process_name.clone())
-                })
-                .or_else(|| float_terminal.and_then(|terminal| terminal.terminal_title_stripped()))
-                .or_else(|| {
-                    float_terminal
-                        .and_then(|terminal| terminal.cwd.file_name()?.to_str().map(str::to_string))
-                })
-                .unwrap_or_else(|| "float".to_string());
+            let title = pane_label(app, ws, info.id);
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(if info.is_focused {
@@ -611,11 +617,7 @@ fn render_stack_bar(
     bar: &StackBar,
 ) {
     let label = match bar.kind {
-        StackBarKind::Pane(pane_id) => ws
-            .pane_state(pane_id)
-            .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders))
-            .unwrap_or_else(|| "float".to_string()),
+        StackBarKind::Pane(pane_id) => pane_label(app, ws, pane_id),
         StackBarKind::Summary { count } => format!("+{count} more"),
     };
     let text = pane_border_title(&label, bar.rect.width, false).unwrap_or_default();
@@ -2207,11 +2209,12 @@ mod tests {
         ];
 
         let mut ws = Workspace::test_new("test");
-        for id in [hidden_id, top_id] {
+        for (offset, id) in [hidden_id, top_id].into_iter().enumerate() {
             ws.tabs[0].push_float(
                 id,
                 crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
             );
+            ws.register_new_pane_with_number(id, 2 + offset);
         }
         app.workspaces = vec![ws];
         app.active = Some(0);
@@ -2246,7 +2249,7 @@ mod tests {
         let summary_row: String = (2..18).map(|x| buffer[(x, 2)].symbol()).collect();
         assert!(summary_row.contains("+2 more"), "summary: {summary_row:?}");
         let bar_row: String = (2..18).map(|x| buffer[(x, 3)].symbol()).collect();
-        assert!(bar_row.contains("float"), "bar: {bar_row:?}");
+        assert!(bar_row.contains("pane 2"), "bar: {bar_row:?}");
     }
 
     #[test]
