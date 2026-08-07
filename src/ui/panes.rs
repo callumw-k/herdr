@@ -622,8 +622,9 @@ fn render_stack_bar(
     };
     let text = pane_border_title(&label, bar.rect.width, false).unwrap_or_default();
     let style = Style::default()
-        .fg(app.palette.overlay0)
-        .bg(app.palette.panel_bg);
+        .fg(app.palette.subtext0)
+        .bg(app.palette.surface0)
+        .add_modifier(Modifier::BOLD);
     frame.render_widget(Clear, bar.rect);
     frame.render_widget(
         Paragraph::new(Line::from(text)).style(style).block(
