@@ -152,14 +152,23 @@ fn grid_columns(count: usize, area: Rect) -> usize {
     (1..=count)
         .min_by_key(|cols| {
             let rows = count.div_ceil(*cols);
-            let cell_width = area.width as i32 / *cols as i32;
-            let cell_height = area.height as i32 / rows as i32;
-            let aspect_error = (cell_width - cell_height * 2).abs();
+            let cell_width = (area.width as f32 / *cols as f32).max(1.0);
+            let cell_height = (area.height as f32 / rows as f32).max(1.0);
+            // Score how far the cell is from square as a ratio, not as a
+            // difference in cells: an absolute error grows with the terminal, so
+            // on a wide screen it drowns the empty-cell penalty below and a
+            // ragged grid wins.
+            let aspect_error = (cell_width / (cell_height * 2.0)).ln().abs();
             // Squareness alone picks 3 columns for 4 panes, which leaves a
             // ragged 2/1/1 grid. Penalise the empty cells so a balanced grid
             // wins unless a ragged one is much squarer.
-            let empty_cells = (rows * cols - count) as i32;
-            aspect_error + empty_cells * 10
+            let empty_cells = (rows * cols - count) as f32;
+            // A wide enough area makes one row of full-height columns the
+            // squarest option, which reads as a row of strips rather than a
+            // grid. Pull the shape back toward equal rows and columns, weakly
+            // enough that a narrow area still stacks.
+            let imbalance = (*cols as f32 / rows as f32).ln().abs();
+            ((aspect_error + empty_cells * 0.5 + imbalance * 0.5) * 1000.0) as i32
         })
         .unwrap_or(1)
 }
@@ -1293,6 +1302,15 @@ mod tests {
         assert_eq!(grid_columns(4, area), 2);
         assert_eq!(grid_columns(6, area), 3);
         assert_eq!(grid_columns(9, area), 3);
+    }
+
+    #[test]
+    fn grid_columns_stay_balanced_on_a_wide_area() {
+        // A wide terminal used to make the ragged 2/1/1 grid score better than
+        // the balanced 2x2 one.
+        let area = Rect::new(0, 0, 220, 50);
+        assert_eq!(grid_columns(4, area), 2);
+        assert_eq!(grid_columns(6, area), 3);
     }
 
     #[test]
