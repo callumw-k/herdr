@@ -4,9 +4,25 @@
 
 ### Added
 - Added floating panes: `prefix+f` opens one, `prefix+ctrl+f` moves focus into the floating layer or back out, and `prefix+shift+f` shows or hides the layer. A tab's floats share one region and are arranged inside it, so more than one can be visible at once, and they are navigated with the same keys as tiled panes. Configure the region's default size with `ui.floating_pane_width` and `ui.floating_pane_height`.
+- Devin CLI, Cursor Agent CLI, MastraCode, Hermes Agent, and Grok CLI integrations now install and run natively on Windows.
+- Panes can now route normal right-click gestures to mouse-reporting applications through the pane menu, `herdr pane input`, `pane.input.set`, or the `pane split --right-click pane` launch option.
+- `theme.custom.sidebar_bg` can now give the desktop sidebar its own background without changing built-in theme defaults.
+- Settings and `ui.status_indicators = "symbols"` can now use distinct static shapes for blocked, working, done, idle, and unknown agent states. (#2260)
 - The plugin marketplace now discovers valid manifests at repository roots and subdirectories, groups multiple plugins under each repository, and publishes their versions and exact default-branch commits.
 
+### Changed
+- Bumped the client/server protocol version to 20 for pane terminal bell forwarding.
+- Experimental pane graphics now support bounded named layers, acknowledged full-RGBA primary-layer direct file frames on audited local terminals, owned BGRA fallback, exact pixel mouse input, and placement-only resize replay.
+
 ### Fixed
+- `herdr config check` now reports unknown built-in theme names instead of silently accepting them. (#2452)
+- macOS `herdr --remote` clients now keep the accepted bridge socket blocking, preventing an immediate disconnect after the protocol handshake. (#2478, thanks @mathijshenquet)
+- Prefix keybindings now preserve Shift in WezTerm Kitty keyboard mode, so commands such as config reload no longer trigger their unshifted action. (#2435)
+- BEL characters emitted by pane programs now reach the outer terminal so its audible and visual bell settings can react. (#2453)
+- Stable direct installs, self-updates, and remote helper downloads now require and verify the SHA-256 digest published for each GitHub release asset.
+- Configs containing the retired Herdr-written `ui.agent_panel_scope` setting no longer report it as an unknown key after upgrades. (#2292)
+- Claude Code confirmation prompts using `Enter to confirm · Esc to cancel` now report `blocked` instead of `idle`. (#2268)
+- Sidebar agent lists keep scrolling when differently sized clients are attached to the same session. (#2255, thanks @aiworkflowpro)
 - `pane send-keys` and `agent send-keys` now preserve Shift when sending `shift+tab`, allowing agent permission modes to be cycled programmatically. (#1561, thanks @keinstn and @tomohisa)
 
 ## [0.8.0] - 2026-08-03

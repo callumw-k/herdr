@@ -108,6 +108,30 @@ impl AgentPanelSortConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum LegacyAgentPanelScopeConfig {
+    Current,
+    All,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum StatusIndicatorStyle {
+    #[default]
+    Dots,
+    Symbols,
+}
+
+impl StatusIndicatorStyle {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dots => "dots",
+            Self::Symbols => "symbols",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HostCursorModeConfig {
@@ -859,6 +883,8 @@ pub struct UiConfig {
     /// Height of floating panes, in cells or as a percentage like "60%".
     /// Unset uses half the terminal area.
     pub floating_pane_height: Option<PopupSize>,
+    /// Draw borders along the outside edge of the pane area. Default: true.
+    pub pane_outer_borders: bool,
     /// Draw interactive scrollbars beside terminal panes. Default: true.
     pub pane_scrollbars: bool,
     /// Keep split panes visually separated instead of sharing divider borders. Default: true.
@@ -871,6 +897,11 @@ pub struct UiConfig {
     pub tab_bar_position: TabBarPositionConfig,
     /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
+    /// Retired setting that Herdr wrote before the workspace filter was removed.
+    #[serde(rename = "agent_panel_scope")]
+    _legacy_agent_panel_scope: Option<LegacyAgentPanelScopeConfig>,
+    /// Agent status indicator style. Saved values are "dots" or "symbols". Default: "dots".
+    pub status_indicators: StatusIndicatorStyle,
     /// Expanded sidebar row composition.
     pub sidebar: SidebarConfig,
     /// Accent color for highlights, borders, and navigation UI.
@@ -1076,12 +1107,15 @@ impl Default for UiConfig {
             pane_borders: true,
             floating_pane_width: None,
             floating_pane_height: None,
+            pane_outer_borders: true,
             pane_scrollbars: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
             agent_panel_sort: AgentPanelSortConfig::Spaces,
+            _legacy_agent_panel_scope: None,
+            status_indicators: StatusIndicatorStyle::Dots,
             sidebar: SidebarConfig::default(),
             accent: "cyan".into(),
             toast: ToastConfig::default(),
@@ -1306,9 +1340,27 @@ agent_panel_scope = "current"
     }
 
     #[test]
+    fn status_indicator_style_defaults_to_dots_and_parses_symbols() {
+        assert_eq!(
+            Config::default().ui.status_indicators,
+            StatusIndicatorStyle::Dots
+        );
+
+        let config: Config = toml::from_str(
+            r#"
+[ui]
+status_indicators = "symbols"
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.ui.status_indicators, StatusIndicatorStyle::Symbols);
+    }
+
+    #[test]
     fn pane_appearance_defaults_and_parse() {
         let default_config = Config::default();
         assert!(default_config.ui.pane_borders);
+        assert!(default_config.ui.pane_outer_borders);
         assert!(default_config.ui.pane_scrollbars);
         assert!(default_config.ui.pane_gaps);
         assert!(!default_config.ui.show_agent_labels_on_pane_borders);
@@ -1321,6 +1373,7 @@ agent_panel_scope = "current"
         let toml = r#"
 [ui]
 pane_borders = false
+pane_outer_borders = false
 pane_scrollbars = false
 pane_gaps = true
 show_agent_labels_on_pane_borders = true
@@ -1329,6 +1382,7 @@ tab_bar_position = "bottom"
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.pane_borders);
+        assert!(!config.ui.pane_outer_borders);
         assert!(!config.ui.pane_scrollbars);
         assert!(config.ui.pane_gaps);
         assert!(config.ui.show_agent_labels_on_pane_borders);

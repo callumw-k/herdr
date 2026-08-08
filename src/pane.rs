@@ -1544,6 +1544,20 @@ fn usable_reported_cwd(cwd: std::path::PathBuf) -> Option<std::path::PathBuf> {
     (cwd.is_absolute() && cwd.is_dir()).then_some(cwd)
 }
 
+fn publish_terminal_bells(pane_id: PaneId, count: u16, events: &mpsc::Sender<AppEvent>) {
+    if count == 0 {
+        return;
+    }
+    if let Err(err) = events.try_send(AppEvent::TerminalBell { pane_id, count }) {
+        warn!(
+            pane = pane_id.raw(),
+            count,
+            err = %err,
+            "failed to queue terminal bell"
+        );
+    }
+}
+
 fn publish_reported_cwd(
     pane_id: PaneId,
     cwd: std::path::PathBuf,
@@ -1913,6 +1927,7 @@ impl PaneRuntime {
                 let shell_pid = child_pid.load(Ordering::Acquire);
                 let result =
                     terminal.process_pty_bytes(pane_id, shell_pid, bytes, &response_writer);
+                publish_terminal_bells(pane_id, result.terminal_bells, &read_events);
                 observe_detection_content_change(bytes, &detection_content_seq);
                 if result.request_render && render_dirty.request_pty(pane_id) {
                     render_notify.notify_one();
@@ -2073,6 +2088,7 @@ impl PaneRuntime {
                 let shell_pid = child_pid.load(Ordering::Acquire);
                 let result =
                     terminal.process_pty_bytes(pane_id, shell_pid, bytes, &response_writer);
+                publish_terminal_bells(pane_id, result.terminal_bells, &events);
                 if agent_detection == AgentDetection::Enabled {
                     observe_detection_content_change(bytes, &detection_content_seq);
                 }
@@ -2817,40 +2833,41 @@ impl PaneRuntime {
     pub fn encode_mouse_button(
         &self,
         kind: crossterm::event::MouseEventKind,
-        column: u16,
-        row: u16,
+        position: crate::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         if !self.input_state()?.mouse_protocol_mode.reporting_enabled() {
             return None;
         }
-        self.terminal
-            .encode_mouse_button(kind, column, row, modifiers)
+        self.terminal.encode_mouse_button(kind, position, modifiers)
     }
 
-    pub fn encode_mouse_motion(
+    pub(crate) fn encode_mouse_motion(
         &self,
         kind: crossterm::event::MouseEventKind,
-        column: u16,
-        row: u16,
+        position: crate::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        self.terminal
-            .encode_mouse_motion(kind, column, row, modifiers)
+        self.terminal.encode_mouse_motion(kind, position, modifiers)
     }
 
-    pub fn encode_mouse_wheel(
+    pub(crate) fn encode_mouse_wheel(
         &self,
         kind: crossterm::event::MouseEventKind,
-        column: u16,
-        row: u16,
+        position: crate::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         if self.wheel_routing()? != WheelRouting::MouseReport {
             return None;
         }
-        self.terminal
-            .encode_mouse_wheel(kind, column, row, modifiers)
+        self.terminal.encode_mouse_wheel(kind, position, modifiers)
+    }
+
+    pub(crate) fn pixel_size(&self) -> Option<(u32, u32)> {
+        let (rows, cols, cell_width_px, cell_height_px) = self.current_size.get();
+        let width = u32::from(cols).checked_mul(cell_width_px)?;
+        let height = u32::from(rows).checked_mul(cell_height_px)?;
+        (width > 0 && height > 0).then_some((width, height))
     }
 
     pub fn encode_alternate_scroll(
@@ -4345,6 +4362,46 @@ mod tests {
         )
         .await
         .expect("re-entering active authority should notify detection reset");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawned_pty_reader_aggregates_terminal_bells() {
+        let (events, mut event_rx) = mpsc::channel(8);
+        let pane_id = PaneId::from_raw(42);
+        let runtime = PaneRuntime::spawn_shell_command(
+            pane_id,
+            24,
+            80,
+            std::env::temp_dir(),
+            "printf '\\a\\a'; sleep 0.05",
+            &PaneLaunchEnv::default(),
+            AgentDetection::Disabled,
+            0,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+
+        let bell = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Some(AppEvent::TerminalBell {
+                    pane_id: delivered_pane,
+                    count,
+                }) = event_rx.recv().await
+                {
+                    break (delivered_pane, count);
+                }
+            }
+        })
+        .await
+        .expect("PTY reader should publish terminal bells");
+
+        assert_eq!(bell, (pane_id, 2));
+        runtime.shutdown();
     }
 
     #[tokio::test]

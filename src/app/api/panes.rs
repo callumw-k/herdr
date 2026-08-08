@@ -3,11 +3,12 @@ use bytes::Bytes;
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, PaneClearAgentAuthorityParams, PaneCurrentParams,
     PaneDirection, PaneEdgesParams, PaneEdgesResult, PaneFloatParams, PaneFocusDirectionParams,
-    PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInfo, PaneLayoutPane, PaneLayoutParams,
-    PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit, PaneListParams, PaneMoveDestination,
-    PaneMoveParams, PaneMoveReason, PaneMoveResult, PaneNeighborParams, PaneNeighborResult,
-    PaneProcessInfo, PaneProcessInfoParams, PaneProcessInfoProcess, PaneReadParams, PaneReadResult,
-    PaneReleaseAgentParams, PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
+    PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInfo, PaneInputSetParams,
+    PaneLayoutPane, PaneLayoutParams, PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit,
+    PaneListParams, PaneMoveDestination, PaneMoveParams, PaneMoveReason, PaneMoveResult,
+    PaneNeighborParams, PaneNeighborResult, PaneProcessInfo, PaneProcessInfoParams,
+    PaneProcessInfoProcess, PaneReadParams, PaneReadResult, PaneReleaseAgentParams,
+    PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
     PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
     PaneSendInputParams, PaneSendKeysParams, PaneSendTextParams, PaneSplitParams, PaneSwapParams,
     PaneSwapReason, PaneSwapResult, PaneTarget, PaneZoomMode, PaneZoomParams, PaneZoomReason,
@@ -101,6 +102,12 @@ impl App {
             Some(Err(err)) => return encode_error(id, "pane_split_failed", err.to_string()),
             None => return encode_error(id, "pane_not_found", "pane not found"),
         };
+        if let Some(pane) = self.state.workspaces[ws_idx].pane_state_mut(new_pane.pane_id) {
+            pane.right_click_passthrough = matches!(
+                params.right_click,
+                crate::api::schema::PaneRightClickTarget::Pane
+            );
+        }
         if params.focus {
             self.state.switch_workspace_tab(ws_idx, target_tab_idx);
             self.state
@@ -953,10 +960,6 @@ impl App {
                     self.recover_failed_pane_move(recovery_context, moved);
                     return encode_error(id, "pane_move_failed", "target tab disappeared");
                 };
-                let previous_target_focus = self.state.workspaces[target_ws_idx].tabs
-                    [target_tab_idx]
-                    .layout
-                    .focused();
                 let direction = split_direction_to_layout(split);
                 let moved_pane_id = match self.state.workspaces[target_ws_idx]
                     .insert_moved_pane_into_tab(
@@ -965,6 +968,7 @@ impl App {
                         moved,
                         direction,
                         ratio,
+                        focus,
                     ) {
                     Ok(pane_id) => pane_id,
                     Err(moved) => {
@@ -976,11 +980,6 @@ impl App {
                         );
                     }
                 };
-                if !focus {
-                    self.state.workspaces[target_ws_idx].tabs[target_tab_idx]
-                        .layout
-                        .focus_pane(previous_target_focus);
-                }
                 (target_ws_idx, target_tab_idx, moved_pane_id)
             }
             ResolvedPaneMoveDestination::NewTab {
@@ -1218,6 +1217,29 @@ impl App {
                 },
             },
         )
+    }
+
+    pub(super) fn handle_pane_input_set(
+        &mut self,
+        id: String,
+        params: PaneInputSetParams,
+    ) -> String {
+        let Some((ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        let Some(pane) = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|workspace| workspace.pane_state_mut(pane_id))
+        else {
+            return pane_not_found(id, &params.pane_id);
+        };
+        pane.right_click_passthrough = matches!(
+            params.right_click,
+            crate::api::schema::PaneRightClickTarget::Pane
+        );
+        encode_success(id, ResponseResult::Ok {})
     }
 
     pub(super) fn handle_pane_rename(&mut self, id: String, params: PaneRenameParams) -> String {
@@ -1774,6 +1796,7 @@ impl App {
             tab.layout.panes(area),
             self.state.pane_borders,
             self.state.pane_gaps,
+            self.state.pane_outer_borders,
         )
         .into_iter()
         .filter_map(|pane| {
@@ -1981,6 +2004,36 @@ mod tests {
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
         let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
         (app, public_pane_id)
+    }
+
+    #[test]
+    fn pane_input_set_changes_only_the_target_pane() {
+        let (mut app, public_pane_id) = app_with_test_workspace();
+        let target = app.state.workspaces[0].tabs[0].root_pane;
+        let other = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+
+        let response = app.handle_pane_input_set(
+            "req".into(),
+            PaneInputSetParams {
+                pane_id: public_pane_id,
+                right_click: crate::api::schema::PaneRightClickTarget::Pane,
+            },
+        );
+
+        let response: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(response.result, ResponseResult::Ok {}));
+        assert!(
+            app.state.workspaces[0]
+                .pane_state(target)
+                .unwrap()
+                .right_click_passthrough
+        );
+        assert!(
+            !app.state.workspaces[0]
+                .pane_state(other)
+                .unwrap()
+                .right_click_passthrough
+        );
     }
 
     fn app_with_send_key_runtime(

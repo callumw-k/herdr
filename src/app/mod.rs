@@ -16,6 +16,7 @@ mod creation;
 mod git_refresh;
 mod ids;
 mod input;
+pub(crate) mod pane_graphics;
 mod popup;
 mod runtime;
 mod runtime_mutations;
@@ -95,6 +96,10 @@ impl PaneClickState {
 
 pub struct App {
     pub state: AppState,
+    pub(crate) pane_graphics: pane_graphics::Runtime,
+    pub(crate) pane_graphics_files: Arc<crate::pane_graphics_files::FileStore>,
+    pub(crate) direct_graphics_available: bool,
+    pub(crate) pixel_mouse_available: bool,
     pub(crate) terminal_runtimes: crate::terminal::TerminalRuntimeRegistry,
     pub event_tx: mpsc::Sender<AppEvent>,
     pub(crate) event_rx: mpsc::Receiver<AppEvent>,
@@ -617,6 +622,7 @@ impl App {
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             sidebar_section_split,
             agent_panel_sort,
+            status_indicators: config.ui.status_indicators,
             agent_view_override: None,
             sidebar_agents: config.ui.sidebar.agents.clone(),
             sidebar_spaces: config.ui.sidebar.spaces.clone(),
@@ -633,6 +639,7 @@ impl App {
             pane_borders: config.ui.pane_borders,
             floating_pane_width: config.ui.floating_pane_width,
             floating_pane_height: config.ui.floating_pane_height,
+            pane_outer_borders: config.ui.pane_outer_borders,
             pane_scrollbars: config.ui.pane_scrollbars,
             pane_gaps: config.ui.pane_gaps,
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
@@ -673,9 +680,6 @@ impl App {
             integration_install_messages: Vec::new(),
             installed_plugins: load_plugin_registry(no_session),
             plugin_panes: std::collections::HashMap::new(),
-            pane_graphics_layers: std::collections::HashMap::new(),
-            pane_graphics_streams: std::collections::HashMap::new(),
-            pane_graphics_revision: 0,
             popup_pane: None,
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
@@ -683,6 +687,7 @@ impl App {
             global_menu: state::MenuListState::new(0),
             host_terminal_theme: crate::terminal_theme::TerminalTheme::default(),
             host_cell_size: crate::kitty_graphics::HostCellSize::default(),
+            host_mouse_pixels: None,
             session_dirty: false,
             terminal_runtime_shutdowns: Vec::new(),
         };
@@ -727,6 +732,10 @@ impl App {
             copy_feedback_deadline: None,
             last_api_notification_at: None,
             state,
+            pane_graphics: pane_graphics::Runtime::default(),
+            pane_graphics_files: Arc::new(crate::pane_graphics_files::FileStore::default()),
+            direct_graphics_available: false,
+            pixel_mouse_available: false,
             terminal_runtimes: restored_terminal_runtimes,
             event_tx,
             event_rx,
@@ -1034,6 +1043,10 @@ impl App {
                 needs_render = true;
             }
 
+            if self.pane_graphics.retain_live_panes(&self.state) {
+                needs_render = true;
+            }
+
             let now = Instant::now();
             self.sync_host_mouse_capture(&mut host_mouse_capture_active)?;
             self.sync_host_keyboard_report_all(&mut host_keyboard_report_all_active)?;
@@ -1049,18 +1062,19 @@ impl App {
                     terminal.swap_buffers();
                     self.full_redraw_pending = false;
                 }
-                let mut cell_size = crate::kitty_graphics::HostCellSize::default();
+                let mut cell_size = self.state.host_cell_size;
                 terminal.draw(|frame| {
                     let area = frame.area();
                     if kitty_graphics_enabled {
-                        let observed_cell_size =
-                            crate::kitty_graphics::HostCellSize::try_from_terminal(area);
-                        if let Some(observed_cell_size) = observed_cell_size {
+                        if let Some(observed_cell_size) =
+                            crate::kitty_graphics::HostCellSize::try_from_terminal(area)
+                        {
                             self.state.host_cell_size = observed_cell_size;
+                            cell_size = observed_cell_size;
+                        } else if !cell_size.is_known() {
+                            cell_size =
+                                crate::kitty_graphics::HostCellSize::fallback_for_area(area);
                         }
-                        cell_size = observed_cell_size.unwrap_or_else(|| {
-                            crate::kitty_graphics::HostCellSize::fallback_for_area(area)
-                        });
                         crate::ui::compute_view_with_cell_size(
                             &mut self.state,
                             &self.terminal_runtimes,
@@ -1083,6 +1097,7 @@ impl App {
                 if kitty_graphics_enabled {
                     crate::kitty_graphics::paint_local_pane_graphics(
                         &self.state,
+                        &self.pane_graphics,
                         &self.terminal_runtimes,
                         cell_size,
                     )?;
@@ -1443,6 +1458,7 @@ impl App {
                 self.state.pane_borders = config.ui.pane_borders;
                 self.state.floating_pane_width = config.ui.floating_pane_width;
                 self.state.floating_pane_height = config.ui.floating_pane_height;
+                self.state.pane_outer_borders = config.ui.pane_outer_borders;
                 self.state.pane_scrollbars = config.ui.pane_scrollbars;
                 self.state.pane_gaps = config.ui.pane_gaps;
                 self.state.show_agent_labels_on_pane_borders =
@@ -1451,6 +1467,7 @@ impl App {
                 self.state.tab_bar_position = config.ui.tab_bar_position;
                 self.state.agent_panel_sort =
                     agent_panel_sort_from_config(config.ui.agent_panel_sort);
+                self.state.status_indicators = config.ui.status_indicators;
                 self.state.sidebar_agents = config.ui.sidebar.agents.clone();
                 self.state.sidebar_spaces = config.ui.sidebar.spaces.clone();
                 self.state.agent_panel_scroll = 0;
@@ -1469,8 +1486,7 @@ impl App {
             crate::kitty_graphics::set_enabled(config.experimental.kitty_graphics);
             if was_kitty_graphics_enabled && !config.experimental.kitty_graphics {
                 let _ = crate::kitty_graphics::clear_all_host_graphics();
-                self.state.pane_graphics_layers.clear();
-                self.state.pane_graphics_streams.clear();
+                self.pane_graphics.clear();
                 self.state.host_cell_size = crate::kitty_graphics::HostCellSize::default();
             }
             self.state.reveal_hidden_cursor_for_cjk_ime =
@@ -1664,6 +1680,31 @@ impl App {
         self.route_client_events(events, true);
     }
 
+    pub(crate) fn route_client_pixel_mouse(
+        &mut self,
+        source_id: InputSourceId,
+        data: &[u8],
+        geometry: crate::input::mouse::HostGeometry,
+    ) -> bool {
+        let Some((x, y)) = crate::input::mouse::parse_report(data) else {
+            return false;
+        };
+        let Some((column, row)) = geometry.cell(x, y) else {
+            return false;
+        };
+        let Some(cell_report) = crate::input::mouse::report_at_cell(data, column, row) else {
+            return false;
+        };
+        let mut events = crate::raw_input::parse_raw_input_bytes_sync(&cell_report);
+        if events.len() != 1 || !matches!(events[0], crate::raw_input::RawInputEvent::Mouse(_)) {
+            return false;
+        }
+        self.state.host_mouse_pixels = Some(crate::input::mouse::HostPixels { x, y, geometry });
+        self.route_client_events_from(source_id, std::mem::take(&mut events), false);
+        self.state.host_mouse_pixels = None;
+        true
+    }
+
     pub(crate) fn route_client_events(
         &mut self,
         events: Vec<crate::raw_input::RawInputEvent>,
@@ -1781,6 +1822,11 @@ impl App {
     }
 
     pub(crate) fn clear_input_source(&mut self, source_id: InputSourceId) {
+        // Call this only when the input source is gone for good. A pending URL
+        // click has to outlive a plain focus change, because opening the URL
+        // raises the browser and costs the host terminal its focus before the
+        // mouse release arrives.
+        self.pending_url_click_sources.remove(&source_id);
         self.release_input_source_headless(source_id);
     }
 
@@ -3448,6 +3494,34 @@ mod tests {
     }
 
     #[test]
+    fn save_status_indicators_persists_then_applies_live_config() {
+        let _guard = config_env_lock().lock().unwrap();
+        let path = temp_config_path("save-status-indicators");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "onboarding = false\n").unwrap();
+        std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
+
+        let mut app = test_app();
+        assert_eq!(
+            app.state.status_indicators,
+            crate::config::StatusIndicatorStyle::Dots
+        );
+
+        app.save_status_indicators(crate::config::StatusIndicatorStyle::Symbols);
+
+        assert_eq!(
+            app.state.status_indicators,
+            crate::config::StatusIndicatorStyle::Symbols
+        );
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains("status_indicators = \"symbols\""));
+        assert!(app.state.config_diagnostic.is_none());
+
+        std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
     fn save_agent_panel_sort_persists_then_applies_live_config() {
         let _guard = config_env_lock().lock().unwrap();
         let path = temp_config_path("save-agent-panel-sort");
@@ -4351,6 +4425,7 @@ mod tests {
                 ratio: None,
                 cwd: None,
                 focus: false,
+                right_click: Default::default(),
                 env: Default::default(),
             }),
         });
@@ -4431,6 +4506,7 @@ mod tests {
                 ratio: None,
                 cwd: None,
                 focus: true,
+                right_click: Default::default(),
                 env: Default::default(),
             }),
         });
@@ -4477,6 +4553,7 @@ mod tests {
                 ratio: Some(0.333),
                 cwd: None,
                 focus: false,
+                right_click: crate::api::schema::PaneRightClickTarget::Pane,
                 env: Default::default(),
             }),
         });
@@ -4488,6 +4565,14 @@ mod tests {
             .splits(ratatui::layout::Rect::new(0, 0, 100, 20));
         assert_eq!(splits.len(), 1);
         assert!((splits[0].ratio - 0.333).abs() < f32::EPSILON);
+        let response_pane_id = response["result"]["pane"]["pane_id"].as_str().unwrap();
+        let (_, response_pane_id) = app.parse_pane_id(response_pane_id).unwrap();
+        assert!(
+            app.state.workspaces[0]
+                .pane_state(response_pane_id)
+                .unwrap()
+                .right_click_passthrough
+        );
 
         let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
         for (_terminal_id, runtime) in runtimes {
@@ -4523,6 +4608,7 @@ mod tests {
                 ratio: None,
                 cwd: None,
                 focus: false,
+                right_click: Default::default(),
                 env: Default::default(),
             }),
         });
@@ -5193,6 +5279,62 @@ last_pane = "prefix+tab"
             rx.recv().await.unwrap(),
             bytes::Bytes::from_static(b"\x1bOS")
         );
+    }
+
+    #[tokio::test]
+    async fn host_report_all_supplies_printable_releases_for_event_type_only_panes() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("test");
+        let focused = workspace.focused_pane_id().unwrap();
+        let (runtime, mut rx) = TerminalRuntime::test_with_channel_and_scrollback_bytes(
+            80,
+            24,
+            0,
+            b"\x1b[>4;2m\x1b[=3;1u",
+            4,
+        );
+        assert_eq!(
+            runtime.keyboard_protocol(),
+            crate::input::KeyboardProtocol::Kitty { flags: 3 }
+        );
+        assert!(runtime
+            .input_state()
+            .is_some_and(|state| state.modify_other_keys));
+        workspace.tabs[0].runtimes.insert(focused, runtime);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::Terminal;
+
+        assert!(app.host_keyboard_report_all_requested());
+
+        app.route_client_input(b"\x1b[106;1:1u\x1b[106;1:2u\x1b[106;1:3u".to_vec());
+        assert_eq!(rx.recv().await.unwrap(), bytes::Bytes::from_static(b"j"));
+        assert_eq!(rx.recv().await.unwrap(), bytes::Bytes::from_static(b"j"));
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            bytes::Bytes::from_static(b"\x1b[106;1:3u")
+        );
+        assert!(rx.try_recv().is_err());
+
+        let runtime = app
+            .state
+            .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, focused)
+            .unwrap();
+        runtime.test_process_pty_bytes(b"\x1b[>4;0m");
+        assert!(!runtime
+            .input_state()
+            .is_some_and(|state| state.modify_other_keys));
+        assert!(!app.host_keyboard_report_all_requested());
+
+        #[cfg(unix)]
+        {
+            runtime.test_process_pty_bytes(b"\x1b[>4;1m");
+            assert!(!runtime
+                .input_state()
+                .is_some_and(|state| state.modify_other_keys));
+            assert!(!app.host_keyboard_report_all_requested());
+        }
     }
 
     #[tokio::test]
