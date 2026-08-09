@@ -4317,6 +4317,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auto_move_reports_no_routing_when_the_source_tab_is_zoomed() {
+        let pinned = unique_temp_path("auto-move-zoomed");
+        let claimed_cwd = pinned.join("sub");
+        std::fs::create_dir_all(&claimed_cwd).unwrap();
+        let (mut app, _) = app_with_source_and_pinned_workspace(&pinned);
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.workspaces[0].tabs[0].zoomed = true;
+
+        let moved =
+            app.auto_move_pane_to_pinned_workspace(0, source_pane, &claimed_cwd, false, None);
+
+        assert!(
+            !moved,
+            "a zoomed source tab declines the move, so nothing was routed"
+        );
+        assert_eq!(app.state.workspaces[0].tabs[0].panes.len(), 1);
+        assert_eq!(
+            app.state.workspaces[1].tabs.len(),
+            1,
+            "no destination tab should have been created"
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
     async fn pane_split_leaves_the_pane_in_place_when_no_workspace_claims_its_cwd() {
         let pinned = unique_temp_path("pane-split-no-match");
         let (mut app, target_public_id) = app_with_source_and_pinned_workspace(&pinned);

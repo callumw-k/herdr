@@ -647,11 +647,30 @@ impl App {
                 focus,
             },
         );
-        if serde_json::from_str::<crate::api::schema::ErrorResponse>(&response).is_ok() {
-            tracing::warn!(%workspace_id, "auto-move into pinned workspace failed");
-            return false;
+        // A move can succeed without moving anything: a zoomed source tab is
+        // left alone on purpose. Report that as not routed so the caller and
+        // the log both describe where the pane actually is.
+        let move_result = serde_json::from_str::<crate::api::schema::SuccessResponse>(&response)
+            .ok()
+            .and_then(|success| match success.result {
+                crate::api::schema::ResponseResult::PaneMove { move_result } => Some(move_result),
+                _ => None,
+            });
+        match move_result {
+            Some(move_result) if move_result.changed => true,
+            Some(move_result) => {
+                tracing::warn!(
+                    %workspace_id,
+                    reason = ?move_result.reason,
+                    "auto-move into pinned workspace declined"
+                );
+                false
+            }
+            None => {
+                tracing::warn!(%workspace_id, "auto-move into pinned workspace failed");
+                false
+            }
         }
-        true
     }
 }
 
