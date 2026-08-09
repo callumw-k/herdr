@@ -912,6 +912,17 @@ impl AppState {
                     return false;
                 }
                 self.switch_workspace(ws_idx);
+                let active_tab_idx = self.workspaces.get(ws_idx).map(|ws| ws.active_tab);
+                if let Some(tab_idx) = active_tab_idx {
+                    let lands_on_float = self
+                        .workspaces
+                        .get(ws_idx)
+                        .and_then(|ws| ws.tabs.get(tab_idx))
+                        .is_some_and(|tab| tab.float_focused && !tab.floats_hidden);
+                    if !lands_on_float {
+                        self.hide_floats_covering_tiled_target(ws_idx, tab_idx);
+                    }
+                }
                 self.mode = Mode::Terminal;
                 true
             }
@@ -927,6 +938,14 @@ impl AppState {
                     return false;
                 }
                 self.switch_workspace_tab(ws_idx, tab_idx);
+                let lands_on_float = self
+                    .workspaces
+                    .get(ws_idx)
+                    .and_then(|ws| ws.tabs.get(tab_idx))
+                    .is_some_and(|tab| tab.float_focused && !tab.floats_hidden);
+                if !lands_on_float {
+                    self.hide_floats_covering_tiled_target(ws_idx, tab_idx);
+                }
                 self.mode = Mode::Terminal;
                 true
             }
@@ -944,12 +963,36 @@ impl AppState {
                     .and_then(|ws| ws.tabs.get(tab_idx))
                     .is_some_and(|tab| tab.panes.contains_key(&pane_id))
                 {
+                    let is_float = self
+                        .workspaces
+                        .get(ws_idx)
+                        .and_then(|ws| ws.tabs.get(tab_idx))
+                        .is_some_and(|tab| tab.is_float(pane_id));
                     self.focus_pane_in_workspace(ws_idx, pane_id);
+                    if !is_float {
+                        self.hide_floats_covering_tiled_target(ws_idx, tab_idx);
+                    }
                     self.mode = Mode::Terminal;
                     return true;
                 }
                 false
             }
+        }
+    }
+
+    /// The picker's job is to show you what you selected, so a visible float
+    /// covering a tiled target gets out of the way. Hidden, not closed: the
+    /// float's process keeps running and toggle-floats restores the layer.
+    fn hide_floats_covering_tiled_target(&mut self, ws_idx: usize, tab_idx: usize) {
+        let Some(tab) = self
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+        else {
+            return;
+        };
+        if tab.set_floats_hidden(true) {
+            self.mark_session_dirty();
         }
     }
 }
@@ -4151,6 +4194,125 @@ mod tests {
         assert_eq!(state.active, Some(1));
         assert_eq!(state.workspaces[1].focused_pane_id(), Some(target));
         assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn activating_a_tiled_pane_hides_visible_floats() {
+        let (mut state, floats) = app_with_float_stack(1);
+        let tiled = state.workspaces[0].tabs[0].root_pane;
+
+        let focused = state.focus_navigator_target(NavigatorTarget::Pane {
+            ws_idx: 0,
+            tab_idx: 0,
+            pane_id: tiled,
+        });
+
+        assert!(focused);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert!(tab.floats_hidden, "float layer should be hidden");
+        assert!(
+            tab.panes.contains_key(&floats[0]),
+            "float pane should still exist"
+        );
+    }
+
+    #[test]
+    fn activating_a_float_unhides_the_layer() {
+        let (mut state, floats) = app_with_float_stack(1);
+        state.workspaces[0]
+            .active_tab_mut()
+            .expect("a tab")
+            .set_floats_hidden(true);
+
+        state.focus_navigator_target(NavigatorTarget::Pane {
+            ws_idx: 0,
+            tab_idx: 0,
+            pane_id: floats[0],
+        });
+
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert!(!tab.floats_hidden);
+        assert!(tab.float_focused);
+    }
+
+    #[test]
+    fn floats_hide_even_when_the_tiled_target_is_already_focused() {
+        let (mut state, _) = app_with_float_stack(1);
+        let tiled = state.workspaces[0].tabs[0].root_pane;
+        state.workspaces[0]
+            .active_tab_mut()
+            .expect("a tab")
+            .float_focused = false;
+        state.focus_pane_in_workspace(0, tiled);
+
+        state.focus_navigator_target(NavigatorTarget::Pane {
+            ws_idx: 0,
+            tab_idx: 0,
+            pane_id: tiled,
+        });
+
+        assert!(
+            state.workspaces[0]
+                .active_tab()
+                .expect("a tab")
+                .floats_hidden,
+            "hide must not be gated on focus_pane_in_workspace returning true"
+        );
+    }
+
+    #[test]
+    fn activating_a_tab_row_hides_floats_when_its_focused_pane_is_tiled() {
+        let (mut state, _) = app_with_float_stack(1);
+        state.workspaces[0]
+            .active_tab_mut()
+            .expect("a tab")
+            .float_focused = false;
+
+        state.focus_navigator_target(NavigatorTarget::Tab {
+            ws_idx: 0,
+            tab_idx: 0,
+        });
+
+        assert!(
+            state.workspaces[0]
+                .active_tab()
+                .expect("a tab")
+                .floats_hidden
+        );
+    }
+
+    #[test]
+    fn activating_a_workspace_row_hides_floats_when_its_focused_pane_is_tiled() {
+        let (mut state, _) = app_with_float_stack(1);
+        state.workspaces[0]
+            .active_tab_mut()
+            .expect("a tab")
+            .float_focused = false;
+
+        state.focus_navigator_target(NavigatorTarget::Workspace { ws_idx: 0 });
+
+        assert!(
+            state.workspaces[0]
+                .active_tab()
+                .expect("a tab")
+                .floats_hidden
+        );
+    }
+
+    #[test]
+    fn directional_navigation_off_a_float_leaves_the_layer_visible() {
+        let (mut state, _) = app_with_float_stack(1);
+        let tiled = state.workspaces[0].tabs[0].root_pane;
+
+        state.focus_pane_in_workspace(0, tiled);
+
+        assert!(
+            !state.workspaces[0]
+                .active_tab()
+                .expect("a tab")
+                .floats_hidden,
+            "focus_pane_in_workspace must not hide floats"
+        );
     }
 
     #[test]
