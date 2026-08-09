@@ -609,12 +609,18 @@ impl App {
 
     /// Route a freshly created pane into the workspace that claims its cwd.
     /// Best effort: a failure here never fails the creation that triggered it.
+    /// `label` is the destination tab's name, if the caller wants one — e.g.
+    /// `tab.create --label` passes its own label; a plain pane split has none
+    /// and passes `None`. The mover does not guess this from ambient state:
+    /// picking it up from the source tab's name would leak an unrelated
+    /// tab's name onto the destination after a split.
     pub(crate) fn auto_move_pane_to_pinned_workspace(
         &mut self,
         source_ws_idx: usize,
         pane_id: PaneId,
         cwd: &std::path::Path,
         focus: bool,
+        label: Option<String>,
     ) -> bool {
         let Some(target_ws_idx) = self.claiming_workspace(cwd, source_ws_idx) else {
             return false;
@@ -630,12 +636,6 @@ impl App {
         let Some(public_pane_id) = self.public_pane_id(source_ws_idx, pane_id) else {
             return false;
         };
-        // The pane's own tab may already be named (e.g. tab.create --label):
-        // carry that name across so the auto-move doesn't silently drop it.
-        let label = self.state.workspaces.get(source_ws_idx).and_then(|ws| {
-            let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
-            ws.tabs.get(tab_idx)?.custom_name.clone()
-        });
         let response = self.handle_pane_move(
             "auto-move".to_string(),
             crate::api::schema::PaneMoveParams {

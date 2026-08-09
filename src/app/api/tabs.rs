@@ -100,6 +100,9 @@ impl App {
                 self.terminal_runtimes.insert(terminal.id.clone(), runtime);
                 self.state.terminals.insert(terminal.id.clone(), terminal);
                 self.state.remove_alias_shadowed_by_new_pane(root_pane_id);
+                // label is consumed by set_custom_name below, so keep a copy
+                // to pass explicitly to the auto-mover.
+                let auto_move_label = label.clone();
                 if let Some(label) = label {
                     let workspace_id = self.state.workspaces[ws_idx].id.clone();
                     let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
@@ -127,6 +130,7 @@ impl App {
                     root_pane_id,
                     &auto_move_cwd,
                     focus,
+                    auto_move_label,
                 );
                 // The root pane may now live in a different tab/workspace: re-resolve
                 // so the response describes where the tab ended up, not where it started.

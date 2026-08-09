@@ -133,7 +133,13 @@ impl App {
         self.emit_layout_updated_event(ws_idx, target_tab_idx);
 
         if let Some(cwd) = auto_move_cwd.as_deref() {
-            self.auto_move_pane_to_pinned_workspace(ws_idx, new_pane.pane_id, cwd, params.focus);
+            self.auto_move_pane_to_pinned_workspace(
+                ws_idx,
+                new_pane.pane_id,
+                cwd,
+                params.focus,
+                None,
+            );
         }
         // The pane may now live in a different workspace: re-resolve its info
         // so the response describes where it ended up, not where it started.
@@ -4275,6 +4281,37 @@ mod tests {
             app.state.workspaces[0].tabs[0].panes.len(),
             1,
             "the split pane left the source tab once the pinned workspace claimed it"
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn pane_split_does_not_leak_the_source_tab_label_into_the_pinned_destination() {
+        let pinned = unique_temp_path("pane-split-label-leak");
+        let split_cwd = pinned.join("sub");
+        std::fs::create_dir_all(&split_cwd).unwrap();
+        let (mut app, target_public_id) = app_with_source_and_pinned_workspace(&pinned);
+        app.state.workspaces[0].tabs[0].set_custom_name("release-notes".into());
+
+        app.handle_pane_split(
+            "req".into(),
+            PaneSplitParams {
+                target_pane_id: Some(target_public_id),
+                workspace_id: None,
+                direction: SplitDirection::Right,
+                ratio: None,
+                cwd: Some(split_cwd.to_string_lossy().into_owned()),
+                focus: false,
+                right_click: crate::api::schema::PaneRightClickTarget::Pane,
+                env: Default::default(),
+            },
+        );
+
+        let pinned_workspace = &app.state.workspaces[1];
+        let destination_tab = pinned_workspace.tabs.last().unwrap();
+        assert_eq!(
+            destination_tab.custom_name, None,
+            "a split's destination tab must not inherit the source tab's label"
         );
         shutdown_test_runtimes(&mut app);
     }
