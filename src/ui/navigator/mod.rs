@@ -560,22 +560,28 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
             Span::styled(" back", dim),
         ])
     } else {
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(" enter", key),
             Span::styled(" switch  ", dim),
             Span::styled("/", key),
             Span::styled(" search  ", dim),
             Span::styled("ctrl+o", key),
             Span::styled(" new  ", dim),
-            Span::styled("p", key),
-            Span::styled(" path  ", dim),
+        ];
+        // `p` only acts on a workspace row, and a text query leaves none.
+        if !app.navigator_results_flattened() {
+            spans.push(Span::styled("p", key));
+            spans.push(Span::styled(" path  ", dim));
+        }
+        spans.extend([
             Span::styled("b/w/i/d/a", key),
             Span::styled(" states  ", dim),
             Span::styled("j/k/↑↓", key),
             Span::styled(" move  ", dim),
             Span::styled("esc", key),
             Span::styled(" close", dim),
-        ])
+        ]);
+        Line::from(spans)
     };
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -613,6 +619,32 @@ mod tests {
             row(0, true),  // workspace
             row(1, false), // pane (single child)
         ]
+    }
+
+    fn footer_text(app: &AppState) -> String {
+        let area = Rect::new(0, 0, 120, 1);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .unwrap();
+        terminal
+            .draw(|frame| render_footer(app, frame, area))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..area.width).map(|x| buffer[(x, 0)].symbol()).collect()
+    }
+
+    #[test]
+    fn the_path_hint_hides_once_a_query_flattens_the_rows() {
+        let mut app = AppState::test_new();
+
+        assert!(footer_text(&app).contains("p path"));
+
+        app.navigator.query = "herdr".into();
+
+        assert!(
+            !footer_text(&app).contains("p path"),
+            "a query leaves no workspace row for `p` to act on"
+        );
     }
 
     #[test]

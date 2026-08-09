@@ -496,8 +496,12 @@ impl AppState {
         let query = self.navigator.query.trim().to_lowercase();
         let query_kind = navigator_query_kind(&query, self.navigator.state_filter);
         let mut rows = Vec::new();
+        // The workspace row's label carries a pane count for the tree view;
+        // breadcrumbs want the bare name, so keep it alongside.
+        let mut workspace_names = vec![String::new(); self.workspaces.len()];
         for (ws_idx, ws) in self.workspaces.iter().enumerate() {
             let workspace_label = ws.display_name_from(&self.terminals, terminal_runtimes);
+            workspace_names[ws_idx] = workspace_label.clone();
             let activity = workspace_activity_summary(ws, &self.terminals);
             let workspace_search_text = format!("{workspace_label} {activity}").to_lowercase();
             let workspace_matches = match query_kind {
@@ -538,9 +542,18 @@ impl AppState {
             }
         }
         if matches!(query_kind, NavigatorQueryKind::Text) {
-            return rank_navigator_rows(rows, &query);
+            return rank_navigator_rows(rows, &query, &workspace_names);
         }
         rows
+    }
+
+    /// Whether a text query has flattened the rows down to panes. Workspace
+    /// rows are gone in that state, so keys that only act on one cannot fire.
+    pub(crate) fn navigator_results_flattened(&self) -> bool {
+        matches!(
+            navigator_query_kind(self.navigator.query.trim(), self.navigator.state_filter),
+            NavigatorQueryKind::Text
+        )
     }
 
     fn navigator_child_rows(
@@ -1038,14 +1051,24 @@ fn navigator_matches(query: &str, text: &str) -> bool {
 /// Flatten the tree into a ranked list. Workspace and tab rows collapse into
 /// breadcrumbs on their pane rows, so a query returns panes rather than the
 /// structure holding them.
-fn rank_navigator_rows(rows: Vec<NavigatorRow>, query: &str) -> Vec<NavigatorRow> {
+fn rank_navigator_rows(
+    rows: Vec<NavigatorRow>,
+    query: &str,
+    workspace_names: &[String],
+) -> Vec<NavigatorRow> {
     let mut workspace_label = String::new();
     let mut tab_label = String::new();
     let mut ranked: Vec<(bool, i32, usize, NavigatorRow)> = Vec::new();
 
     for (order, mut row) in rows.into_iter().enumerate() {
         if row.is_workspace {
-            workspace_label = row.label.clone();
+            workspace_label = match row.target {
+                NavigatorTarget::Workspace { ws_idx } => workspace_names
+                    .get(ws_idx)
+                    .cloned()
+                    .unwrap_or_else(|| row.label.clone()),
+                _ => row.label.clone(),
+            };
             tab_label.clear();
             continue;
         }
@@ -4020,7 +4043,7 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(selected.meta, "single (1) › Baz");
+        assert_eq!(selected.meta, "single › Baz");
         assert!(!rows.iter().any(|row| matches!(
             row.target,
             crate::app::state::NavigatorTarget::Workspace { ws_idx: 0 }
@@ -4405,65 +4428,8 @@ mod tests {
     }
 
     #[test]
-    fn navigator_search_flattens_workspace_into_pane_breadcrumb() {
-        let mut state = app_with_workspaces(&["one"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = state.workspaces[0].terminal_id(root).cloned().unwrap();
-        state
-            .terminals
-            .get_mut(&terminal_id)
-            .unwrap()
-            .set_manual_label("weekly review".into());
-        state.open_navigator();
-        state.navigator.query = "weekly".into();
-
-        let rows = state.navigator_rows();
-
-        // A query flattens the tree, so the workspace no longer appears as
-        // its own row; it survives only as the breadcrumb on the pane.
-        assert!(
-            !rows.iter().any(|row| row.is_workspace),
-            "querying should flatten workspace rows away"
-        );
-        let matched = rows
-            .iter()
-            .find(|row| row.label.contains("weekly"))
-            .expect("pane matched by its own label");
-        assert_eq!(matched.meta, "one (1)");
-    }
-
-    #[test]
-    fn navigator_workspace_match_surfaces_its_panes_via_breadcrumb() {
-        let mut state = app_with_workspaces(&["one", "two"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        let extra = state.workspaces[0].test_split(Direction::Horizontal);
-        state.ensure_test_terminals();
-        for pane in [root, extra] {
-            let terminal_id = state.workspaces[0].terminal_id(pane).cloned().unwrap();
-            state
-                .terminals
-                .get_mut(&terminal_id)
-                .unwrap()
-                .set_manual_label("unrelated".into());
-        }
-
-        state.open_navigator();
-        state.navigator.query = "one".into();
-        let rows = state.navigator_rows();
-
-        // A workspace-name match surfaces that workspace's panes via the
-        // breadcrumb, even though neither pane's own label matches the query.
-        assert_eq!(rows.len(), 2, "got {rows:?}");
-        assert!(rows.iter().all(|row| row.meta.starts_with("one")));
-        assert!(
-            !rows.iter().any(|row| row.label.starts_with("two")),
-            "panes from the non-matching workspace must stay out of the results"
-        );
-    }
-
-    #[test]
     fn navigator_search_by_workspace_name_returns_its_panes_with_breadcrumb() {
-        let mut state = app_with_workspaces(&["herdr", "other"]);
+        let mut state = app_with_workspaces(&["herdr", "herdr-notes", "other"]);
         state.workspaces[0].tabs[0].custom_name = Some("src".into());
         state.workspaces[0].test_add_tab(Some("docs"));
         state.ensure_test_terminals();
@@ -4472,16 +4438,25 @@ mod tests {
         state.navigator.query = "herdr".into();
         let rows = state.navigator_rows();
 
+        // A query flattens the tree, so the workspace no longer appears as
+        // its own row; it survives only as the breadcrumb on the pane. None of
+        // these panes match "herdr" by their own label, so the breadcrumb is
+        // the only thing pulling them in.
         assert!(
-            rows.iter()
-                .any(|row| row.meta.starts_with("herdr") && row.meta.ends_with("src")),
-            "expected a pane breadcrumbed to herdr's src tab, got {rows:?}"
+            !rows.iter().any(|row| row.is_workspace),
+            "querying should flatten workspace rows away, got {rows:?}"
         );
-        assert!(
-            rows.iter()
-                .any(|row| row.meta.starts_with("herdr") && row.meta.ends_with("docs")),
-            "expected a pane breadcrumbed to herdr's docs tab, got {rows:?}"
-        );
+        let metas: Vec<&str> = rows.iter().map(|row| row.meta.as_str()).collect();
+        assert_eq!(metas.len(), 3, "got {rows:?}");
+        // The breadcrumb carries the plain workspace name, not the tree view's
+        // "name (pane count)" row label. A single-tab workspace whose tab does
+        // not match contributes the workspace name alone.
+        for expected in ["herdr › src", "herdr › docs", "herdr-notes"] {
+            assert!(
+                metas.contains(&expected),
+                "missing {expected}, got {rows:?}"
+            );
+        }
         assert!(
             !rows.iter().any(|row| row.meta.contains("other")),
             "a non-matching workspace's panes should stay out of the results, got {rows:?}"
