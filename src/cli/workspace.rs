@@ -156,10 +156,15 @@ fn workspace_set_path(args: &[String]) -> std::io::Result<i32> {
         eprintln!("usage: herdr workspace set-path <workspace_id> [PATH | --clear]");
         return Ok(2);
     };
-    let path = match args.get(1).map(String::as_str) {
-        None | Some("--clear") => None,
-        Some(value) => Some(value.to_string()),
-    };
+    // The spec declares PATH and --clear as mutually exclusive, so reject the
+    // combination here rather than silently letting one of them win.
+    let rest = &args[1..];
+    let clear = rest.iter().any(|arg| arg == "--clear");
+    let path = rest.iter().find(|arg| arg.as_str() != "--clear").cloned();
+    if clear && path.is_some() {
+        eprintln!("usage: herdr workspace set-path <workspace_id> [PATH | --clear]");
+        return Ok(2);
+    }
 
     super::runtime::workspace_set_path(WorkspaceSetPathParams {
         workspace_id: super::normalize_workspace_id(raw_workspace_id),
@@ -275,4 +280,15 @@ fn print_workspace_help() {
     eprintln!("  herdr workspace set-path <workspace_id> [PATH | --clear]");
     eprintln!("  herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
     eprintln!("  herdr workspace close <workspace_id>");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn set_path_rejects_a_path_and_clear_together() {
+        for args in [["w1", "/tmp", "--clear"], ["w1", "--clear", "/tmp"]] {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            assert_eq!(super::workspace_set_path(&args).unwrap(), 2);
+        }
+    }
 }
