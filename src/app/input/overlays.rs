@@ -414,7 +414,14 @@ impl AppState {
     }
 
     pub(super) fn rename_modal_inner(&self) -> Option<Rect> {
-        self.onboarding_modal_inner(56, 7)
+        // The workspace dialog is the only two-field rename modal, so it alone
+        // renders taller; mouse hit-testing must track the same height.
+        let height = if self.mode == Mode::RenameWorkspace {
+            9
+        } else {
+            7
+        };
+        self.onboarding_modal_inner(56, height)
     }
 
     fn release_notes_body_rect(&self) -> Option<Rect> {

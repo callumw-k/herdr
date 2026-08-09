@@ -1317,6 +1317,13 @@ pub(crate) struct PaneFocusTarget {
     pub pane_id: PaneId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkspaceDialogField {
+    #[default]
+    Name,
+    Path,
+}
+
 /// All application state — pure data, no channels or async runtime.
 /// Testable without PTYs or a tokio runtime.
 pub struct AppState {
@@ -1365,6 +1372,9 @@ pub struct AppState {
     pub request_complete_onboarding: bool,
     pub name_input: String,
     pub name_input_replace_on_type: bool,
+    /// Pinned path being entered in the workspace create/edit dialog.
+    pub workspace_dialog_path: String,
+    pub workspace_dialog_field: WorkspaceDialogField,
     pub release_notes: Option<ReleaseNotesState>,
     pub product_announcement: Option<ProductAnnouncementState>,
     pub keybind_help: KeybindHelpState,
@@ -1727,6 +1737,8 @@ impl AppState {
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
+            workspace_dialog_path: String::new(),
+            workspace_dialog_field: WorkspaceDialogField::default(),
             release_notes: None,
             product_announcement: None,
             keybind_help: KeybindHelpState::default(),

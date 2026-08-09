@@ -11,13 +11,19 @@ use super::widgets::{
     action_button_row_rects, centered_popup_rect, panel_contrast_fg, render_action_button,
     render_modal_header, render_modal_shell, render_panel_shell, ActionButtonSpec,
 };
-use crate::app::{state::WorktreeOpenState, AppState, Mode};
+use crate::app::{
+    state::{WorkspaceDialogField, WorktreeOpenState},
+    AppState, Mode,
+};
 use crate::terminal::TerminalRuntimeRegistry;
 
 const NEW_LINKED_WORKTREE_POPUP_WIDTH: u16 = 68;
 const NEW_LINKED_WORKTREE_POPUP_HEIGHT: u16 = 12;
 
 pub(crate) fn rename_button_rects(inner: Rect) -> (Rect, Rect, Rect) {
+    // Anchor from the bottom, leaving one row of padding below the buttons,
+    // so the taller two-field workspace dialog still puts them under both
+    // fields instead of at a row fixed from the top.
     let rects = action_button_row_rects(
         inner,
         &[
@@ -35,7 +41,7 @@ pub(crate) fn rename_button_rects(inner: Rect) -> (Rect, Rect, Rect) {
             },
         ],
         2,
-        3,
+        inner.height.saturating_sub(2),
     );
     (rects[0], rects[1], rects[2])
 }
@@ -52,7 +58,9 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
         _ => return,
     };
 
-    let Some(inner) = render_modal_shell(frame, area, 56, 7, &app.palette) else {
+    let two_field = app.mode == Mode::RenameWorkspace;
+    let height = if two_field { 9 } else { 7 };
+    let Some(inner) = render_modal_shell(frame, area, 56, height, &app.palette) else {
         return;
     };
     if inner.height < 4 {
@@ -64,22 +72,44 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
         Constraint::Min(0),
     ])
-    .areas::<5>(inner);
+    .areas::<7>(inner);
 
     render_modal_header(frame, rows[0], title, &app.palette);
 
-    let input_rect = Rect::new(rows[2].x, rows[2].y, rows[2].width, 1);
-    frame.render_widget(Clear, input_rect);
-    frame.render_widget(
-        Paragraph::new(format!(" {}█", app.name_input)).style(
-            Style::default()
-                .fg(app.palette.text)
-                .bg(app.palette.surface0),
-        ),
-        input_rect,
-    );
+    if two_field {
+        render_dialog_input(
+            frame,
+            app,
+            Rect::new(rows[2].x, rows[2].y, rows[2].width, 1),
+            "name",
+            &app.name_input,
+            app.workspace_dialog_field == WorkspaceDialogField::Name,
+        );
+        render_dialog_input(
+            frame,
+            app,
+            Rect::new(rows[4].x, rows[4].y, rows[4].width, 1),
+            "path",
+            &app.workspace_dialog_path,
+            app.workspace_dialog_field == WorkspaceDialogField::Path,
+        );
+    } else {
+        // Tab and pane rename keep the original unlabelled single-field look.
+        let input_rect = Rect::new(rows[2].x, rows[2].y, rows[2].width, 1);
+        frame.render_widget(Clear, input_rect);
+        frame.render_widget(
+            Paragraph::new(format!(" {}█", app.name_input)).style(
+                Style::default()
+                    .fg(app.palette.text)
+                    .bg(app.palette.surface0),
+            ),
+            input_rect,
+        );
+    }
 
     let (save_rect, clear_rect, cancel_rect) = rename_button_rects(inner);
 
@@ -112,6 +142,30 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
             .fg(app.palette.text)
             .bg(app.palette.surface0)
             .add_modifier(Modifier::BOLD),
+    );
+}
+
+/// One labelled input line. Only the focused field draws a cursor block, so
+/// the dialog shows where typing lands.
+fn render_dialog_input(
+    frame: &mut Frame,
+    app: &AppState,
+    area: Rect,
+    label: &str,
+    value: &str,
+    focused: bool,
+) {
+    frame.render_widget(Clear, area);
+    let cursor = if focused { "█" } else { "" };
+    let background = if focused {
+        app.palette.surface0
+    } else {
+        app.palette.surface_dim
+    };
+    frame.render_widget(
+        Paragraph::new(format!(" {label} {value}{cursor}"))
+            .style(Style::default().fg(app.palette.text).bg(background)),
+        area,
     );
 }
 
@@ -942,5 +996,76 @@ mod tests {
         assert_eq!(inner.height, super::NEW_LINKED_WORKTREE_POPUP_HEIGHT - 2);
         assert_eq!(create.y, inner.y + inner.height - 1);
         assert_eq!(cancel.y, inner.y + inner.height - 1);
+    }
+
+    fn buffer_row_text(buffer: &ratatui::buffer::Buffer, area: Rect, y: u16) -> String {
+        (area.x..area.x + area.width)
+            .map(|x| buffer[(x, y)].symbol())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn rename_tab_dialog_keeps_the_unlabelled_single_field_look() {
+        let mut app = AppState::test_new();
+        app.mode = crate::app::Mode::RenameTab;
+        app.name_input = "my-tab".into();
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 24)).expect("test terminal should initialize");
+        terminal
+            .draw(|frame| super::render_rename_overlay(&app, frame, Rect::new(0, 0, 80, 24)))
+            .expect("rename overlay should render");
+
+        let popup = super::centered_popup_rect(Rect::new(0, 0, 80, 24), 56, 7).unwrap();
+        let inner = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .inner(popup);
+
+        let buffer = terminal.backend().buffer();
+        let input_row = buffer_row_text(buffer, inner, inner.y + 2);
+        assert!(input_row.trim_start().starts_with("my-tab"));
+        assert!(!input_row.contains("name my-tab"));
+
+        // Modal height is unchanged from the single-field dialog: 7 total,
+        // 5 inner rows.
+        assert_eq!(inner.height, 5);
+    }
+
+    #[test]
+    fn workspace_dialog_renders_two_labelled_fields_above_the_buttons() {
+        let mut app = AppState::test_new();
+        app.mode = crate::app::Mode::RenameWorkspace;
+        app.workspaces = vec![Workspace::test_new("alpha")];
+        app.name_input = "alpha".into();
+        app.workspace_dialog_path = "/repo/alpha".into();
+        app.workspace_dialog_field = super::WorkspaceDialogField::Path;
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 24)).expect("test terminal should initialize");
+        terminal
+            .draw(|frame| super::render_rename_overlay(&app, frame, Rect::new(0, 0, 80, 24)))
+            .expect("workspace dialog should render");
+
+        let popup = super::centered_popup_rect(Rect::new(0, 0, 80, 24), 56, 9).unwrap();
+        let inner = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .inner(popup);
+        assert_eq!(inner.height, 7);
+
+        let buffer = terminal.backend().buffer();
+        let name_row = buffer_row_text(buffer, inner, inner.y + 2);
+        let path_row = buffer_row_text(buffer, inner, inner.y + 4);
+        assert!(name_row.contains("name alpha"));
+        assert!(path_row.contains("path /repo/alpha"));
+
+        let (save_rect, _, _) = super::rename_button_rects(inner);
+        assert!(
+            save_rect.y > inner.y + 4,
+            "buttons must sit below the path field"
+        );
+        assert!(
+            save_rect.y < inner.y + inner.height,
+            "buttons must stay inside the taller shell"
+        );
     }
 }
