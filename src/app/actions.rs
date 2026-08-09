@@ -1010,15 +1010,20 @@ fn rank_navigator_rows(rows: Vec<NavigatorRow>, query: &str) -> Vec<NavigatorRow
             tab_label = row.label.clone();
             continue;
         }
-        let Some(score) = crate::app::fuzzy::fuzzy_score(query, &row.search_text) else {
-            continue;
-        };
-        row.depth = 0;
-        row.meta = if tab_label.is_empty() {
+        let breadcrumb = if tab_label.is_empty() {
             workspace_label.clone()
         } else {
             format!("{workspace_label} › {tab_label}")
         };
+        // The pane's own text comes first: the matcher penalises how far into
+        // the haystack the first needle lands, so a match on the pane's own
+        // name/title still outscores one that only lands in the breadcrumb.
+        let match_text = format!("{} {breadcrumb}", row.search_text);
+        let Some(score) = crate::app::fuzzy::fuzzy_score(query, &match_text) else {
+            continue;
+        };
+        row.depth = 0;
+        row.meta = breadcrumb;
         row.matched = true;
         ranked.push((score, order, row));
     }
@@ -4237,7 +4242,7 @@ mod tests {
     }
 
     #[test]
-    fn navigator_workspace_only_match_does_not_surface_unrelated_panes() {
+    fn navigator_workspace_match_surfaces_its_panes_via_breadcrumb() {
         let mut state = app_with_workspaces(&["one", "two"]);
         let root = state.workspaces[0].tabs[0].root_pane;
         let extra = state.workspaces[0].test_split(Direction::Horizontal);
@@ -4255,11 +4260,76 @@ mod tests {
         state.navigator.query = "one".into();
         let rows = state.navigator_rows();
 
-        // Flat ranking scores each pane against its own text; a workspace-name
-        // match no longer cascades into panes that do not themselves match.
+        // A workspace-name match surfaces that workspace's panes via the
+        // breadcrumb, even though neither pane's own label matches the query.
+        assert_eq!(rows.len(), 2, "got {rows:?}");
+        assert!(rows.iter().all(|row| row.meta.starts_with("one")));
         assert!(
-            rows.is_empty(),
-            "a workspace-only match should not surface unrelated panes, got {rows:?}"
+            !rows.iter().any(|row| row.label.starts_with("two")),
+            "panes from the non-matching workspace must stay out of the results"
+        );
+    }
+
+    #[test]
+    fn navigator_search_by_workspace_name_returns_its_panes_with_breadcrumb() {
+        let mut state = app_with_workspaces(&["herdr", "other"]);
+        state.workspaces[0].tabs[0].custom_name = Some("src".into());
+        state.workspaces[0].test_add_tab(Some("docs"));
+        state.ensure_test_terminals();
+
+        state.open_navigator();
+        state.navigator.query = "herdr".into();
+        let rows = state.navigator_rows();
+
+        assert!(
+            rows.iter()
+                .any(|row| row.meta.starts_with("herdr") && row.meta.ends_with("src")),
+            "expected a pane breadcrumbed to herdr's src tab, got {rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|row| row.meta.starts_with("herdr") && row.meta.ends_with("docs")),
+            "expected a pane breadcrumbed to herdr's docs tab, got {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.meta.contains("other")),
+            "a non-matching workspace's panes should stay out of the results, got {rows:?}"
+        );
+    }
+
+    #[test]
+    fn navigator_search_ranks_a_panes_own_match_above_a_breadcrumb_only_match() {
+        let mut state = app_with_workspaces(&["one", "two"]);
+        let named_pane = state.workspaces[1].tabs[0].root_pane;
+        let named_terminal_id = state.workspaces[1]
+            .terminal_id(named_pane)
+            .cloned()
+            .unwrap();
+        state
+            .terminals
+            .get_mut(&named_terminal_id)
+            .unwrap()
+            .set_manual_label("claude".into());
+        // This workspace's own pane text ("pane 1 shell") never contains
+        // "claude", so its pane can only match via this workspace's name,
+        // i.e. purely through the breadcrumb.
+        state.workspaces[0].custom_name = Some("claude workspace".into());
+
+        state.open_navigator();
+        state.navigator.query = "claude".into();
+        let rows = state.navigator_rows();
+
+        let own_match_idx = rows
+            .iter()
+            .position(|row| row.label == "claude")
+            .expect("the pane named claude should match");
+        let breadcrumb_only_idx = rows
+            .iter()
+            .position(|row| row.meta.starts_with("claude workspace"))
+            .expect("a pane in the claude-named workspace should cascade in");
+        assert!(
+            own_match_idx < breadcrumb_only_idx,
+            "a pane's own-name match should outrank a breadcrumb-only match, got {rows:?}"
         );
     }
 
