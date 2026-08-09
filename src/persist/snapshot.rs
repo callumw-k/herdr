@@ -1096,6 +1096,7 @@ mod tests {
         let mut state = state_with_workspaces(&["one"]);
         let root = state.workspaces[0].tabs[0].root_pane;
         state.workspaces[0].identity_cwd = PathBuf::from("/tmp/pion");
+        state.workspaces[0].pinned_path = Some(PathBuf::from("/tmp/pion/pinned"));
         let second = state.workspaces[0].test_split(Direction::Horizontal);
         state.ensure_test_terminals();
         let root_terminal_id = state.workspaces[0].tabs[0].panes[&root]
@@ -1111,6 +1112,10 @@ mod tests {
         let workspace = &snapshot.workspaces[0];
         let tab = &workspace.tabs[0];
         assert_eq!(workspace.identity_cwd, PathBuf::from("/tmp/pion"));
+        assert_eq!(
+            workspace.pinned_path,
+            Some(PathBuf::from("/tmp/pion/pinned"))
+        );
         assert_eq!(tab.panes[&root.raw()].cwd, PathBuf::from("/tmp/pion"));
         assert_eq!(tab.panes[&second.raw()].cwd, PathBuf::from("/tmp/herdr"));
     }
