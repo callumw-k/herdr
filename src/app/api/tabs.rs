@@ -65,6 +65,9 @@ impl App {
         let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| {
             self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
         });
+        // cwd itself is consumed by create_tab below, so keep a copy for the
+        // auto-move check that happens after the tab exists.
+        let auto_move_cwd = cwd.clone();
         let (rows, cols) = self.state.estimate_pane_size();
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
@@ -93,11 +96,10 @@ impl App {
             });
         match result {
             Ok((tab_idx, terminal, runtime)) => {
+                let root_pane_id = self.state.workspaces[ws_idx].tabs[tab_idx].root_pane;
                 self.terminal_runtimes.insert(terminal.id.clone(), runtime);
                 self.state.terminals.insert(terminal.id.clone(), terminal);
-                self.state.remove_alias_shadowed_by_new_pane(
-                    self.state.workspaces[ws_idx].tabs[tab_idx].root_pane,
-                );
+                self.state.remove_alias_shadowed_by_new_pane(root_pane_id);
                 if let Some(label) = label {
                     let workspace_id = self.state.workspaces[ws_idx].id.clone();
                     let tab_id = self.public_tab_id(ws_idx, tab_idx).unwrap_or_else(|| {
@@ -119,9 +121,21 @@ impl App {
                 }
                 self.schedule_session_save();
                 self.emit_tab_created_events(ws_idx, tab_idx);
+
+                self.auto_move_pane_to_pinned_workspace(ws_idx, root_pane_id, &auto_move_cwd);
+                // The root pane may now live in a different tab/workspace: re-resolve
+                // so the response describes where the tab ended up, not where it started.
+                let (final_ws_idx, final_tab_idx) = self
+                    .find_pane(root_pane_id)
+                    .and_then(|(ws_idx, _)| {
+                        self.state.workspaces[ws_idx]
+                            .find_tab_index_for_pane(root_pane_id)
+                            .map(|tab_idx| (ws_idx, tab_idx))
+                    })
+                    .unwrap_or((ws_idx, tab_idx));
                 encode_success(
                     id,
-                    self.tab_created_result(ws_idx, tab_idx)
+                    self.tab_created_result(final_ws_idx, final_tab_idx)
                         .expect("new tab should produce a complete create response"),
                 )
             }
@@ -494,6 +508,58 @@ mod tests {
         assert_eq!(
             crate::worktree::canonical_or_original(created_cwd),
             crate::worktree::canonical_or_original(&cached_cwd)
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn tab_create_routes_the_new_tab_into_the_workspace_that_pins_its_cwd() {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(&Config::default(), true, None, api_rx, event_hub);
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        app.state.workspaces = vec![Workspace::test_new("source")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let pinned = std::env::temp_dir().join(format!(
+            "herdr-tab-create-pin-{}-{nanos}",
+            std::process::id()
+        ));
+        let new_tab_cwd = pinned.join("sub");
+        std::fs::create_dir_all(&new_tab_cwd).unwrap();
+        let mut pinned_workspace = Workspace::test_new("pinned");
+        pinned_workspace.pinned_path = Some(pinned.clone());
+        app.state.workspaces.push(pinned_workspace);
+
+        let response = app.handle_tab_create(
+            "req".into(),
+            TabCreateParams {
+                workspace_id: None,
+                cwd: Some(new_tab_cwd.to_string_lossy().into_owned()),
+                focus: false,
+                label: None,
+                env: Default::default(),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabCreated { tab, root_pane } = success.result else {
+            panic!("expected tab created, got: {success:?}");
+        };
+        let pinned_workspace_id = app.public_workspace_id(1);
+        assert_eq!(tab.workspace_id, pinned_workspace_id);
+        assert_eq!(root_pane.workspace_id, pinned_workspace_id);
+        assert_eq!(
+            app.state.workspaces[0].tabs.len(),
+            1,
+            "source workspace keeps only its original tab once the new tab is claimed"
         );
         shutdown_test_runtimes(&mut app);
     }

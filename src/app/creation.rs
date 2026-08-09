@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use crate::api::schema::{EventData, EventEnvelope, EventKind};
+use crate::layout::PaneId;
 #[cfg(test)]
 use tracing::error;
 
@@ -583,6 +584,68 @@ impl App {
                 .map(|path| path.to_string_lossy().into_owned()),
         }
     }
+
+    /// The workspace whose pinned path claims `cwd`, if it is not the one the
+    /// pane was created in. Deepest pinned path wins so a worktree pinned
+    /// under its repo takes precedence over the repo.
+    pub(crate) fn claiming_workspace(
+        &self,
+        cwd: &std::path::Path,
+        source_ws_idx: usize,
+    ) -> Option<usize> {
+        self.state
+            .workspaces
+            .iter()
+            .enumerate()
+            .filter(|(ws_idx, _)| *ws_idx != source_ws_idx)
+            .filter_map(|(ws_idx, ws)| {
+                let pinned = ws.pinned_path.as_ref()?;
+                crate::workspace::path_claims(pinned, cwd)
+                    .then_some((ws_idx, pinned.components().count()))
+            })
+            .max_by_key(|(_, depth)| *depth)
+            .map(|(ws_idx, _)| ws_idx)
+    }
+
+    /// Route a freshly created pane into the workspace that claims its cwd.
+    /// Best effort: a failure here never fails the creation that triggered it.
+    pub(crate) fn auto_move_pane_to_pinned_workspace(
+        &mut self,
+        source_ws_idx: usize,
+        pane_id: PaneId,
+        cwd: &std::path::Path,
+    ) -> bool {
+        let Some(target_ws_idx) = self.claiming_workspace(cwd, source_ws_idx) else {
+            return false;
+        };
+        let Some(workspace_id) = self
+            .state
+            .workspaces
+            .get(target_ws_idx)
+            .map(|ws| ws.id.clone())
+        else {
+            return false;
+        };
+        let Some(public_pane_id) = self.public_pane_id(source_ws_idx, pane_id) else {
+            return false;
+        };
+        let response = self.handle_pane_move(
+            "auto-move".to_string(),
+            crate::api::schema::PaneMoveParams {
+                pane_id: public_pane_id,
+                destination: crate::api::schema::PaneMoveDestination::NewTab {
+                    workspace_id: Some(workspace_id.clone()),
+                    label: None,
+                },
+                focus: true,
+            },
+        );
+        if serde_json::from_str::<crate::api::schema::ErrorResponse>(&response).is_ok() {
+            tracing::warn!(%workspace_id, "auto-move into pinned workspace failed");
+            return false;
+        }
+        true
+    }
 }
 
 fn terminal_agent_session_info(
@@ -608,4 +671,84 @@ fn terminal_agent_session_info(
             kind: session.session_ref.kind,
             value: session.session_ref.value.clone(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+
+    fn app_with_pinned_workspaces(pins: &[(&str, Option<&str>)]) -> App {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = pins
+            .iter()
+            .map(|(name, pin)| {
+                let mut ws = crate::workspace::Workspace::test_new(name);
+                ws.pinned_path = pin.map(std::path::PathBuf::from);
+                ws
+            })
+            .collect();
+        app.state.active = Some(0);
+        app
+    }
+
+    #[test]
+    fn claims_a_pane_opened_below_the_pinned_path() {
+        let app = app_with_pinned_workspaces(&[("a", None), ("b", Some("/ws"))]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/ws/src"), 0),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn does_not_claim_a_sibling_directory() {
+        let app = app_with_pinned_workspaces(&[("a", None), ("b", Some("/ws"))]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/ws-worktrees/x"), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_claim_a_pane_already_in_the_claiming_workspace() {
+        let app = app_with_pinned_workspaces(&[("b", Some("/ws"))]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/ws/src"), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn deepest_pinned_path_wins() {
+        let app = app_with_pinned_workspaces(&[
+            ("source", None),
+            ("shallow", Some("/a")),
+            ("deep", Some("/a/b")),
+        ]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/a/b/c"), 0),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn workspaces_without_a_pinned_path_never_claim() {
+        let app = app_with_pinned_workspaces(&[("a", None), ("b", None)]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/ws/src"), 0),
+            None
+        );
+    }
 }

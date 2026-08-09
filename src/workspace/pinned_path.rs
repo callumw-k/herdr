@@ -23,7 +23,6 @@ pub(crate) fn expand_pinned_path(raw: &str) -> PathBuf {
 /// `/ws-worktrees` is not treated as living under `/ws`. Canonicalises both
 /// sides when they exist so symlinked checkouts match; falls back to a lexical
 /// comparison otherwise.
-#[allow(dead_code)] // exercised by unit tests; consumed by the pane-routing task landing next
 pub(crate) fn path_claims(pinned: &Path, cwd: &Path) -> bool {
     let pinned = std::fs::canonicalize(pinned).unwrap_or_else(|_| pinned.to_path_buf());
     let cwd = std::fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
