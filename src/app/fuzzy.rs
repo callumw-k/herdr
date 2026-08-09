@@ -48,8 +48,7 @@ pub(crate) fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     Some(score)
 }
 
-/// A match starts a word when the character before it is a separator or the
-/// match is an uppercase letter following a lowercase one.
+/// A match starts a word when the character before it is a separator.
 fn is_boundary(haystack: &[char], idx: usize) -> bool {
     let Some(previous) = idx.checked_sub(1).and_then(|i| haystack.get(i)) else {
         return true;

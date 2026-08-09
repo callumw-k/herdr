@@ -998,7 +998,7 @@ fn navigator_matches(query: &str, text: &str) -> bool {
 fn rank_navigator_rows(rows: Vec<NavigatorRow>, query: &str) -> Vec<NavigatorRow> {
     let mut workspace_label = String::new();
     let mut tab_label = String::new();
-    let mut ranked: Vec<(i32, usize, NavigatorRow)> = Vec::new();
+    let mut ranked: Vec<(bool, i32, usize, NavigatorRow)> = Vec::new();
 
     for (order, mut row) in rows.into_iter().enumerate() {
         if row.is_workspace {
@@ -1015,22 +1015,29 @@ fn rank_navigator_rows(rows: Vec<NavigatorRow>, query: &str) -> Vec<NavigatorRow
         } else {
             format!("{workspace_label} › {tab_label}")
         };
-        // The pane's own text comes first: the matcher penalises how far into
-        // the haystack the first needle lands, so a match on the pane's own
-        // name/title still outscores one that only lands in the breadcrumb.
+        // Score the combined text so a workspace/tab-name match still
+        // surfaces this pane, but also score the pane's own text alone. A
+        // pane whose own text matches must always outrank one that only
+        // matches via its breadcrumb, and a single combined score can't
+        // express that (a clean word-boundary run in a long breadcrumb can
+        // outscore a mid-word own-text match) — so it is a sort tier, not a
+        // number.
         let match_text = format!("{} {breadcrumb}", row.search_text);
         let Some(score) = crate::app::fuzzy::fuzzy_score(query, &match_text) else {
             continue;
         };
+        let own_text_matched = crate::app::fuzzy::fuzzy_score(query, &row.search_text).is_some();
         row.depth = 0;
         row.meta = breadcrumb;
         row.matched = true;
-        ranked.push((score, order, row));
+        ranked.push((own_text_matched, score, order, row));
     }
 
-    // Ties fall back to tree order so results do not jitter between keystrokes.
-    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-    ranked.into_iter().map(|(_, _, row)| row).collect()
+    // Own-match rows form a tier above breadcrumb-only rows; score orders
+    // within a tier; tree order is the final tie-break so results do not
+    // jitter between keystrokes.
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+    ranked.into_iter().map(|(_, _, _, row)| row).collect()
 }
 
 fn launch_label(argv: Option<&Vec<String>>) -> Option<String> {
@@ -3943,8 +3950,9 @@ mod tests {
         state.workspaces[0].test_add_tab(Some("Bar"));
         state.workspaces[1].tabs[0].custom_name = Some("Baz".into());
         state.ensure_test_terminals();
-        // A query ranks panes by their own text, not their ancestor tab's
-        // name, so give the target pane a label the query can match.
+        // The tab name "Baz" alone would also cascade this pane in via the
+        // breadcrumb; give it its own matching label too so this pins the
+        // higher-tier own-match case specifically.
         let target_pane = state.workspaces[1].tabs[0].root_pane;
         let target_terminal_id = state.workspaces[1]
             .terminal_id(target_pane)
@@ -3981,6 +3989,27 @@ mod tests {
         assert_eq!(state.active, Some(1));
         assert_eq!(state.workspaces[1].active_tab_index(), 0);
         assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn navigator_search_by_tab_name_returns_that_tabs_panes_only() {
+        let mut state = app_with_workspaces(&["multi", "single"]);
+        state.workspaces[0].tabs[0].custom_name = Some("Foo".into());
+        state.workspaces[0].test_add_tab(Some("Bar"));
+        state.ensure_test_terminals();
+
+        state.open_navigator();
+        state.navigator.query = "Foo".into();
+        let rows = state.navigator_rows();
+
+        assert!(
+            rows.iter().any(|row| row.meta.ends_with("› Foo")),
+            "expected a pane breadcrumbed to the Foo tab, got {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.meta.ends_with("› Bar")),
+            "the sibling Bar tab's panes must stay out of the results, got {rows:?}"
+        );
     }
 
     #[tokio::test]
@@ -4214,7 +4243,7 @@ mod tests {
     }
 
     #[test]
-    fn navigator_search_filters_panes_but_keeps_workspace_context() {
+    fn navigator_search_flattens_workspace_into_pane_breadcrumb() {
         let mut state = app_with_workspaces(&["one"]);
         let root = state.workspaces[0].tabs[0].root_pane;
         let terminal_id = state.workspaces[0].terminal_id(root).cloned().unwrap();
@@ -4330,6 +4359,45 @@ mod tests {
         assert!(
             own_match_idx < breadcrumb_only_idx,
             "a pane's own-name match should outrank a breadcrumb-only match, got {rows:?}"
+        );
+    }
+
+    #[test]
+    fn navigator_search_ranks_own_match_above_breadcrumb_even_when_the_raw_score_is_lower() {
+        let mut state = app_with_workspaces(&["workspace-two", "other"]);
+        let own_match_pane = state.workspaces[1].tabs[0].root_pane;
+        let own_match_terminal_id = state.workspaces[1]
+            .terminal_id(own_match_pane)
+            .cloned()
+            .unwrap();
+        state
+            .terminals
+            .get_mut(&own_match_terminal_id)
+            .unwrap()
+            .set_manual_label("network".into());
+
+        state.open_navigator();
+        // "work" lands mid-word in "network" (no word-boundary bonus) but at
+        // a word boundary in "workspace-two" (boundary + three consecutive
+        // bonuses), so the raw combined score actually favours the
+        // breadcrumb-only pane: fuzzy_score("work", "network shell other
+        // (1)") = Some(21) vs fuzzy_score("work", "pane 1 shell
+        // workspace-two (1)") = Some(23). The own-match tier must still rank
+        // first regardless.
+        state.navigator.query = "work".into();
+        let rows = state.navigator_rows();
+
+        let own_match_idx = rows
+            .iter()
+            .position(|row| row.label == "network")
+            .expect("the pane named network should match on its own text");
+        let breadcrumb_only_idx = rows
+            .iter()
+            .position(|row| row.meta.starts_with("workspace-two"))
+            .expect("a pane in the workspace-two workspace should cascade in");
+        assert!(
+            own_match_idx < breadcrumb_only_idx,
+            "own-match tier should outrank breadcrumb-only tier even with a lower raw score, got {rows:?}"
         );
     }
 
