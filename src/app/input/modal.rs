@@ -2282,6 +2282,38 @@ mod tests {
     }
 
     #[test]
+    fn saving_the_path_editor_pins_the_selected_workspace_not_the_active_one() {
+        let mut app = app_with_test_workspaces(&["alpha", "beta"]);
+        app.state.mode = Mode::Navigator;
+        app.state.selected = 0;
+        app.state.navigator.selected = 1;
+
+        handle_navigator_key(
+            &mut app.state,
+            &app.terminal_runtimes,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::empty()),
+        );
+        assert_eq!(app.state.selected, 1, "the editor retargets the selection");
+
+        app.state.workspace_dialog_path = "/new/pin".into();
+        app.save_rename_modal_via_api();
+
+        assert_eq!(
+            app.state.workspaces[1].pinned_path,
+            Some(std::path::PathBuf::from("/new/pin")),
+            "the row the user selected must receive the pinned path"
+        );
+        assert_eq!(
+            app.state.workspaces[0].pinned_path, None,
+            "the previously active workspace must be untouched"
+        );
+        assert_eq!(
+            app.state.selected, 0,
+            "the save restores the prior selection"
+        );
+    }
+
+    #[test]
     fn cancelling_the_path_editor_restores_the_sidebar_selection() {
         let mut app = app_with_test_workspaces(&["alpha", "beta"]);
         app.state.mode = Mode::Navigator;
