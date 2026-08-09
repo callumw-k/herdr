@@ -13,6 +13,7 @@ mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
 mod config_io;
 mod creation;
+mod fuzzy;
 mod git_refresh;
 mod ids;
 mod input;
