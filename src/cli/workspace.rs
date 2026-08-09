@@ -272,7 +272,7 @@ fn print_workspace_help() {
     eprintln!("  herdr workspace get <workspace_id>");
     eprintln!("  herdr workspace focus <workspace_id>");
     eprintln!("  herdr workspace rename <workspace_id> <label>");
-    eprintln!("  herdr workspace set-path <workspace> [PATH | --clear]");
+    eprintln!("  herdr workspace set-path <workspace_id> [PATH | --clear]");
     eprintln!("  herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
     eprintln!("  herdr workspace close <workspace_id>");
 }
