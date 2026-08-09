@@ -122,7 +122,12 @@ impl App {
                 self.schedule_session_save();
                 self.emit_tab_created_events(ws_idx, tab_idx);
 
-                self.auto_move_pane_to_pinned_workspace(ws_idx, root_pane_id, &auto_move_cwd);
+                self.auto_move_pane_to_pinned_workspace(
+                    ws_idx,
+                    root_pane_id,
+                    &auto_move_cwd,
+                    focus,
+                );
                 // The root pane may now live in a different tab/workspace: re-resolve
                 // so the response describes where the tab ended up, not where it started.
                 let (final_ws_idx, final_tab_idx) = self
@@ -133,11 +138,14 @@ impl App {
                             .map(|tab_idx| (ws_idx, tab_idx))
                     })
                     .unwrap_or((ws_idx, tab_idx));
-                encode_success(
-                    id,
-                    self.tab_created_result(final_ws_idx, final_tab_idx)
-                        .expect("new tab should produce a complete create response"),
-                )
+                match self.tab_created_result(final_ws_idx, final_tab_idx) {
+                    Some(result) => encode_success(id, result),
+                    None => encode_error(
+                        id,
+                        "tab_create_failed",
+                        "tab created but its final location could not be resolved",
+                    ),
+                }
             }
             Err(err) => encode_error(id, "tab_create_failed", err.to_string()),
         }
@@ -512,8 +520,7 @@ mod tests {
         shutdown_test_runtimes(&mut app);
     }
 
-    #[tokio::test]
-    async fn tab_create_routes_the_new_tab_into_the_workspace_that_pins_its_cwd() {
+    fn app_with_source_and_pinned_workspace(name: &str) -> (App, std::path::PathBuf) {
         let event_hub = crate::api::EventHub::default();
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(&Config::default(), true, None, api_rx, event_hub);
@@ -528,15 +535,19 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        let pinned = std::env::temp_dir().join(format!(
-            "herdr-tab-create-pin-{}-{nanos}",
-            std::process::id()
-        ));
-        let new_tab_cwd = pinned.join("sub");
-        std::fs::create_dir_all(&new_tab_cwd).unwrap();
+        let pinned =
+            std::env::temp_dir().join(format!("herdr-{name}-{}-{nanos}", std::process::id()));
         let mut pinned_workspace = Workspace::test_new("pinned");
         pinned_workspace.pinned_path = Some(pinned.clone());
         app.state.workspaces.push(pinned_workspace);
+        (app, pinned)
+    }
+
+    #[tokio::test]
+    async fn tab_create_routes_the_new_tab_into_the_workspace_that_pins_its_cwd() {
+        let (mut app, pinned) = app_with_source_and_pinned_workspace("tab-create-pin");
+        let new_tab_cwd = pinned.join("sub");
+        std::fs::create_dir_all(&new_tab_cwd).unwrap();
 
         let response = app.handle_tab_create(
             "req".into(),
@@ -560,6 +571,82 @@ mod tests {
             app.state.workspaces[0].tabs.len(),
             1,
             "source workspace keeps only its original tab once the new tab is claimed"
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn tab_create_auto_move_preserves_the_tab_label() {
+        let (mut app, pinned) = app_with_source_and_pinned_workspace("tab-create-label");
+        let new_tab_cwd = pinned.join("sub");
+        std::fs::create_dir_all(&new_tab_cwd).unwrap();
+
+        let response = app.handle_tab_create(
+            "req".into(),
+            TabCreateParams {
+                workspace_id: None,
+                cwd: Some(new_tab_cwd.to_string_lossy().into_owned()),
+                focus: false,
+                label: Some("release-notes".into()),
+                env: Default::default(),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::TabCreated { tab, .. } = success.result else {
+            panic!("expected tab created, got: {success:?}");
+        };
+        assert_eq!(tab.workspace_id, app.public_workspace_id(1));
+        assert_eq!(tab.label, "release-notes");
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn tab_create_honours_focus_true_across_an_auto_move() {
+        let (mut app, pinned) = app_with_source_and_pinned_workspace("tab-create-focus-true");
+        let new_tab_cwd = pinned.join("sub");
+        std::fs::create_dir_all(&new_tab_cwd).unwrap();
+
+        app.handle_tab_create(
+            "req".into(),
+            TabCreateParams {
+                workspace_id: None,
+                cwd: Some(new_tab_cwd.to_string_lossy().into_owned()),
+                focus: true,
+                label: None,
+                env: Default::default(),
+            },
+        );
+
+        assert_eq!(
+            app.state.active,
+            Some(1),
+            "focus:true should follow the pane into the pinned workspace"
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn tab_create_honours_focus_false_across_an_auto_move() {
+        let (mut app, pinned) = app_with_source_and_pinned_workspace("tab-create-focus-false");
+        let new_tab_cwd = pinned.join("sub");
+        std::fs::create_dir_all(&new_tab_cwd).unwrap();
+
+        app.handle_tab_create(
+            "req".into(),
+            TabCreateParams {
+                workspace_id: None,
+                cwd: Some(new_tab_cwd.to_string_lossy().into_owned()),
+                focus: false,
+                label: None,
+                env: Default::default(),
+            },
+        );
+
+        assert_eq!(
+            app.state.active,
+            Some(0),
+            "focus:false must not yank the active workspace during an auto-move"
         );
         shutdown_test_runtimes(&mut app);
     }

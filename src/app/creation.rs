@@ -614,6 +614,7 @@ impl App {
         source_ws_idx: usize,
         pane_id: PaneId,
         cwd: &std::path::Path,
+        focus: bool,
     ) -> bool {
         let Some(target_ws_idx) = self.claiming_workspace(cwd, source_ws_idx) else {
             return false;
@@ -629,15 +630,21 @@ impl App {
         let Some(public_pane_id) = self.public_pane_id(source_ws_idx, pane_id) else {
             return false;
         };
+        // The pane's own tab may already be named (e.g. tab.create --label):
+        // carry that name across so the auto-move doesn't silently drop it.
+        let label = self.state.workspaces.get(source_ws_idx).and_then(|ws| {
+            let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
+            ws.tabs.get(tab_idx)?.custom_name.clone()
+        });
         let response = self.handle_pane_move(
             "auto-move".to_string(),
             crate::api::schema::PaneMoveParams {
                 pane_id: public_pane_id,
                 destination: crate::api::schema::PaneMoveDestination::NewTab {
                     workspace_id: Some(workspace_id.clone()),
-                    label: None,
+                    label,
                 },
-                focus: true,
+                focus,
             },
         );
         if serde_json::from_str::<crate::api::schema::ErrorResponse>(&response).is_ok() {

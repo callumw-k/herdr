@@ -133,7 +133,7 @@ impl App {
         self.emit_layout_updated_event(ws_idx, target_tab_idx);
 
         if let Some(cwd) = auto_move_cwd.as_deref() {
-            self.auto_move_pane_to_pinned_workspace(ws_idx, new_pane.pane_id, cwd);
+            self.auto_move_pane_to_pinned_workspace(ws_idx, new_pane.pane_id, cwd, params.focus);
         }
         // The pane may now live in a different workspace: re-resolve its info
         // so the response describes where it ended up, not where it started.
@@ -4272,9 +4272,9 @@ mod tests {
         };
         assert_eq!(pane.workspace_id, app.public_workspace_id(1));
         assert_eq!(
-            app.state.workspaces[0].tabs.len(),
+            app.state.workspaces[0].tabs[0].panes.len(),
             1,
-            "source workspace keeps only its original tab once the split pane is claimed"
+            "the split pane left the source tab once the pinned workspace claimed it"
         );
         shutdown_test_runtimes(&mut app);
     }
