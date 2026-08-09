@@ -561,6 +561,7 @@ impl App {
             name_input_replace_on_type: false,
             workspace_dialog_path: String::new(),
             workspace_dialog_field: state::WorkspaceDialogField::default(),
+            workspace_dialog_restore_selected: None,
             release_notes: None,
             product_announcement: startup_product_announcement.map(|announcement| {
                 state::ProductAnnouncementState {

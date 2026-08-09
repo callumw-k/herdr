@@ -24,6 +24,8 @@ pub(super) enum ModalAction {
     Confirm,
     Apply,
     Close,
+    FocusWorkspaceName,
+    FocusWorkspacePath,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -319,6 +321,7 @@ fn open_navigator_workspace_path_edit(
     state.name_input_replace_on_type = false;
     // save_rename_modal_via_api resolves the target workspace from
     // `state.selected`, not from the navigator's own selection.
+    state.workspace_dialog_restore_selected = Some(state.selected);
     state.selected = ws_idx;
     state.mode = Mode::RenameWorkspace;
 }
@@ -663,6 +666,14 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
         }
         _ => {}
     }
+}
+
+/// Clicking a field focuses it, mirroring Tab. Clearing replace-on-type
+/// matters: the flag applies to whichever field is focused, so leaving it set
+/// would make the first keystroke wipe the field just clicked into.
+fn focus_workspace_dialog_field(state: &mut AppState, field: WorkspaceDialogField) {
+    state.workspace_dialog_field = field;
+    state.name_input_replace_on_type = false;
 }
 
 /// The workspace dialog is the only two-field rename modal, so the edit
@@ -1090,10 +1101,14 @@ impl App {
                 if let Some(cwd) = self.state.pending_workspace_create_cwd.take() {
                     let suggested_name = crate::workspace::derive_label_from_cwd(&cwd);
                     let label = workspace_create_label(&new_name, &suggested_name);
+                    // The dialog seeds the path field from this cwd, so an
+                    // edited path means the user wants the workspace there.
+                    // Withholding cwd lets the server derive it from the path.
+                    let cwd = pinned_path.is_none().then(|| cwd.display().to_string());
                     self.runtime_workspace_create(
                         "tui.workspace.create_named",
                         crate::api::schema::WorkspaceCreateParams {
-                            cwd: Some(cwd.display().to_string()),
+                            cwd,
                             path: pinned_path,
                             focus: true,
                             label,
@@ -1189,6 +1204,12 @@ impl App {
             ModalAction::Save => self.save_rename_modal_via_api(),
             ModalAction::Clear => clear_rename_input(&mut self.state),
             ModalAction::Cancel => cancel_rename_modal(&mut self.state),
+            ModalAction::FocusWorkspaceName => {
+                focus_workspace_dialog_field(&mut self.state, WorkspaceDialogField::Name)
+            }
+            ModalAction::FocusWorkspacePath => {
+                focus_workspace_dialog_field(&mut self.state, WorkspaceDialogField::Path)
+            }
             _ => {}
         }
     }
@@ -1472,6 +1493,11 @@ fn cancel_rename_modal(state: &mut AppState) {
     state.rename_pane_target = None;
     state.name_input.clear();
     state.name_input_replace_on_type = false;
+    if let Some(selected) = state.workspace_dialog_restore_selected.take() {
+        if selected < state.workspaces.len() {
+            state.selected = selected;
+        }
+    }
     leave_modal(state);
 }
 
@@ -2217,6 +2243,61 @@ mod tests {
             app.state.workspaces[0].pinned_path,
             Some(std::path::PathBuf::from("/new/pin"))
         );
+    }
+
+    #[tokio::test]
+    async fn creating_a_workspace_opens_its_first_shell_at_the_edited_path() {
+        use crate::app::api::test_support::{exiting_test_command, shutdown_test_runtimes};
+
+        let mut app = app_with_test_workspaces(&["alpha"]);
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
+        let pinned = std::env::temp_dir().join(format!(
+            "herdr-create-pin-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&pinned).unwrap();
+
+        // The dialog opens seeded with the current workspace's cwd; the user
+        // then types a different path into the path field.
+        open_new_workspace_dialog(&mut app.state, std::env::temp_dir());
+        app.state.workspace_dialog_field = WorkspaceDialogField::Path;
+        app.state.workspace_dialog_path = pinned.to_string_lossy().into_owned();
+
+        app.save_rename_modal_via_api();
+
+        let created = app.state.workspaces.last().expect("created workspace");
+        assert_eq!(created.pinned_path.as_deref(), Some(pinned.as_path()));
+        assert_eq!(
+            crate::worktree::canonical_or_original(&created.identity_cwd),
+            crate::worktree::canonical_or_original(&pinned),
+            "the new workspace's shell must open at the path it is pinned to"
+        );
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&pinned);
+    }
+
+    #[test]
+    fn cancelling_the_path_editor_restores_the_sidebar_selection() {
+        let mut app = app_with_test_workspaces(&["alpha", "beta"]);
+        app.state.mode = Mode::Navigator;
+        app.state.selected = 0;
+        app.state.navigator.selected = 1;
+
+        handle_navigator_key(
+            &mut app.state,
+            &app.terminal_runtimes,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::empty()),
+        );
+        assert_eq!(app.state.selected, 1, "the editor retargets the selection");
+
+        app.apply_rename_mouse_action_via_api(ModalAction::Cancel);
+
+        assert_eq!(app.state.selected, 0);
     }
 
     #[test]

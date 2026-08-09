@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::text::{display_width_u16, truncate_end};
+use super::text::{display_width, display_width_u16, middle_elide, truncate_end};
 use super::widgets::{
     action_button_row_rects, centered_popup_rect, panel_contrast_fg, render_action_button,
     render_modal_header, render_modal_shell, render_panel_shell, ActionButtonSpec,
@@ -57,6 +57,29 @@ pub(crate) fn rename_modal_height(mode: Mode) -> u16 {
     }
 }
 
+/// The workspace dialog's two input rows. Shared with mouse hit-testing so a
+/// click lands on the field the renderer actually drew there.
+pub(crate) fn workspace_dialog_field_rects(inner: Rect) -> (Rect, Rect) {
+    let rows = rename_modal_rows(inner);
+    (
+        Rect::new(rows[2].x, rows[2].y, rows[2].width, 1),
+        Rect::new(rows[4].x, rows[4].y, rows[4].width, 1),
+    )
+}
+
+fn rename_modal_rows(inner: Rect) -> [Rect; 7] {
+    Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas::<7>(inner)
+}
+
 pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     super::dim_background(frame, area);
 
@@ -78,24 +101,16 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
         return;
     }
 
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ])
-    .areas::<7>(inner);
+    let rows = rename_modal_rows(inner);
 
     render_modal_header(frame, rows[0], title, &app.palette);
 
     if two_field {
+        let (name_rect, path_rect) = workspace_dialog_field_rects(inner);
         render_dialog_input(
             frame,
             app,
-            Rect::new(rows[2].x, rows[2].y, rows[2].width, 1),
+            name_rect,
             "name",
             &app.name_input,
             app.workspace_dialog_field == WorkspaceDialogField::Name,
@@ -103,7 +118,7 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
         render_dialog_input(
             frame,
             app,
-            Rect::new(rows[4].x, rows[4].y, rows[4].width, 1),
+            path_rect,
             "path",
             &app.workspace_dialog_path,
             app.workspace_dialog_field == WorkspaceDialogField::Path,
@@ -173,8 +188,15 @@ fn render_dialog_input(
     } else {
         app.palette.surface_dim
     };
+    let prefix = format!(" {label} ");
+    // Paths outgrow the modal; elide the middle so the tail being typed and
+    // the cursor after it stay on screen.
+    let budget = (area.width as usize)
+        .saturating_sub(display_width(&prefix))
+        .saturating_sub(display_width(cursor));
+    let value = middle_elide(value, budget);
     frame.render_widget(
-        Paragraph::new(format!(" {label} {value}{cursor}"))
+        Paragraph::new(format!("{prefix}{value}{cursor}"))
             .style(Style::default().fg(app.palette.text).bg(background)),
         area,
     );
@@ -1082,6 +1104,45 @@ mod tests {
         assert!(
             save_rect.y < inner.y + inner.height,
             "buttons must stay inside the taller shell"
+        );
+    }
+
+    #[test]
+    fn a_long_path_keeps_its_tail_and_cursor_inside_the_modal() {
+        let mut app = AppState::test_new();
+        app.mode = crate::app::Mode::RenameWorkspace;
+        app.workspaces = vec![Workspace::test_new("alpha")];
+        app.name_input = "alpha".into();
+        app.workspace_dialog_path =
+            "/home/someone/code/active/herdr-worktrees/workspace-navigator/src".into();
+        app.workspace_dialog_field = super::WorkspaceDialogField::Path;
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 24)).expect("test terminal should initialize");
+        terminal
+            .draw(|frame| super::render_rename_overlay(&app, frame, Rect::new(0, 0, 80, 24)))
+            .expect("workspace dialog should render");
+
+        let popup = super::centered_popup_rect(
+            Rect::new(0, 0, 80, 24),
+            56,
+            super::rename_modal_height(app.mode),
+        )
+        .unwrap();
+        let inner = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .inner(popup);
+        let buffer = terminal.backend().buffer();
+        let path_row = buffer_row_text(buffer, inner, inner.y + 4);
+
+        assert!(path_row.contains('…'), "expected elision, got {path_row:?}");
+        assert!(
+            path_row.contains("navigator/src"),
+            "the tail being typed must stay visible, got {path_row:?}"
+        );
+        assert!(
+            path_row.trim_end().ends_with('█'),
+            "the cursor must stay inside the field, got {path_row:?}"
         );
     }
 

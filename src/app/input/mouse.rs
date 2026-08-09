@@ -395,17 +395,22 @@ impl AppState {
                 ) {
                     let action = self
                         .rename_modal_inner()
-                        .map(crate::ui::rename_button_rects)
-                        .and_then(|(save, clear, cancel)| {
-                            modal_action_from_buttons(
-                                mouse.column,
-                                mouse.row,
-                                &[
-                                    (save, ModalAction::Save),
-                                    (clear, ModalAction::Clear),
-                                    (cancel, ModalAction::Cancel),
-                                ],
-                            )
+                        .and_then(|inner| {
+                            let (save, clear, cancel) = crate::ui::rename_button_rects(inner);
+                            let mut targets = vec![
+                                (save, ModalAction::Save),
+                                (clear, ModalAction::Clear),
+                                (cancel, ModalAction::Cancel),
+                            ];
+                            // Only the workspace dialog draws labelled fields
+                            // worth aiming at; tab and pane rename keep the
+                            // click-anywhere-to-cancel behaviour.
+                            if self.mode == Mode::RenameWorkspace {
+                                let (name, path) = crate::ui::workspace_dialog_field_rects(inner);
+                                targets.push((name, ModalAction::FocusWorkspaceName));
+                                targets.push((path, ModalAction::FocusWorkspacePath));
+                            }
+                            modal_action_from_buttons(mouse.column, mouse.row, &targets)
                         })
                         .unwrap_or(ModalAction::Cancel);
                     return Some(MouseAction::RenameModal(action));
@@ -3013,6 +3018,76 @@ mod tests {
         assert!(app.event_hub.events_after(0).iter().any(|(_, event)| {
             matches!(event.event, crate::api::schema::EventKind::WorkspaceRenamed)
         }));
+    }
+
+    #[test]
+    fn clicking_a_workspace_dialog_field_focuses_it_instead_of_cancelling() {
+        let mut app = app_for_mouse_test();
+        app.state.workspaces = vec![Workspace::test_new("old")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::RenameWorkspace;
+        app.state.name_input = "typed name".into();
+        app.state.workspace_dialog_path = "/pin".into();
+        app.state.name_input_replace_on_type = true;
+
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+        let inner = app.state.rename_modal_inner().unwrap();
+        let (name, path) = crate::ui::workspace_dialog_field_rects(inner);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            path.x + 2,
+            path.y,
+        ));
+
+        assert_eq!(app.state.mode, Mode::RenameWorkspace);
+        assert_eq!(
+            app.state.workspace_dialog_field,
+            crate::app::state::WorkspaceDialogField::Path
+        );
+        assert_eq!(app.state.name_input, "typed name");
+        assert!(!app.state.name_input_replace_on_type);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            name.x + 2,
+            name.y,
+        ));
+
+        assert_eq!(app.state.mode, Mode::RenameWorkspace);
+        assert_eq!(
+            app.state.workspace_dialog_field,
+            crate::app::state::WorkspaceDialogField::Name
+        );
+        assert_eq!(app.state.workspace_dialog_path, "/pin");
+    }
+
+    #[test]
+    fn clicking_the_pane_rename_input_still_cancels() {
+        // The single-field dialogs keep their click-anywhere-to-cancel
+        // behaviour; only the labelled workspace form invites aiming.
+        let mut app = app_for_mouse_test();
+        let ws = Workspace::test_new("one");
+        let pane_id = ws.tabs[0].root_pane;
+        app.state.workspaces = vec![ws];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.mode = Mode::RenamePane;
+        app.state.rename_pane_target = Some(pane_id);
+        app.state.name_input = "typed".into();
+
+        crate::ui::compute_view(&mut app.state, Rect::new(0, 0, 106, 24));
+        let inner = app.state.rename_modal_inner().unwrap();
+        let (name, _) = crate::ui::workspace_dialog_field_rects(inner);
+
+        app.handle_mouse(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            name.x + 2,
+            name.y,
+        ));
+
+        assert_eq!(app.state.mode, Mode::Terminal);
     }
 
     #[test]
