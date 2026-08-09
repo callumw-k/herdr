@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 
 /// Expand a user-entered path into an absolute one. The directory need not
 /// exist: a pinned path may point at a repo you have not cloned yet.
-#[allow(dead_code)] // exercised by unit tests; consumed by the pane-routing task landing next
 pub(crate) fn expand_pinned_path(raw: &str) -> PathBuf {
     let trimmed = raw.trim();
     let expanded = match trimmed.strip_prefix('~') {

@@ -111,6 +111,7 @@ impl App {
             request_id,
             crate::api::schema::WorkspaceCreateParams {
                 cwd: None,
+                path: None,
                 focus: true,
                 label: None,
                 env: Default::default(),
@@ -576,6 +577,10 @@ impl App {
                     checkout_path: space.checkout_path.display().to_string(),
                     is_linked_worktree: space.is_linked_worktree,
                 }),
+            path: ws
+                .pinned_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
         }
     }
 }

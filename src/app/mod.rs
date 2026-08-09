@@ -963,6 +963,7 @@ impl App {
                     "tui.workspace.create",
                     crate::api::schema::WorkspaceCreateParams {
                         cwd: None,
+                        path: None,
                         focus: true,
                         label: None,
                         env: Default::default(),
@@ -1002,6 +1003,7 @@ impl App {
                     "tui.workspace.create_cwd",
                     crate::api::schema::WorkspaceCreateParams {
                         cwd: Some(cwd.display().to_string()),
+                        path: None,
                         focus: true,
                         label: None,
                         env: Default::default(),

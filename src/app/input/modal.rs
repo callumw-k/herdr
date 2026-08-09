@@ -1020,6 +1020,7 @@ impl App {
                         "tui.workspace.create_named",
                         crate::api::schema::WorkspaceCreateParams {
                             cwd: Some(cwd.display().to_string()),
+                            path: None,
                             focus: true,
                             label,
                             env: Default::default(),
