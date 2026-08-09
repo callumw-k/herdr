@@ -315,7 +315,8 @@ fn open_navigator_workspace_path_edit(
     state.workspace_dialog_field = WorkspaceDialogField::Path;
     state.rename_pane_target = None;
     state.pending_workspace_create_cwd = None;
-    state.name_input = ws.custom_name.clone().unwrap_or_default();
+    state.name_input = ws.display_name_from(&state.terminals, terminal_runtimes);
+    state.name_input_replace_on_type = false;
     // save_rename_modal_via_api resolves the target workspace from
     // `state.selected`, not from the navigator's own selection.
     state.selected = ws_idx;
@@ -649,8 +650,7 @@ pub(super) fn apply_rename_action(state: &mut AppState, action: ModalAction) {
             leave_modal(state);
         }
         ModalAction::Clear => {
-            state.name_input.clear();
-            state.name_input_replace_on_type = false;
+            clear_rename_input(state);
         }
         ModalAction::Cancel => {
             state.creating_new_tab = false;
@@ -1187,10 +1187,7 @@ impl App {
     pub(super) fn apply_rename_mouse_action_via_api(&mut self, action: ModalAction) {
         match action {
             ModalAction::Save => self.save_rename_modal_via_api(),
-            ModalAction::Clear => {
-                self.state.name_input.clear();
-                self.state.name_input_replace_on_type = false;
-            }
+            ModalAction::Clear => clear_rename_input(&mut self.state),
             ModalAction::Cancel => cancel_rename_modal(&mut self.state),
             _ => {}
         }
@@ -2167,6 +2164,8 @@ mod tests {
         state.selected = 0;
         state.workspaces[1].pinned_path = Some(std::path::PathBuf::from("/existing/pin"));
         state.navigator.selected = 1;
+        // Leaked from an earlier create dialog; must not survive into this one.
+        state.name_input_replace_on_type = true;
 
         handle_navigator_key(
             &mut state,
@@ -2179,6 +2178,29 @@ mod tests {
         assert_eq!(state.workspace_dialog_path, "/existing/pin");
         assert!(state.pending_workspace_create_cwd.is_none());
         assert_eq!(state.selected, 1);
+        assert!(!state.name_input_replace_on_type);
+    }
+
+    #[test]
+    fn p_shows_the_derived_display_name_for_an_auto_named_workspace() {
+        // A workspace with no custom name must still show its derived display
+        // name in the "rename workspace" dialog, matching what the sidebar's
+        // own rename entry point shows — not a blank field that reads as
+        // though the name is about to be erased.
+        let mut state = navigator_state_with_workspace();
+        state.workspaces[0].custom_name = None;
+        let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let expected_name =
+            state.workspaces[0].display_name_from(&state.terminals, &terminal_runtimes);
+        assert!(!expected_name.is_empty());
+
+        handle_navigator_key(
+            &mut state,
+            &terminal_runtimes,
+            KeyEvent::new(KeyCode::Char('p'), KeyModifiers::empty()),
+        );
+
+        assert_eq!(state.name_input, expected_name);
     }
 
     #[test]
@@ -2195,6 +2217,54 @@ mod tests {
             app.state.workspaces[0].pinned_path,
             Some(std::path::PathBuf::from("/new/pin"))
         );
+    }
+
+    #[test]
+    fn ctrl_c_clears_the_path_field_and_leaves_the_name_intact_when_path_is_focused() {
+        let mut state = state_with_workspaces(&["alpha"]);
+        state.mode = Mode::RenameWorkspace;
+        state.name_input = "alpha".into();
+        state.workspace_dialog_path = "/pinned".into();
+        state.workspace_dialog_field = WorkspaceDialogField::Path;
+
+        handle_rename_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(state.workspace_dialog_path, "");
+        assert_eq!(state.name_input, "alpha");
+    }
+
+    #[test]
+    fn ctrl_c_still_clears_the_name_field_when_name_is_focused() {
+        let mut state = state_with_workspaces(&["alpha"]);
+        state.mode = Mode::RenameWorkspace;
+        state.name_input = "alpha".into();
+        state.workspace_dialog_path = "/pinned".into();
+        state.workspace_dialog_field = WorkspaceDialogField::Name;
+
+        handle_rename_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(state.name_input, "");
+        assert_eq!(state.workspace_dialog_path, "/pinned");
+    }
+
+    #[test]
+    fn clicking_clear_empties_the_focused_field_via_the_api_path() {
+        let mut app = app_with_test_workspaces(&["alpha"]);
+        app.state.mode = Mode::RenameWorkspace;
+        app.state.name_input = "alpha".into();
+        app.state.workspace_dialog_path = "/pinned".into();
+        app.state.workspace_dialog_field = WorkspaceDialogField::Path;
+
+        app.apply_rename_mouse_action_via_api(ModalAction::Clear);
+
+        assert_eq!(app.state.workspace_dialog_path, "");
+        assert_eq!(app.state.name_input, "alpha");
     }
 
     #[test]

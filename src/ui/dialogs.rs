@@ -46,6 +46,17 @@ pub(crate) fn rename_button_rects(inner: Rect) -> (Rect, Rect, Rect) {
     (rects[0], rects[1], rects[2])
 }
 
+/// The workspace dialog alone renders two fields, and so needs a taller
+/// shell. Shared with `AppState::rename_modal_inner`'s mouse hit-testing so
+/// the two can never disagree about the modal's size.
+pub(crate) fn rename_modal_height(mode: Mode) -> u16 {
+    if mode == Mode::RenameWorkspace {
+        9
+    } else {
+        7
+    }
+}
+
 pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     super::dim_background(frame, area);
 
@@ -59,7 +70,7 @@ pub(super) fn render_rename_overlay(app: &AppState, frame: &mut Frame, area: Rec
     };
 
     let two_field = app.mode == Mode::RenameWorkspace;
-    let height = if two_field { 9 } else { 7 };
+    let height = rename_modal_height(app.mode);
     let Some(inner) = render_modal_shell(frame, area, 56, height, &app.palette) else {
         return;
     };
@@ -1046,7 +1057,12 @@ mod tests {
             .draw(|frame| super::render_rename_overlay(&app, frame, Rect::new(0, 0, 80, 24)))
             .expect("workspace dialog should render");
 
-        let popup = super::centered_popup_rect(Rect::new(0, 0, 80, 24), 56, 9).unwrap();
+        let popup = super::centered_popup_rect(
+            Rect::new(0, 0, 80, 24),
+            56,
+            super::rename_modal_height(app.mode),
+        )
+        .unwrap();
         let inner = ratatui::widgets::Block::default()
             .borders(ratatui::widgets::Borders::ALL)
             .inner(popup);
@@ -1067,5 +1083,32 @@ mod tests {
             save_rect.y < inner.y + inner.height,
             "buttons must stay inside the taller shell"
         );
+    }
+
+    #[test]
+    fn workspace_dialog_hit_test_geometry_matches_rendered_modal_size() {
+        // rename_modal_inner (mouse hit-testing, in app::input) and
+        // render_rename_overlay (drawing, in ui::dialogs) must agree on the
+        // modal's size, or clicks on the taller workspace dialog land on the
+        // wrong row. Both now share `rename_modal_height`; this pins them
+        // together instead of leaving two literals free to drift apart.
+        let mut app = AppState::test_new();
+        app.mode = crate::app::Mode::RenameWorkspace;
+        app.view.sidebar_rect = Rect::new(0, 0, 100, 24);
+        app.view.terminal_area = Rect::new(0, 0, 100, 24);
+
+        let hit_test_inner = app.rename_modal_inner().unwrap();
+
+        let popup = super::centered_popup_rect(
+            Rect::new(0, 0, 100, 24),
+            56,
+            super::rename_modal_height(app.mode),
+        )
+        .unwrap();
+        let rendered_inner = ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .inner(popup);
+
+        assert_eq!(hit_test_inner, rendered_inner);
     }
 }
