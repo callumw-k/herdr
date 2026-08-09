@@ -195,7 +195,6 @@ pub struct Workspace {
     pub worktree_space: Option<WorktreeSpaceMembership>,
     /// Directory this workspace claims for auto-routing new panes. Sticky:
     /// unlike `identity_cwd` it never follows the focused pane.
-    #[allow(dead_code)] // Reserved for the pane-routing task landing next.
     pub pinned_path: Option<PathBuf>,
     pub(crate) metadata_tokens: crate::metadata_tokens::MetadataTokens,
     pub(crate) metadata_token_sequences: HashMap<String, u64>,

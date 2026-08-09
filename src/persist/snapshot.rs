@@ -54,6 +54,8 @@ pub struct WorkspaceSnapshot {
     pub custom_name: Option<String>,
     pub identity_cwd: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
     #[serde(default)]
     pub public_pane_numbers: HashMap<u32, usize>,
@@ -221,6 +223,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             id: None,
             custom_name: snap.custom_name,
             identity_cwd,
+            pinned_path: None,
             worktree_space: None,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
@@ -355,6 +358,7 @@ fn capture_workspace(
         identity_cwd: ws
             .resolved_identity_cwd_from(terminals, terminal_runtimes)
             .unwrap_or_else(|| ws.identity_cwd.clone()),
+        pinned_path: ws.pinned_path.clone(),
         worktree_space: ws.worktree_space.clone(),
         public_pane_numbers: ws
             .public_pane_numbers
@@ -748,6 +752,7 @@ mod tests {
                 id: Some("wproj".to_string()),
                 custom_name: Some("pi-mono".to_string()),
                 identity_cwd: PathBuf::from("/home/can/Projects/herdr"),
+                pinned_path: None,
                 worktree_space: None,
                 public_pane_numbers: HashMap::from([(0, 1), (1, 2)]),
                 next_public_pane_number: 3,
@@ -1316,6 +1321,7 @@ mod tests {
                 id: Some("test-ws".to_string()),
                 custom_name: Some("fallback test".to_string()),
                 identity_cwd: PathBuf::from("/tmp"),
+                pinned_path: None,
                 worktree_space: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
@@ -1457,5 +1463,45 @@ mod tests {
         let json = r#"{"layout": {"Pane": 1}, "panes": {}, "zoomed": false}"#;
         let snapshot: TabSnapshot = serde_json::from_str(json).expect("parses");
         assert_eq!(snapshot.float_arrangement, ArrangementSnapshot::Stacked);
+    }
+
+    #[test]
+    fn workspace_snapshot_without_pinned_path_restores_as_none() {
+        let raw = serde_json::json!({
+            "id": "w1",
+            "custom_name": null,
+            "identity_cwd": "/tmp/herdr-test",
+            "tabs": [],
+            "active_tab": 0,
+        });
+
+        let snap: WorkspaceSnapshot = serde_json::from_value(raw).expect("deserialises");
+
+        assert_eq!(snap.pinned_path, None);
+    }
+
+    #[test]
+    fn workspace_snapshot_roundtrips_pinned_path() {
+        let snap = WorkspaceSnapshot {
+            id: Some("w1".to_string()),
+            custom_name: None,
+            identity_cwd: PathBuf::from("/tmp/herdr-test"),
+            pinned_path: Some(PathBuf::from("/tmp/herdr-test/pinned")),
+            worktree_space: None,
+            public_pane_numbers: HashMap::new(),
+            next_public_pane_number: 1,
+            public_tab_numbers: Vec::new(),
+            next_public_tab_number: 1,
+            tabs: Vec::new(),
+            active_tab: 0,
+        };
+
+        let encoded = serde_json::to_value(&snap).expect("serialises");
+        let decoded: WorkspaceSnapshot = serde_json::from_value(encoded).expect("deserialises");
+
+        assert_eq!(
+            decoded.pinned_path,
+            Some(PathBuf::from("/tmp/herdr-test/pinned"))
+        );
     }
 }
