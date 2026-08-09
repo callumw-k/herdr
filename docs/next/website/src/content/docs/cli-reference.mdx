@@ -116,10 +116,11 @@ Use `default` as the session name when you need to stop the default session expl
 
 ```bash
 herdr workspace list
-herdr workspace create [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
+herdr workspace create [--cwd PATH] [--path PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]
 herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
+herdr workspace set-path <workspace_id> [PATH | --clear]
 herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]
 herdr workspace close <workspace_id>
 ```
@@ -131,6 +132,19 @@ herdr workspace create --cwd ~/project --label api --no-focus
 ```
 
 A workspace is the top-level project or work context. Creating one also creates its first tab and root pane. The JSON response exposes their IDs as `.result.workspace.workspace_id`, `.result.tab.tab_id`, and `.result.root_pane.pane_id`.
+
+`--path` pins the workspace to a directory it claims for pane routing, described in [Concepts](/docs/concepts/). Give `--path` on its own and the first pane starts there too:
+
+```bash
+herdr workspace create --path ~/code/herdr --label herdr
+```
+
+Change or drop the pin later with `set-path`. Pass a path to set it, or `--clear` to remove it:
+
+```bash
+herdr workspace set-path w1 ~/code/herdr
+herdr workspace set-path w1 --clear
+```
 
 ## Worktrees
 
