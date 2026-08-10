@@ -18,6 +18,8 @@ use crate::app::state::{
 };
 use crate::terminal::TerminalRuntimeRegistry;
 
+mod preview;
+
 pub(super) fn render_navigator_overlay(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
@@ -31,16 +33,21 @@ pub(super) fn render_navigator_overlay(
 
     let search = app.navigator_search_rect();
     let body = app.navigator_body_rect();
+    let preview = app.navigator_preview_rect();
     let detail = app.navigator_detail_rect();
     let footer = app.navigator_footer_rect();
     render_search(app, frame, search);
 
+    // `body.height > 0` also covers the preview column: `navigator_preview_rect`
+    // is only non-empty when `navigator_body_rect` is too, so one row build
+    // serves both without recomputing the list a second time per frame.
     if body.height > 0 {
         let rows = app.navigator_rows_from(terminal_runtimes);
         let lines = navigator_display_lines(&rows);
         render_separator(frame, Rect::new(inner.x, search.y + 1, inner.width, 1), app);
         render_rows(app, &rows, &lines, frame, body);
         render_navigator_scrollbar(app, lines.len(), frame, body);
+        preview::render_preview(app, terminal_runtimes, &rows, frame, preview);
     }
     render_detail(app, terminal_runtimes, frame, detail);
     render_footer(app, frame, footer);
@@ -545,24 +552,36 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
             Span::styled(" switch  ", dim),
             Span::styled("↑↓", key),
             Span::styled(" move  ", dim),
+            Span::styled("ctrl+o", key),
+            Span::styled(" new  ", dim),
             Span::styled("ctrl+u", key),
             Span::styled(" clear  ", dim),
             Span::styled("esc", key),
             Span::styled(" back", dim),
         ])
     } else {
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(" enter", key),
             Span::styled(" switch  ", dim),
             Span::styled("/", key),
             Span::styled(" search  ", dim),
+            Span::styled("ctrl+o", key),
+            Span::styled(" new  ", dim),
+        ];
+        // `p` only acts on a workspace row, and a text query leaves none.
+        if !app.navigator_results_flattened() {
+            spans.push(Span::styled("p", key));
+            spans.push(Span::styled(" path  ", dim));
+        }
+        spans.extend([
             Span::styled("b/w/i/d/a", key),
             Span::styled(" states  ", dim),
             Span::styled("j/k/↑↓", key),
             Span::styled(" move  ", dim),
             Span::styled("esc", key),
             Span::styled(" close", dim),
-        ])
+        ]);
+        Line::from(spans)
     };
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -602,6 +621,32 @@ mod tests {
         ]
     }
 
+    fn footer_text(app: &AppState) -> String {
+        let area = Rect::new(0, 0, 120, 1);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .unwrap();
+        terminal
+            .draw(|frame| render_footer(app, frame, area))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..area.width).map(|x| buffer[(x, 0)].symbol()).collect()
+    }
+
+    #[test]
+    fn the_path_hint_hides_once_a_query_flattens_the_rows() {
+        let mut app = AppState::test_new();
+
+        assert!(footer_text(&app).contains("p path"));
+
+        app.navigator.query = "herdr".into();
+
+        assert!(
+            !footer_text(&app).contains("p path"),
+            "a query leaves no workspace row for `p` to act on"
+        );
+    }
+
     #[test]
     fn workspace_rows_use_expand_caret() {
         let rows = multi_tab_rows();
@@ -639,5 +684,45 @@ mod tests {
         let rows = multi_tab_rows();
         assert!(!has_following_sibling_at_depth(&rows, 5, 1));
         assert!(!has_following_sibling_at_depth(&rows, 5, 2));
+    }
+
+    #[tokio::test]
+    async fn a_wide_navigator_renders_the_selected_panes_preview() {
+        use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
+        use crate::workspace::Workspace;
+
+        let mut app = AppState::test_new();
+        app.view.terminal_area = Rect::new(0, 0, 200, 40);
+
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tabs[0].root_pane;
+        ws.tabs[0].runtimes.insert(
+            pane_id,
+            TerminalRuntime::test_with_screen_bytes(60, 20, b"PREVIEWME"),
+        );
+        app.navigator.expanded_workspaces.insert(ws.id.clone());
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        // Row 0 is the workspace; with a single tab and no tab row shown,
+        // row 1 is the sole pane.
+        app.navigator.selected = 1;
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, 40)).unwrap();
+        terminal
+            .draw(|frame| render_navigator_overlay(&app, &TerminalRuntimeRegistry::new(), frame))
+            .unwrap();
+
+        let preview = app.navigator_preview_rect();
+        assert!(preview.width > 0, "expected a preview column at this width");
+        let buffer = terminal.backend().buffer();
+        let content: String = (preview.y..preview.y + preview.height)
+            .flat_map(|y| (preview.x..preview.x + preview.width).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol())
+            .collect();
+        assert!(
+            content.contains("PREVIEWME"),
+            "preview area missing pane content: {content:?}"
+        );
     }
 }

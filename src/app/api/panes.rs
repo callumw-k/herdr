@@ -55,6 +55,9 @@ impl App {
             let follow_cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id);
             Some(self.resolve_new_terminal_cwd(follow_cwd))
         });
+        // split_cwd itself is consumed by the split call below, so keep a copy
+        // for the auto-move check that happens after the pane exists.
+        let auto_move_cwd = split_cwd.clone();
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
@@ -128,6 +131,22 @@ impl App {
             data: EventData::PaneCreated { pane: pane.clone() },
         });
         self.emit_layout_updated_event(ws_idx, target_tab_idx);
+
+        if let Some(cwd) = auto_move_cwd.as_deref() {
+            self.auto_move_pane_to_pinned_workspace(
+                ws_idx,
+                new_pane.pane_id,
+                cwd,
+                params.focus,
+                None,
+            );
+        }
+        // The pane may now live in a different workspace: re-resolve its info
+        // so the response describes where it ended up, not where it started.
+        let final_ws_idx = self.find_pane(new_pane.pane_id).map(|(ws_idx, _)| ws_idx);
+        let pane = final_ws_idx
+            .and_then(|ws_idx| self.pane_info(ws_idx, new_pane.pane_id))
+            .unwrap_or(pane);
 
         encode_success(id, ResponseResult::PaneInfo { pane })
     }
@@ -703,7 +722,14 @@ impl App {
         )
     }
 
-    pub(super) fn handle_pane_move(&mut self, id: String, params: PaneMoveParams) -> String {
+    // Wider than the usual pub(super): auto_move_pane_to_pinned_workspace in
+    // app::creation drives pane moves programmatically and needs to call this
+    // from outside app::api.
+    pub(in crate::app) fn handle_pane_move(
+        &mut self,
+        id: String,
+        params: PaneMoveParams,
+    ) -> String {
         let PaneMoveParams {
             pane_id,
             destination,
@@ -1982,6 +2008,7 @@ fn invalid_agent(id: String) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
     use super::*;
     use crate::{
         api::schema::{ErrorResponse, SplitDirection, SuccessResponse},
@@ -4195,5 +4222,152 @@ mod tests {
 
             assert_eq!(metadata_error_code(&response), "invalid_metadata_ttl");
         }
+    }
+
+    fn unique_temp_path(name: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("herdr-{name}-{}-{nanos}", std::process::id()))
+    }
+
+    fn app_with_source_and_pinned_workspace(pinned: &std::path::Path) -> (App, String) {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(&Config::default(), true, None, api_rx, event_hub);
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
+        let source_workspace = Workspace::test_new("source");
+        let target_pane_id = source_workspace.tabs[0].root_pane;
+        app.state.workspaces = vec![source_workspace];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        let mut pinned_workspace = Workspace::test_new("pinned");
+        pinned_workspace.pinned_path = Some(pinned.to_path_buf());
+        app.state.workspaces.push(pinned_workspace);
+        let target_public_id = app.public_pane_id(0, target_pane_id).unwrap();
+        (app, target_public_id)
+    }
+
+    #[tokio::test]
+    async fn pane_split_routes_the_new_pane_into_the_workspace_that_pins_its_cwd() {
+        let pinned = unique_temp_path("pane-split-pin");
+        let split_cwd = pinned.join("sub");
+        std::fs::create_dir_all(&split_cwd).unwrap();
+        let (mut app, target_public_id) = app_with_source_and_pinned_workspace(&pinned);
+
+        let response = app.handle_pane_split(
+            "req".into(),
+            PaneSplitParams {
+                target_pane_id: Some(target_public_id),
+                workspace_id: None,
+                direction: SplitDirection::Right,
+                ratio: None,
+                cwd: Some(split_cwd.to_string_lossy().into_owned()),
+                focus: false,
+                right_click: crate::api::schema::PaneRightClickTarget::Pane,
+                env: Default::default(),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneInfo { pane } = success.result else {
+            panic!("expected pane info, got: {success:?}");
+        };
+        assert_eq!(pane.workspace_id, app.public_workspace_id(1));
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].panes.len(),
+            1,
+            "the split pane left the source tab once the pinned workspace claimed it"
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn pane_split_does_not_leak_the_source_tab_label_into_the_pinned_destination() {
+        let pinned = unique_temp_path("pane-split-label-leak");
+        let split_cwd = pinned.join("sub");
+        std::fs::create_dir_all(&split_cwd).unwrap();
+        let (mut app, target_public_id) = app_with_source_and_pinned_workspace(&pinned);
+        app.state.workspaces[0].tabs[0].set_custom_name("release-notes".into());
+
+        app.handle_pane_split(
+            "req".into(),
+            PaneSplitParams {
+                target_pane_id: Some(target_public_id),
+                workspace_id: None,
+                direction: SplitDirection::Right,
+                ratio: None,
+                cwd: Some(split_cwd.to_string_lossy().into_owned()),
+                focus: false,
+                right_click: crate::api::schema::PaneRightClickTarget::Pane,
+                env: Default::default(),
+            },
+        );
+
+        let pinned_workspace = &app.state.workspaces[1];
+        let destination_tab = pinned_workspace.tabs.last().unwrap();
+        assert_eq!(
+            destination_tab.custom_name, None,
+            "a split's destination tab must not inherit the source tab's label"
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn auto_move_reports_no_routing_when_the_source_tab_is_zoomed() {
+        let pinned = unique_temp_path("auto-move-zoomed");
+        let claimed_cwd = pinned.join("sub");
+        std::fs::create_dir_all(&claimed_cwd).unwrap();
+        let (mut app, _) = app_with_source_and_pinned_workspace(&pinned);
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+        app.state.workspaces[0].tabs[0].zoomed = true;
+
+        let moved =
+            app.auto_move_pane_to_pinned_workspace(0, source_pane, &claimed_cwd, false, None);
+
+        assert!(
+            !moved,
+            "a zoomed source tab declines the move, so nothing was routed"
+        );
+        assert_eq!(app.state.workspaces[0].tabs[0].panes.len(), 1);
+        assert_eq!(
+            app.state.workspaces[1].tabs.len(),
+            1,
+            "no destination tab should have been created"
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn pane_split_leaves_the_pane_in_place_when_no_workspace_claims_its_cwd() {
+        let pinned = unique_temp_path("pane-split-no-match");
+        let (mut app, target_public_id) = app_with_source_and_pinned_workspace(&pinned);
+        let unclaimed_cwd = unique_temp_path("pane-split-unclaimed");
+        std::fs::create_dir_all(&unclaimed_cwd).unwrap();
+
+        let response = app.handle_pane_split(
+            "req".into(),
+            PaneSplitParams {
+                target_pane_id: Some(target_public_id),
+                workspace_id: None,
+                direction: SplitDirection::Right,
+                ratio: None,
+                cwd: Some(unclaimed_cwd.to_string_lossy().into_owned()),
+                focus: false,
+                right_click: crate::api::schema::PaneRightClickTarget::Pane,
+                env: Default::default(),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneInfo { pane } = success.result else {
+            panic!("expected pane info, got: {success:?}");
+        };
+        assert_eq!(pane.workspace_id, app.public_workspace_id(0));
+        assert_eq!(app.state.workspaces[0].tabs[0].panes.len(), 2);
+        shutdown_test_runtimes(&mut app);
     }
 }

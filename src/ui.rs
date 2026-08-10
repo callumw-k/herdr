@@ -69,7 +69,8 @@ pub(crate) use self::{
         new_linked_worktree_inner_rect, open_existing_worktree_button_rects,
         open_existing_worktree_inner_rect, open_existing_worktree_max_visible_rows,
         open_existing_worktree_visible_start, remove_worktree_button_rects,
-        remove_worktree_popup_rect, rename_button_rects,
+        remove_worktree_popup_rect, rename_button_rects, rename_modal_height,
+        workspace_dialog_field_rects,
     },
     settings::{
         settings_button_rects, settings_popup_height, settings_show_primary_action,

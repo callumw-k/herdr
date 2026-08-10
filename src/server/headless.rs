@@ -970,6 +970,7 @@ impl HeadlessServer {
             id,
             api::schema::Method::WorkspaceCreate(api::schema::WorkspaceCreateParams {
                 cwd,
+                path: None,
                 focus: true,
                 label,
                 env: Default::default(),

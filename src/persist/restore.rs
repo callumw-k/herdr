@@ -420,6 +420,7 @@ fn restore_workspace(
             cached_git_ahead_behind: None,
             cached_git_space,
             worktree_space,
+            pinned_path: snap.pinned_path.clone(),
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
@@ -1383,6 +1384,7 @@ mod tests {
                 id: Some("workspace".into()),
                 custom_name: None,
                 identity_cwd: cwd.clone(),
+                pinned_path: None,
                 worktree_space: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
@@ -1461,6 +1463,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_carries_pinned_path() {
+        let cwd = std::env::current_dir().unwrap();
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                pinned_path: Some(cwd.join("pinned")),
+                worktree_space: None,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneSnapshot {
+                            cwd,
+                            label: None,
+                            agent_name: None,
+                            managed_agent_kind: None,
+                            agent_session: None,
+                            launch_argv: None,
+                        },
+                    )]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                    float_layout: None,
+                    float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+                    float_focused_pane: None,
+                    floats_hidden: false,
+                    float_focused: false,
+                    arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (workspaces, _terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        assert_eq!(
+            workspaces[0].pinned_path,
+            Some(std::env::current_dir().unwrap().join("pinned"))
+        );
+    }
+
+    #[tokio::test]
     async fn restore_preserves_public_id_mapping_after_pane_id_remap() {
         let cwd = std::env::current_dir().unwrap();
         let snapshot = SessionSnapshot {
@@ -1469,6 +1540,7 @@ mod tests {
                 id: Some("w1".into()),
                 custom_name: None,
                 identity_cwd: cwd.clone(),
+                pinned_path: None,
                 worktree_space: None,
                 public_pane_numbers: HashMap::from([(10, 1), (20, 3)]),
                 next_public_pane_number: 4,
@@ -1584,6 +1656,7 @@ mod tests {
                 id: Some("w1".into()),
                 custom_name: None,
                 identity_cwd: cwd.clone(),
+                pinned_path: None,
                 worktree_space: None,
                 public_pane_numbers: HashMap::from([(10, 1), (11, 2), (12, 3), (13, 4)]),
                 next_public_pane_number: 5,
@@ -1691,6 +1764,7 @@ mod tests {
             id: Some("w1".into()),
             custom_name: None,
             identity_cwd: cwd,
+            pinned_path: None,
             worktree_space: None,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
@@ -1736,6 +1810,7 @@ mod tests {
                 id: Some("workspace".into()),
                 custom_name: None,
                 identity_cwd: cwd.clone(),
+                pinned_path: None,
                 worktree_space: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
@@ -1951,6 +2026,7 @@ mod tests {
                 id: Some("workspace".into()),
                 custom_name: None,
                 identity_cwd: cwd,
+                pinned_path: None,
                 worktree_space: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,

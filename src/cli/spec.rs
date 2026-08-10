@@ -196,6 +196,7 @@ fn workspace_command() -> Command {
             Command::new("create")
                 .about("Create a workspace")
                 .arg(path_option("cwd", "PATH"))
+                .arg(path_option("path", "PATH"))
                 .arg(option("label", "TEXT"))
                 .arg(env_option())
                 .arg(flag("focus"))
@@ -208,6 +209,15 @@ fn workspace_command() -> Command {
                 .about("Rename a workspace")
                 .arg(required("workspace_id", "WORKSPACE_ID"))
                 .arg(required("label", "LABEL").num_args(1..)),
+        )
+        .subcommand(
+            Command::new("set-path")
+                .about("Set or clear a workspace's pinned path")
+                .override_usage("herdr workspace set-path <workspace_id> [PATH | --clear]")
+                .arg(required("workspace_id", "WORKSPACE_ID"))
+                .arg(path_arg_optional("path", "PATH"))
+                .arg(flag("clear"))
+                .group(ArgGroup::new("set_path").args(["path", "clear"])),
         )
         .subcommand(
             Command::new("report-metadata")
@@ -982,6 +992,12 @@ fn path_arg(name: &'static str, value_name: &'static str) -> Arg {
     required(name, value_name).value_hint(ValueHint::AnyPath)
 }
 
+fn path_arg_optional(name: &'static str, value_name: &'static str) -> Arg {
+    Arg::new(name)
+        .value_name(value_name)
+        .value_hint(ValueHint::AnyPath)
+}
+
 #[cfg(test)]
 mod tests {
     use clap::{Arg, Command};
@@ -1197,6 +1213,45 @@ mod tests {
         assert!(String::from_utf8(help)
             .unwrap()
             .contains("Usage: herdr agent rename <TARGET> <NAME>|--clear"));
+    }
+
+    #[test]
+    fn spec_matches_workspace_pinned_path_surface() {
+        let cmd = super::command();
+        assert!(has_option(
+            command_path(&cmd, &["workspace", "create"]),
+            "path"
+        ));
+
+        let set_path = command_path(&cmd, &["workspace", "set-path"]);
+        assert!(set_path.get_arguments().any(|arg| arg.get_id() == "path"));
+        assert!(has_option(set_path, "clear"));
+
+        for valid in [
+            &["herdr", "workspace", "set-path", "w1"][..],
+            &["herdr", "workspace", "set-path", "w1", "/tmp"][..],
+            &["herdr", "workspace", "set-path", "w1", "--clear"][..],
+        ] {
+            assert!(super::command().try_get_matches_from(valid).is_ok());
+        }
+        assert!(super::command()
+            .try_get_matches_from(["herdr", "workspace", "set-path", "w1", "/tmp", "--clear"])
+            .is_err());
+
+        let mut help = Vec::new();
+        super::write_requested_help(
+            &[
+                "herdr".to_string(),
+                "workspace".to_string(),
+                "set-path".to_string(),
+                "--help".to_string(),
+            ],
+            &mut help,
+        )
+        .unwrap();
+        assert!(String::from_utf8(help)
+            .unwrap()
+            .contains("Usage: herdr workspace set-path <workspace_id> [PATH | --clear]"));
     }
 
     #[test]

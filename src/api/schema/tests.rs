@@ -51,6 +51,7 @@ fn request_uses_dot_method_names() {
         id: "req_1".into(),
         method: Method::WorkspaceCreate(WorkspaceCreateParams {
             cwd: Some("/tmp".into()),
+            path: None,
             focus: true,
             label: Some("api".into()),
             env: Default::default(),
@@ -719,6 +720,7 @@ fn worktree_request_and_response_round_trip() {
                     checkout_path: "/worktrees/herdr/worktree-api".into(),
                     is_linked_worktree: true,
                 }),
+                path: None,
             },
             tab: TabInfo {
                 tab_id: "w_1:1".into(),
@@ -806,6 +808,7 @@ fn worktree_lifecycle_events_round_trip() {
             checkout_path: "/worktrees/herdr/worktree-api".into(),
             is_linked_worktree: true,
         }),
+        path: None,
     };
     let worktree = WorktreeInfo {
         path: "/worktrees/herdr/worktree-api".into(),

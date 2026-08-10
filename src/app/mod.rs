@@ -13,6 +13,7 @@ mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
 mod config_io;
 mod creation;
+mod fuzzy;
 mod git_refresh;
 mod ids;
 mod input;
@@ -558,6 +559,9 @@ impl App {
             request_complete_onboarding: false,
             name_input: String::new(),
             name_input_replace_on_type: false,
+            workspace_dialog_path: String::new(),
+            workspace_dialog_field: state::WorkspaceDialogField::default(),
+            workspace_dialog_restore_selected: None,
             release_notes: None,
             product_announcement: startup_product_announcement.map(|announcement| {
                 state::ProductAnnouncementState {
@@ -963,6 +967,7 @@ impl App {
                     "tui.workspace.create",
                     crate::api::schema::WorkspaceCreateParams {
                         cwd: None,
+                        path: None,
                         focus: true,
                         label: None,
                         env: Default::default(),
@@ -1002,6 +1007,7 @@ impl App {
                     "tui.workspace.create_cwd",
                     crate::api::schema::WorkspaceCreateParams {
                         cwd: Some(cwd.display().to_string()),
+                        path: None,
                         focus: true,
                         label: None,
                         env: Default::default(),

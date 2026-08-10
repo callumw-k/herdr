@@ -17,11 +17,13 @@ use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, Term
 
 mod aggregate;
 mod git;
+mod pinned_path;
 mod tab;
 
 #[cfg(test)]
 use self::git::git_ahead_behind;
 use self::git::git_status_cache_key_for_space;
+pub(crate) use self::pinned_path::{expand_pinned_path, path_claims};
 pub(crate) use self::{git::git_status_snapshot_for_cwd_with_demand, tab::MovedPane};
 pub use self::{
     git::{
@@ -189,6 +191,9 @@ pub struct Workspace {
     pub(crate) cached_git_space: Option<GitSpaceMetadata>,
     /// Explicit Herdr-managed worktree grouping provenance.
     pub worktree_space: Option<WorktreeSpaceMembership>,
+    /// Directory this workspace claims for auto-routing new panes. Sticky:
+    /// unlike `identity_cwd` it never follows the focused pane.
+    pub pinned_path: Option<PathBuf>,
     pub(crate) metadata_tokens: crate::metadata_tokens::MetadataTokens,
     pub(crate) metadata_token_sequences: HashMap<String, u64>,
     /// Public pane numbers within this workspace. Closed pane numbers are not reused.
@@ -255,6 +260,7 @@ impl Workspace {
             cached_git_ahead_behind: None,
             cached_git_space,
             worktree_space: None,
+            pinned_path: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,
@@ -454,6 +460,7 @@ impl Workspace {
                 cached_git_ahead_behind: None,
                 cached_git_space,
                 worktree_space: None,
+                pinned_path: None,
                 metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
                 metadata_token_sequences: HashMap::new(),
                 public_pane_numbers,
@@ -1316,6 +1323,7 @@ impl Workspace {
             cached_git_ahead_behind: None,
             cached_git_space: None,
             worktree_space: None,
+            pinned_path: None,
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             metadata_token_sequences: HashMap::new(),
             public_pane_numbers,

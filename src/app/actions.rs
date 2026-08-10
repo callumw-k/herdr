@@ -17,9 +17,9 @@ use crate::workspace::WorkspaceGitStatus;
 use super::api_helpers::pane_agent_status;
 use super::state::{
     navigator_display_index_of_row, navigator_display_lines, navigator_first_row_at_or_after,
-    text_matches_query, AgentNotificationDelivery, AppState, Mode, NavigatorRow,
-    NavigatorStateFilter, NavigatorTarget, PaneFocusTarget, PendingAgentNotification, ToastKind,
-    ToastNotification, ToastTarget, ViewLayout,
+    AgentNotificationDelivery, AppState, Mode, NavigatorRow, NavigatorStateFilter, NavigatorTarget,
+    PaneFocusTarget, PendingAgentNotification, ToastKind, ToastNotification, ToastTarget,
+    ViewLayout,
 };
 
 fn is_background_completion_transition(prev_state: AgentState, new_state: AgentState) -> bool {
@@ -496,8 +496,12 @@ impl AppState {
         let query = self.navigator.query.trim().to_lowercase();
         let query_kind = navigator_query_kind(&query, self.navigator.state_filter);
         let mut rows = Vec::new();
+        // The workspace row's label carries a pane count for the tree view;
+        // breadcrumbs want the bare name, so keep it alongside.
+        let mut workspace_names = vec![String::new(); self.workspaces.len()];
         for (ws_idx, ws) in self.workspaces.iter().enumerate() {
             let workspace_label = ws.display_name_from(&self.terminals, terminal_runtimes);
+            workspace_names[ws_idx] = workspace_label.clone();
             let activity = workspace_activity_summary(ws, &self.terminals);
             let workspace_search_text = format!("{workspace_label} {activity}").to_lowercase();
             let workspace_matches = match query_kind {
@@ -537,7 +541,19 @@ impl AppState {
                 rows.extend(child_rows);
             }
         }
+        if matches!(query_kind, NavigatorQueryKind::Text) {
+            return rank_navigator_rows(rows, &query, &workspace_names);
+        }
         rows
+    }
+
+    /// Whether a text query has flattened the rows down to panes. Workspace
+    /// rows are gone in that state, so keys that only act on one cannot fire.
+    pub(crate) fn navigator_results_flattened(&self) -> bool {
+        matches!(
+            navigator_query_kind(self.navigator.query.trim(), self.navigator.state_filter),
+            NavigatorQueryKind::Text
+        )
     }
 
     fn navigator_child_rows(
@@ -909,6 +925,17 @@ impl AppState {
                     return false;
                 }
                 self.switch_workspace(ws_idx);
+                let active_tab_idx = self.workspaces.get(ws_idx).map(|ws| ws.active_tab);
+                if let Some(tab_idx) = active_tab_idx {
+                    let lands_on_float = self
+                        .workspaces
+                        .get(ws_idx)
+                        .and_then(|ws| ws.tabs.get(tab_idx))
+                        .is_some_and(|tab| tab.float_focused && !tab.floats_hidden);
+                    if !lands_on_float {
+                        self.hide_floats_covering_tiled_target(ws_idx, tab_idx);
+                    }
+                }
                 self.mode = Mode::Terminal;
                 true
             }
@@ -924,6 +951,14 @@ impl AppState {
                     return false;
                 }
                 self.switch_workspace_tab(ws_idx, tab_idx);
+                let lands_on_float = self
+                    .workspaces
+                    .get(ws_idx)
+                    .and_then(|ws| ws.tabs.get(tab_idx))
+                    .is_some_and(|tab| tab.float_focused && !tab.floats_hidden);
+                if !lands_on_float {
+                    self.hide_floats_covering_tiled_target(ws_idx, tab_idx);
+                }
                 self.mode = Mode::Terminal;
                 true
             }
@@ -941,12 +976,36 @@ impl AppState {
                     .and_then(|ws| ws.tabs.get(tab_idx))
                     .is_some_and(|tab| tab.panes.contains_key(&pane_id))
                 {
+                    let is_float = self
+                        .workspaces
+                        .get(ws_idx)
+                        .and_then(|ws| ws.tabs.get(tab_idx))
+                        .is_some_and(|tab| tab.is_float(pane_id));
                     self.focus_pane_in_workspace(ws_idx, pane_id);
+                    if !is_float {
+                        self.hide_floats_covering_tiled_target(ws_idx, tab_idx);
+                    }
                     self.mode = Mode::Terminal;
                     return true;
                 }
                 false
             }
+        }
+    }
+
+    /// The picker's job is to show you what you selected, so a visible float
+    /// covering a tiled target gets out of the way. Hidden, not closed: the
+    /// float's process keeps running and toggle-floats restores the layer.
+    fn hide_floats_covering_tiled_target(&mut self, ws_idx: usize, tab_idx: usize) {
+        let Some(tab) = self
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+        else {
+            return;
+        };
+        if tab.set_floats_hidden(true) {
+            self.mark_session_dirty();
         }
     }
 }
@@ -986,7 +1045,65 @@ fn navigator_state_filter_matches(
 }
 
 fn navigator_matches(query: &str, text: &str) -> bool {
-    text_matches_query(query, text)
+    crate::app::fuzzy::fuzzy_score(query, text).is_some()
+}
+
+/// Flatten the tree into a ranked list. Workspace and tab rows collapse into
+/// breadcrumbs on their pane rows, so a query returns panes rather than the
+/// structure holding them.
+fn rank_navigator_rows(
+    rows: Vec<NavigatorRow>,
+    query: &str,
+    workspace_names: &[String],
+) -> Vec<NavigatorRow> {
+    let mut workspace_label = String::new();
+    let mut tab_label = String::new();
+    let mut ranked: Vec<(bool, i32, usize, NavigatorRow)> = Vec::new();
+
+    for (order, mut row) in rows.into_iter().enumerate() {
+        if row.is_workspace {
+            workspace_label = match row.target {
+                NavigatorTarget::Workspace { ws_idx } => workspace_names
+                    .get(ws_idx)
+                    .cloned()
+                    .unwrap_or_else(|| row.label.clone()),
+                _ => row.label.clone(),
+            };
+            tab_label.clear();
+            continue;
+        }
+        if row.is_tab {
+            tab_label = row.label.clone();
+            continue;
+        }
+        let breadcrumb = if tab_label.is_empty() {
+            workspace_label.clone()
+        } else {
+            format!("{workspace_label} › {tab_label}")
+        };
+        // Score the combined text so a workspace/tab-name match still
+        // surfaces this pane, but also score the pane's own text alone. A
+        // pane whose own text matches must always outrank one that only
+        // matches via its breadcrumb, and a single combined score can't
+        // express that (a clean word-boundary run in a long breadcrumb can
+        // outscore a mid-word own-text match) — so it is a sort tier, not a
+        // number.
+        let match_text = format!("{} {breadcrumb}", row.search_text);
+        let Some(score) = crate::app::fuzzy::fuzzy_score(query, &match_text) else {
+            continue;
+        };
+        let own_text_matched = crate::app::fuzzy::fuzzy_score(query, &row.search_text).is_some();
+        row.depth = 0;
+        row.meta = breadcrumb;
+        row.matched = true;
+        ranked.push((own_text_matched, score, order, row));
+    }
+
+    // Own-match rows form a tier above breadcrumb-only rows; score orders
+    // within a tier; tree order is the final tie-break so results do not
+    // jitter between keystrokes.
+    ranked.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+    ranked.into_iter().map(|(_, _, _, row)| row).collect()
 }
 
 fn launch_label(argv: Option<&Vec<String>>) -> Option<String> {
@@ -3782,6 +3899,88 @@ mod tests {
     }
 
     #[test]
+    fn a_query_flattens_rows_and_ranks_them() {
+        let mut state = app_with_workspaces(&["alpha", "beta"]);
+        // Panes only carry their own label, never their workspace's name, so
+        // give the pane something to match: ranking is scored against
+        // `row.search_text`, not the ancestor workspace/tab labels.
+        let beta_pane = state.workspaces[1].tabs[0].root_pane;
+        let beta_terminal_id = state.workspaces[1].terminal_id(beta_pane).cloned().unwrap();
+        state
+            .terminals
+            .get_mut(&beta_terminal_id)
+            .unwrap()
+            .set_manual_label("beta task".into());
+        state.navigator.query = "beta".to_string();
+
+        let rows = state.navigator_rows();
+
+        assert!(
+            rows.iter().all(|row| row.depth == 0),
+            "querying should flatten the tree"
+        );
+        assert!(
+            rows.first().is_some_and(|row| row.label.contains("beta")),
+            "best match should sort first, got {:?}",
+            rows.first().map(|row| &row.label)
+        );
+    }
+
+    #[test]
+    fn an_empty_query_keeps_the_tree() {
+        let state = app_with_workspaces(&["alpha", "beta"]);
+
+        let rows = state.navigator_rows();
+
+        assert!(
+            rows.iter().any(|row| row.is_workspace),
+            "empty query should keep workspace rows"
+        );
+    }
+
+    #[test]
+    fn a_state_filter_without_a_query_keeps_the_tree() {
+        let mut state = app_with_workspaces(&["alpha", "beta"]);
+        // Test terminals default to AgentState::Unknown, which no state
+        // filter matches, so give one pane a state the Idle filter accepts.
+        let pane = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].terminal_id(pane).cloned().unwrap();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_detected_state(Some(Agent::Claude), AgentState::Idle);
+        state.navigator.state_filter = Some(NavigatorStateFilter::Idle);
+
+        let rows = state.navigator_rows();
+
+        assert!(rows.iter().any(|row| row.is_workspace));
+    }
+
+    #[test]
+    fn navigator_search_matches_a_scattered_subsequence() {
+        let mut state = app_with_workspaces(&["one"]);
+        let pane = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].terminal_id(pane).cloned().unwrap();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_manual_label("claude session".into());
+        state.open_navigator();
+        // "cld" is a subsequence of "claude" but not a literal substring, so
+        // this only matches once navigator search is fuzzy.
+        state.navigator.query = "cld".into();
+
+        let rows = state.navigator_rows();
+
+        assert!(
+            rows.iter().any(|row| row.label.contains("claude")),
+            "a scattered subsequence should still match via fuzzy search, got {rows:?}"
+        );
+    }
+
+    #[test]
     fn navigator_rows_show_tab_nodes_only_for_multi_tab_workspaces() {
         let mut state = app_with_workspaces(&["single", "multi"]);
         state.workspaces[1].test_add_tab(Some("tests"));
@@ -3811,38 +4010,40 @@ mod tests {
     }
 
     #[test]
-    fn navigator_search_matches_named_tabs_in_single_tab_workspaces() {
+    fn navigator_search_matches_panes_and_shows_breadcrumb() {
         let mut state = app_with_workspaces(&["multi", "single"]);
         state.workspaces[0].tabs[0].custom_name = Some("Foo".into());
         state.workspaces[0].test_add_tab(Some("Bar"));
         state.workspaces[1].tabs[0].custom_name = Some("Baz".into());
         state.ensure_test_terminals();
+        // The tab name "Baz" alone would also cascade this pane in via the
+        // breadcrumb; give it its own matching label too so this pins the
+        // higher-tier own-match case specifically.
+        let target_pane = state.workspaces[1].tabs[0].root_pane;
+        let target_terminal_id = state.workspaces[1]
+            .terminal_id(target_pane)
+            .cloned()
+            .unwrap();
+        state
+            .terminals
+            .get_mut(&target_terminal_id)
+            .unwrap()
+            .set_manual_label("baz notes".into());
 
         state.open_navigator();
-        state.navigator.query = "foo".into();
-        assert!(state.navigator_rows().iter().any(|row| {
-            row.matched
-                && matches!(
-                    row.target,
-                    crate::app::state::NavigatorTarget::Tab {
-                        ws_idx: 0,
-                        tab_idx: 0
-                    }
-                )
-        }));
-
         state.navigator.query = "baz".into();
         state.select_first_navigator_match_from(&crate::terminal::TerminalRuntimeRegistry::new());
         let rows = state.navigator_rows();
-        assert!(rows
-            .get(state.navigator.selected)
-            .is_some_and(|row| matches!(
-                row.target,
-                crate::app::state::NavigatorTarget::Tab {
-                    ws_idx: 1,
-                    tab_idx: 0
-                }
-            )));
+        let selected = rows.get(state.navigator.selected).expect("a matching pane");
+        assert!(matches!(
+            selected.target,
+            crate::app::state::NavigatorTarget::Pane {
+                ws_idx: 1,
+                tab_idx: 0,
+                ..
+            }
+        ));
+        assert_eq!(selected.meta, "single › Baz");
         assert!(!rows.iter().any(|row| matches!(
             row.target,
             crate::app::state::NavigatorTarget::Workspace { ws_idx: 0 }
@@ -3854,6 +4055,27 @@ mod tests {
         assert_eq!(state.active, Some(1));
         assert_eq!(state.workspaces[1].active_tab_index(), 0);
         assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn navigator_search_by_tab_name_returns_that_tabs_panes_only() {
+        let mut state = app_with_workspaces(&["multi", "single"]);
+        state.workspaces[0].tabs[0].custom_name = Some("Foo".into());
+        state.workspaces[0].test_add_tab(Some("Bar"));
+        state.ensure_test_terminals();
+
+        state.open_navigator();
+        state.navigator.query = "Foo".into();
+        let rows = state.navigator_rows();
+
+        assert!(
+            rows.iter().any(|row| row.meta.ends_with("› Foo")),
+            "expected a pane breadcrumbed to the Foo tab, got {rows:?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.meta.ends_with("› Bar")),
+            "the sibling Bar tab's panes must stay out of the results, got {rows:?}"
+        );
     }
 
     #[tokio::test]
@@ -3907,7 +4129,9 @@ mod tests {
         let mut runtime_registry = crate::terminal::TerminalRuntimeRegistry::new();
         runtime_registry.insert(terminal_id, runtime);
         state.open_navigator_from(&runtime_registry);
-        state.navigator.query = "herdr".into();
+        // This test is about the label reflecting the live runtime cwd rather
+        // than the stale terminal.cwd field, which is orthogonal to search
+        // ranking; leave the query empty so the tree is unaffected by it.
         let rows = state.navigator_rows_from(&runtime_registry);
 
         for (_, runtime) in runtime_registry.drain() {
@@ -3915,12 +4139,8 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(root);
 
-        // The workspace matched by its live cwd label; its subtree cascades in
-        // as context.
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].label, "herdr (1)");
-        assert!(rows[0].matched);
-        assert!(!rows[1].matched);
     }
 
     #[test]
@@ -3997,6 +4217,125 @@ mod tests {
         assert_eq!(state.active, Some(1));
         assert_eq!(state.workspaces[1].focused_pane_id(), Some(target));
         assert_eq!(state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn activating_a_tiled_pane_hides_visible_floats() {
+        let (mut state, floats) = app_with_float_stack(1);
+        let tiled = state.workspaces[0].tabs[0].root_pane;
+
+        let focused = state.focus_navigator_target(NavigatorTarget::Pane {
+            ws_idx: 0,
+            tab_idx: 0,
+            pane_id: tiled,
+        });
+
+        assert!(focused);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert!(tab.floats_hidden, "float layer should be hidden");
+        assert!(
+            tab.panes.contains_key(&floats[0]),
+            "float pane should still exist"
+        );
+    }
+
+    #[test]
+    fn activating_a_float_unhides_the_layer() {
+        let (mut state, floats) = app_with_float_stack(1);
+        state.workspaces[0]
+            .active_tab_mut()
+            .expect("a tab")
+            .set_floats_hidden(true);
+
+        state.focus_navigator_target(NavigatorTarget::Pane {
+            ws_idx: 0,
+            tab_idx: 0,
+            pane_id: floats[0],
+        });
+
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert!(!tab.floats_hidden);
+        assert!(tab.float_focused);
+    }
+
+    #[test]
+    fn floats_hide_even_when_the_tiled_target_is_already_focused() {
+        let (mut state, _) = app_with_float_stack(1);
+        let tiled = state.workspaces[0].tabs[0].root_pane;
+        state.workspaces[0]
+            .active_tab_mut()
+            .expect("a tab")
+            .float_focused = false;
+        state.focus_pane_in_workspace(0, tiled);
+
+        state.focus_navigator_target(NavigatorTarget::Pane {
+            ws_idx: 0,
+            tab_idx: 0,
+            pane_id: tiled,
+        });
+
+        assert!(
+            state.workspaces[0]
+                .active_tab()
+                .expect("a tab")
+                .floats_hidden,
+            "hide must not be gated on focus_pane_in_workspace returning true"
+        );
+    }
+
+    #[test]
+    fn activating_a_tab_row_hides_floats_when_its_focused_pane_is_tiled() {
+        let (mut state, _) = app_with_float_stack(1);
+        state.workspaces[0]
+            .active_tab_mut()
+            .expect("a tab")
+            .float_focused = false;
+
+        state.focus_navigator_target(NavigatorTarget::Tab {
+            ws_idx: 0,
+            tab_idx: 0,
+        });
+
+        assert!(
+            state.workspaces[0]
+                .active_tab()
+                .expect("a tab")
+                .floats_hidden
+        );
+    }
+
+    #[test]
+    fn activating_a_workspace_row_hides_floats_when_its_focused_pane_is_tiled() {
+        let (mut state, _) = app_with_float_stack(1);
+        state.workspaces[0]
+            .active_tab_mut()
+            .expect("a tab")
+            .float_focused = false;
+
+        state.focus_navigator_target(NavigatorTarget::Workspace { ws_idx: 0 });
+
+        assert!(
+            state.workspaces[0]
+                .active_tab()
+                .expect("a tab")
+                .floats_hidden
+        );
+    }
+
+    #[test]
+    fn directional_navigation_off_a_float_leaves_the_layer_visible() {
+        let (mut state, _) = app_with_float_stack(1);
+        let tiled = state.workspaces[0].tabs[0].root_pane;
+
+        state.focus_pane_in_workspace(0, tiled);
+
+        assert!(
+            !state.workspaces[0]
+                .active_tab()
+                .expect("a tab")
+                .floats_hidden,
+            "focus_pane_in_workspace must not hide floats"
+        );
     }
 
     #[test]
@@ -4089,52 +4428,114 @@ mod tests {
     }
 
     #[test]
-    fn navigator_search_filters_panes_but_keeps_workspace_context() {
-        let mut state = app_with_workspaces(&["one"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        let terminal_id = state.workspaces[0].terminal_id(root).cloned().unwrap();
-        state
-            .terminals
-            .get_mut(&terminal_id)
-            .unwrap()
-            .set_manual_label("weekly review".into());
-        state.open_navigator();
-        state.navigator.query = "weekly".into();
+    fn navigator_search_by_workspace_name_returns_its_panes_with_breadcrumb() {
+        let mut state = app_with_workspaces(&["herdr", "herdr-notes", "other"]);
+        state.workspaces[0].tabs[0].custom_name = Some("src".into());
+        state.workspaces[0].test_add_tab(Some("docs"));
+        state.ensure_test_terminals();
 
+        state.open_navigator();
+        state.navigator.query = "herdr".into();
         let rows = state.navigator_rows();
 
-        assert!(rows.iter().any(|row| row.is_workspace));
-        assert!(rows
-            .iter()
-            .any(|row| !row.is_workspace && row.label.contains("weekly")));
+        // A query flattens the tree, so the workspace no longer appears as
+        // its own row; it survives only as the breadcrumb on the pane. None of
+        // these panes match "herdr" by their own label, so the breadcrumb is
+        // the only thing pulling them in.
+        assert!(
+            !rows.iter().any(|row| row.is_workspace),
+            "querying should flatten workspace rows away, got {rows:?}"
+        );
+        let metas: Vec<&str> = rows.iter().map(|row| row.meta.as_str()).collect();
+        assert_eq!(metas.len(), 3, "got {rows:?}");
+        // The breadcrumb carries the plain workspace name, not the tree view's
+        // "name (pane count)" row label. A single-tab workspace whose tab does
+        // not match contributes the workspace name alone.
+        for expected in ["herdr › src", "herdr › docs", "herdr-notes"] {
+            assert!(
+                metas.contains(&expected),
+                "missing {expected}, got {rows:?}"
+            );
+        }
+        assert!(
+            !rows.iter().any(|row| row.meta.contains("other")),
+            "a non-matching workspace's panes should stay out of the results, got {rows:?}"
+        );
     }
 
     #[test]
-    fn navigator_workspace_match_cascades_full_subtree() {
+    fn navigator_search_ranks_a_panes_own_match_above_a_breadcrumb_only_match() {
         let mut state = app_with_workspaces(&["one", "two"]);
-        let root = state.workspaces[0].tabs[0].root_pane;
-        let extra = state.workspaces[0].test_split(Direction::Horizontal);
-        state.ensure_test_terminals();
-        for pane in [root, extra] {
-            let terminal_id = state.workspaces[0].terminal_id(pane).cloned().unwrap();
-            state
-                .terminals
-                .get_mut(&terminal_id)
-                .unwrap()
-                .set_manual_label("unrelated".into());
-        }
+        let named_pane = state.workspaces[1].tabs[0].root_pane;
+        let named_terminal_id = state.workspaces[1]
+            .terminal_id(named_pane)
+            .cloned()
+            .unwrap();
+        state
+            .terminals
+            .get_mut(&named_terminal_id)
+            .unwrap()
+            .set_manual_label("claude".into());
+        // This workspace's own pane text ("pane 1 shell") never contains
+        // "claude", so its pane can only match via this workspace's name,
+        // i.e. purely through the breadcrumb.
+        state.workspaces[0].custom_name = Some("claude workspace".into());
 
         state.open_navigator();
-        state.navigator.query = "one".into();
+        state.navigator.query = "claude".into();
         let rows = state.navigator_rows();
 
-        // Both panes cascade in even though only the workspace label matched,
-        // and only the workspace carries the matched flag.
-        let pane_rows: Vec<_> = rows.iter().filter(|row| !row.is_workspace).collect();
-        assert_eq!(pane_rows.len(), 2);
-        assert!(pane_rows.iter().all(|row| !row.matched));
-        assert!(rows.iter().any(|row| row.is_workspace && row.matched));
-        assert!(!rows.iter().any(|row| row.label.starts_with("two")));
+        let own_match_idx = rows
+            .iter()
+            .position(|row| row.label == "claude")
+            .expect("the pane named claude should match");
+        let breadcrumb_only_idx = rows
+            .iter()
+            .position(|row| row.meta.starts_with("claude workspace"))
+            .expect("a pane in the claude-named workspace should cascade in");
+        assert!(
+            own_match_idx < breadcrumb_only_idx,
+            "a pane's own-name match should outrank a breadcrumb-only match, got {rows:?}"
+        );
+    }
+
+    #[test]
+    fn navigator_search_ranks_own_match_above_breadcrumb_even_when_the_raw_score_is_lower() {
+        let mut state = app_with_workspaces(&["workspace-two", "other"]);
+        let own_match_pane = state.workspaces[1].tabs[0].root_pane;
+        let own_match_terminal_id = state.workspaces[1]
+            .terminal_id(own_match_pane)
+            .cloned()
+            .unwrap();
+        state
+            .terminals
+            .get_mut(&own_match_terminal_id)
+            .unwrap()
+            .set_manual_label("network".into());
+
+        state.open_navigator();
+        // "work" lands mid-word in "network" (no word-boundary bonus) but at
+        // a word boundary in "workspace-two" (boundary + three consecutive
+        // bonuses), so the raw combined score actually favours the
+        // breadcrumb-only pane: fuzzy_score("work", "network shell other
+        // (1)") = Some(21) vs fuzzy_score("work", "pane 1 shell
+        // workspace-two (1)") = Some(23). The own-match tier must still rank
+        // first regardless.
+        state.navigator.query = "work".into();
+        let rows = state.navigator_rows();
+
+        let own_match_idx = rows
+            .iter()
+            .position(|row| row.label == "network")
+            .expect("the pane named network should match on its own text");
+        let breadcrumb_only_idx = rows
+            .iter()
+            .position(|row| row.meta.starts_with("workspace-two"))
+            .expect("a pane in the workspace-two workspace should cascade in");
+        assert!(
+            own_match_idx < breadcrumb_only_idx,
+            "own-match tier should outrank breadcrumb-only tier even with a lower raw score, got {rows:?}"
+        );
     }
 
     #[test]

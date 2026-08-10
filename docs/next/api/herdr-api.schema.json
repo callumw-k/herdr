@@ -1095,6 +1095,12 @@
               "minimum": 0,
               "type": "integer"
             },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "tab_count": {
               "format": "uint",
               "minimum": 0,
@@ -4279,6 +4285,12 @@
                 "string",
                 "null"
               ]
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "type": "object"
@@ -4378,6 +4390,24 @@
             "workspace_id",
             "source",
             "tokens"
+          ],
+          "type": "object"
+        },
+        "WorkspaceSetPathParams": {
+          "properties": {
+            "path": {
+              "description": "`None` clears the pinned path.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
           ],
           "type": "object"
         },
@@ -4770,6 +4800,22 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/WorkspaceRenameParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.set-path",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceSetPathParams"
             }
           },
           "required": [
@@ -10178,6 +10224,12 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "tab_count": {
               "format": "uint",

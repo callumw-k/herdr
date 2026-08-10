@@ -18,6 +18,9 @@ fn rect_contains(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
+/// Below this the popup is too narrow to split without starving both columns.
+const NAVIGATOR_PREVIEW_MIN_WIDTH: u16 = 100;
+
 impl App {
     pub(super) fn handle_overlay_mouse(&mut self, mouse: MouseEvent) -> bool {
         if self.state.mode == Mode::ReleaseNotes {
@@ -289,10 +292,25 @@ impl AppState {
         if inner.height <= 4 {
             return Rect::default();
         }
+        let preview_width = self.navigator_preview_rect().width;
         Rect::new(
             inner.x,
             inner.y + 2,
-            inner.width,
+            inner.width.saturating_sub(preview_width),
+            inner.height.saturating_sub(4),
+        )
+    }
+
+    pub(crate) fn navigator_preview_rect(&self) -> Rect {
+        let inner = self.navigator_inner_rect();
+        if inner.width < NAVIGATOR_PREVIEW_MIN_WIDTH || inner.height <= 4 {
+            return Rect::default();
+        }
+        let width = inner.width * 2 / 5;
+        Rect::new(
+            inner.x + inner.width - width,
+            inner.y + 2,
+            width,
             inner.height.saturating_sub(4),
         )
     }
@@ -395,8 +413,10 @@ impl AppState {
             && row < button.y + button.height
     }
 
-    pub(super) fn rename_modal_inner(&self) -> Option<Rect> {
-        self.onboarding_modal_inner(56, 7)
+    // pub(crate) rather than pub(super) so ui::dialogs tests can assert this
+    // stays in lockstep with what render_rename_overlay actually draws.
+    pub(crate) fn rename_modal_inner(&self) -> Option<Rect> {
+        self.onboarding_modal_inner(56, crate::ui::rename_modal_height(self.mode))
     }
 
     fn release_notes_body_rect(&self) -> Option<Rect> {
@@ -827,5 +847,39 @@ mod tests {
                 .release_notes_scrollbar_target_at(track.x, track.y),
             Some(ScrollbarClickTarget::Thumb { .. } | ScrollbarClickTarget::Track { .. })
         ));
+    }
+
+    #[test]
+    fn a_wide_navigator_reserves_a_preview_column() {
+        let mut state = AppState::test_new();
+        state.view.terminal_area = Rect::new(0, 0, 200, 40);
+
+        let preview = state.navigator_preview_rect();
+        let body = state.navigator_body_rect();
+
+        assert!(preview.width > 0, "wide popup should have a preview column");
+        assert!(
+            body.x + body.width <= preview.x,
+            "body {body:?} must not overlap preview {preview:?}"
+        );
+    }
+
+    #[test]
+    fn a_narrow_navigator_has_no_preview_column() {
+        let mut state = AppState::test_new();
+        state.view.terminal_area = Rect::new(0, 0, 70, 20);
+
+        assert_eq!(state.navigator_preview_rect().width, 0);
+    }
+
+    #[test]
+    fn a_narrow_navigator_body_spans_the_full_inner_width() {
+        let mut state = AppState::test_new();
+        state.view.terminal_area = Rect::new(0, 0, 70, 20);
+
+        assert_eq!(
+            state.navigator_body_rect().width,
+            state.navigator_inner_rect().width
+        );
     }
 }

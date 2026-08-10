@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::api::schema::{
     Method, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceReportMetadataParams,
+    WorkspaceSetPathParams,
 };
 
 pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
@@ -16,6 +17,7 @@ pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
         "get" => workspace_get(&args[1..]),
         "focus" => workspace_focus(&args[1..]),
         "rename" => workspace_rename(&args[1..]),
+        "set-path" => workspace_set_path(&args[1..]),
         "report-metadata" => workspace_report_metadata(&args[1..]),
         "close" => workspace_close(&args[1..]),
         "help" | "--help" | "-h" => {
@@ -40,6 +42,7 @@ fn workspace_list(args: &[String]) -> std::io::Result<i32> {
 
 fn workspace_create(args: &[String]) -> std::io::Result<i32> {
     let mut cwd = None;
+    let mut path = None;
     let mut focus = false;
     let mut label = None;
     let mut env = HashMap::new();
@@ -53,6 +56,14 @@ fn workspace_create(args: &[String]) -> std::io::Result<i32> {
                     return Ok(2);
                 };
                 cwd = Some(value.clone());
+                index += 2;
+            }
+            "--path" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --path");
+                    return Ok(2);
+                };
+                path = Some(value.clone());
                 index += 2;
             }
             "--label" => {
@@ -95,6 +106,7 @@ fn workspace_create(args: &[String]) -> std::io::Result<i32> {
 
     super::runtime::workspace_create(WorkspaceCreateParams {
         cwd,
+        path,
         focus,
         label,
         env,
@@ -136,6 +148,27 @@ fn workspace_rename(args: &[String]) -> std::io::Result<i32> {
     super::runtime::workspace_rename(WorkspaceRenameParams {
         workspace_id: super::normalize_workspace_id(&args[0]),
         label: args[1..].join(" "),
+    })
+}
+
+fn workspace_set_path(args: &[String]) -> std::io::Result<i32> {
+    let Some(raw_workspace_id) = args.first() else {
+        eprintln!("usage: herdr workspace set-path <workspace_id> [PATH | --clear]");
+        return Ok(2);
+    };
+    // The spec declares PATH and --clear as mutually exclusive, so reject the
+    // combination here rather than silently letting one of them win.
+    let rest = &args[1..];
+    let clear = rest.iter().any(|arg| arg == "--clear");
+    let path = rest.iter().find(|arg| arg.as_str() != "--clear").cloned();
+    if clear && path.is_some() {
+        eprintln!("usage: herdr workspace set-path <workspace_id> [PATH | --clear]");
+        return Ok(2);
+    }
+
+    super::runtime::workspace_set_path(WorkspaceSetPathParams {
+        workspace_id: super::normalize_workspace_id(raw_workspace_id),
+        path,
     })
 }
 
@@ -240,10 +273,22 @@ fn workspace_close(args: &[String]) -> std::io::Result<i32> {
 fn print_workspace_help() {
     eprintln!("herdr workspace commands:");
     eprintln!("  herdr workspace list");
-    eprintln!("  herdr workspace create [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]");
+    eprintln!("  herdr workspace create [--cwd PATH] [--path PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]");
     eprintln!("  herdr workspace get <workspace_id>");
     eprintln!("  herdr workspace focus <workspace_id>");
     eprintln!("  herdr workspace rename <workspace_id> <label>");
+    eprintln!("  herdr workspace set-path <workspace_id> [PATH | --clear]");
     eprintln!("  herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
     eprintln!("  herdr workspace close <workspace_id>");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn set_path_rejects_a_path_and_clear_together() {
+        for args in [["w1", "/tmp", "--clear"], ["w1", "--clear", "/tmp"]] {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            assert_eq!(super::workspace_set_path(&args).unwrap(), 2);
+        }
+    }
 }
