@@ -129,7 +129,17 @@ impl App {
         self.state.update_dismissed = true;
 
         if key.code == KeyCode::Esc || self.state.is_prefix_key(&raw_key) {
-            leave_navigate_mode(&mut self.state);
+            exit_to_insert_mode(&mut self.state);
+            return;
+        }
+
+        if self
+            .state
+            .keybinds
+            .enter_insert
+            .matches_direct_key(&raw_key)
+        {
+            exit_to_insert_mode(&mut self.state);
             return;
         }
 
@@ -1439,7 +1449,16 @@ pub(crate) fn handle_navigate_key(state: &mut AppState, key: KeyEvent) {
     let terminal_key = TerminalKey::from(key);
 
     if state.is_prefix_key(&terminal_key) || key.code == KeyCode::Esc {
-        leave_navigate_mode(state);
+        exit_to_insert_mode(state);
+        return;
+    }
+
+    if state
+        .keybinds
+        .enter_insert
+        .matches_direct_key(&terminal_key)
+    {
+        exit_to_insert_mode(state);
         return;
     }
 
@@ -2008,6 +2027,17 @@ fn workspace_can_start_worktree_action(
 }
 
 fn leave_navigate_mode(state: &mut AppState) {
+    // Modal input keeps normal mode sticky; only an explicit exit leaves it.
+    if state.keybinds.modal {
+        return;
+    }
+    if state.active.is_some() {
+        state.mode = Mode::Terminal;
+    }
+}
+
+fn exit_to_insert_mode(state: &mut AppState) {
+    state.pending_sequence.clear();
     if state.active.is_some() {
         state.mode = Mode::Terminal;
     }
@@ -4010,5 +4040,62 @@ navigate_pane_down = "ctrl+j"
 
         assert!(state.detach_requested);
         assert!(!state.should_quit);
+    }
+
+    #[test]
+    fn modal_normal_mode_persists_across_actions() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.keybinds.modal = true;
+        app.state.mode = Mode::Navigate;
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('l'),
+            KeyModifiers::empty(),
+        )));
+
+        assert_eq!(app.state.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn non_modal_normal_mode_still_exits_after_an_action() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.keybinds.modal = false;
+        app.state.mode = Mode::Navigate;
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::empty(),
+        )));
+
+        assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn enter_insert_key_leaves_normal_mode_when_modal() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.keybinds.modal = true;
+        app.state.keybinds.enter_insert = crate::config::ActionKeybinds::direct("i");
+        app.state.mode = Mode::Navigate;
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('i'),
+            KeyModifiers::empty(),
+        )));
+
+        assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn esc_leaves_normal_mode_when_modal() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.keybinds.modal = true;
+        app.state.mode = Mode::Navigate;
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::empty(),
+        )));
+
+        assert_eq!(app.state.mode, Mode::Terminal);
     }
 }

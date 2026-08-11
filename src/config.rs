@@ -298,6 +298,33 @@ command = "echo one"
     }
 
     #[test]
+    fn local_keybindings_profile_includes_modal_settings() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+modal = true
+leader = "ctrl+space"
+"#,
+        )
+        .unwrap();
+
+        let profile = config.local_keybindings_profile_toml().unwrap();
+        let round_tripped: Config = toml::from_str(&profile).unwrap();
+
+        assert!(profile.contains("modal = true"));
+        assert!(profile.contains("leader = \"ctrl+space\""));
+        assert!(profile.contains("enter_insert = \"i\""));
+        assert!(round_tripped.keys.modal);
+        assert_eq!(round_tripped.keys.leader, "ctrl+space");
+        assert!(round_tripped
+            .keybinds()
+            .enter_insert
+            .bindings
+            .iter()
+            .any(|binding| binding.label == "i"));
+    }
+
+    #[test]
     fn remote_image_paste_key_defaults_to_ctrl_v() {
         let config = Config::default();
         assert_eq!(

@@ -1338,6 +1338,8 @@ pub struct AppState {
     pub(crate) previous_pane_focus: Option<PaneFocusTarget>,
     pub selected: usize,
     pub mode: Mode,
+    /// Keys buffered mid-sequence in normal mode. Empty outside modal input.
+    pub pending_sequence: Vec<crate::input::TerminalKey>,
     pub should_quit: bool,
     /// In monolithic --no-session mode, detach exits the app because there is no server to detach from.
     pub detach_exits: bool,
@@ -1714,6 +1716,7 @@ impl AppState {
             previous_pane_focus: None,
             selected: 0,
             mode: Mode::Navigate,
+            pending_sequence: Vec::new(),
             should_quit: false,
             detach_exits: false,
             detach_requested: false,

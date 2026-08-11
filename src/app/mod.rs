@@ -532,6 +532,7 @@ impl App {
             previous_pane_focus: None,
             selected,
             mode,
+            pending_sequence: Vec::new(),
             should_quit: false,
             detach_exits: no_session,
             detach_requested: false,

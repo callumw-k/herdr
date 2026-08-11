@@ -324,7 +324,6 @@ pub struct NavigateKeybinds {
 pub struct Keybinds {
     pub navigate: NavigateKeybinds,
     /// Modal input enabled. When true, normal mode is sticky and exits only via `enter_insert`.
-    #[allow(dead_code)] // read starting in a later modal-input task
     pub modal: bool,
     /// Leader combo, usable as the first step of a sequence binding.
     pub leader: KeyCombo,
