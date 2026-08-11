@@ -173,7 +173,6 @@ impl ResolvedBinding {
         terminal_key_matches_combo(key, self.trigger.combo())
     }
 
-    #[allow(dead_code)] // read starting in a later modal-input task
     pub fn sequence_combos(&self) -> Vec<KeyCombo> {
         let mut combos = vec![normalize_key_combo(self.trigger.combo())];
         combos.extend(self.tail.iter().copied().map(normalize_key_combo));
@@ -462,6 +461,75 @@ impl BindingRegistry {
             // Sequence registration is added in Task 3.
             BindingTrigger::Sequence(_) => {}
         }
+    }
+
+    fn head_is_taken(&self, combo: KeyCombo) -> Option<&RegisteredBinding> {
+        let combo = normalize_key_combo(combo);
+        self.direct.get(&combo).or_else(|| self.prefix.get(&combo))
+    }
+}
+
+struct SequenceRegistry {
+    entries: Vec<(Vec<KeyCombo>, RegisteredBinding)>,
+}
+
+impl SequenceRegistry {
+    fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    fn reject(
+        &mut self,
+        field: &str,
+        binding: &ResolvedBinding,
+        registry: &BindingRegistry,
+        navigate_registry: &BindingRegistry,
+        diagnostics: &mut Vec<String>,
+        source: BindingSource,
+    ) -> bool {
+        let combos = binding.sequence_combos();
+        let head = binding.trigger.combo();
+
+        if let Some(existing) = registry
+            .head_is_taken(head)
+            .or_else(|| navigate_registry.head_is_taken(head))
+        {
+            if source == BindingSource::Default && existing.source == BindingSource::User {
+                return true;
+            }
+            let existing_field = &existing.field;
+            let diag = format!("{}: kept {existing_field}, disabled {field}", binding.label);
+            warn!(message = %diag, "config diagnostic");
+            diagnostics.push(diag);
+            return true;
+        }
+
+        for (existing_combos, existing) in &self.entries {
+            let overlaps =
+                existing_combos.starts_with(&combos) || combos.starts_with(existing_combos);
+            if !overlaps {
+                continue;
+            }
+            if source == BindingSource::Default && existing.source == BindingSource::User {
+                return true;
+            }
+            let existing_field = &existing.field;
+            let diag = format!("{}: kept {existing_field}, disabled {field}", binding.label);
+            warn!(message = %diag, "config diagnostic");
+            diagnostics.push(diag);
+            return true;
+        }
+
+        self.entries.push((
+            combos,
+            RegisteredBinding {
+                field: field.to_string(),
+                source,
+            },
+        ));
+        false
     }
 }
 
@@ -758,6 +826,106 @@ impl Config {
             }
         }
 
+        let mut sequence_registry = SequenceRegistry::new();
+        let mut retain_sequences = |field: &str, action: &mut ActionKeybinds| {
+            let mut kept = Vec::with_capacity(action.bindings.len());
+            for binding in std::mem::take(&mut action.bindings) {
+                if binding.trigger.is_sequence()
+                    && sequence_registry.reject(
+                        field,
+                        &binding,
+                        &registry,
+                        &navigate_registry,
+                        &mut diagnostics,
+                        BindingSource::User,
+                    )
+                {
+                    continue;
+                }
+                kept.push(binding);
+            }
+            action.bindings = kept;
+        };
+
+        retain_sequences(
+            "keys.navigate_workspace_up",
+            &mut keybinds.navigate.workspace_up,
+        );
+        retain_sequences(
+            "keys.navigate_workspace_down",
+            &mut keybinds.navigate.workspace_down,
+        );
+        retain_sequences("keys.navigate_pane_left", &mut keybinds.navigate.pane_left);
+        retain_sequences("keys.navigate_pane_down", &mut keybinds.navigate.pane_down);
+        retain_sequences("keys.navigate_pane_up", &mut keybinds.navigate.pane_up);
+        retain_sequences(
+            "keys.navigate_pane_right",
+            &mut keybinds.navigate.pane_right,
+        );
+        retain_sequences("keys.enter_insert", &mut keybinds.enter_insert);
+        retain_sequences("keys.help", &mut keybinds.help);
+        retain_sequences("keys.settings", &mut keybinds.settings);
+        retain_sequences("keys.new_workspace", &mut keybinds.new_workspace);
+        retain_sequences("keys.new_worktree", &mut keybinds.new_worktree);
+        retain_sequences("keys.open_worktree", &mut keybinds.open_worktree);
+        retain_sequences("keys.remove_worktree", &mut keybinds.remove_worktree);
+        retain_sequences("keys.rename_workspace", &mut keybinds.rename_workspace);
+        retain_sequences("keys.close_workspace", &mut keybinds.close_workspace);
+        retain_sequences("keys.workspace_picker", &mut keybinds.workspace_picker);
+        retain_sequences("keys.goto", &mut keybinds.goto);
+        retain_sequences("keys.detach", &mut keybinds.detach);
+        retain_sequences("keys.reload_config", &mut keybinds.reload_config);
+        retain_sequences(
+            "keys.open_notification_target",
+            &mut keybinds.open_notification_target,
+        );
+        retain_sequences("keys.previous_workspace", &mut keybinds.previous_workspace);
+        retain_sequences("keys.next_workspace", &mut keybinds.next_workspace);
+        retain_sequences("keys.previous_agent", &mut keybinds.previous_agent);
+        retain_sequences("keys.next_agent", &mut keybinds.next_agent);
+        retain_sequences("keys.new_tab", &mut keybinds.new_tab);
+        retain_sequences("keys.rename_tab", &mut keybinds.rename_tab);
+        retain_sequences("keys.previous_tab", &mut keybinds.previous_tab);
+        retain_sequences("keys.next_tab", &mut keybinds.next_tab);
+        retain_sequences("keys.close_tab", &mut keybinds.close_tab);
+        retain_sequences("keys.rename_pane", &mut keybinds.rename_pane);
+        retain_sequences("keys.edit_scrollback", &mut keybinds.edit_scrollback);
+        retain_sequences("keys.copy_mode", &mut keybinds.copy_mode);
+        retain_sequences("keys.focus_pane_left", &mut keybinds.focus_pane_left);
+        retain_sequences("keys.focus_pane_down", &mut keybinds.focus_pane_down);
+        retain_sequences("keys.focus_pane_up", &mut keybinds.focus_pane_up);
+        retain_sequences("keys.focus_pane_right", &mut keybinds.focus_pane_right);
+        retain_sequences("keys.swap_pane_left", &mut keybinds.swap_pane_left);
+        retain_sequences("keys.swap_pane_down", &mut keybinds.swap_pane_down);
+        retain_sequences("keys.swap_pane_up", &mut keybinds.swap_pane_up);
+        retain_sequences("keys.swap_pane_right", &mut keybinds.swap_pane_right);
+        retain_sequences("keys.cycle_pane_next", &mut keybinds.cycle_pane_next);
+        retain_sequences(
+            "keys.cycle_pane_previous",
+            &mut keybinds.cycle_pane_previous,
+        );
+        retain_sequences("keys.last_pane", &mut keybinds.last_pane);
+        retain_sequences("keys.split_vertical", &mut keybinds.split_vertical);
+        retain_sequences("keys.split_horizontal", &mut keybinds.split_horizontal);
+        retain_sequences("keys.arrangement_next", &mut keybinds.arrangement_next);
+        retain_sequences(
+            "keys.arrangement_previous",
+            &mut keybinds.arrangement_previous,
+        );
+        retain_sequences("keys.new_pane", &mut keybinds.new_pane);
+        retain_sequences("keys.close_pane", &mut keybinds.close_pane);
+        retain_sequences("keys.zoom", &mut keybinds.zoom);
+        retain_sequences("keys.new_float", &mut keybinds.new_float);
+        retain_sequences("keys.toggle_float", &mut keybinds.toggle_float);
+        retain_sequences("keys.toggle_floats", &mut keybinds.toggle_floats);
+        retain_sequences("keys.resize_mode", &mut keybinds.resize_mode);
+        retain_sequences("keys.toggle_sidebar", &mut keybinds.toggle_sidebar);
+
+        for (index, command) in keybinds.custom_commands.iter_mut().enumerate() {
+            let field = format!("keys.command[{index}].key");
+            retain_sequences(&field, &mut command.bindings);
+        }
+
         (prefix_diag, prefix, diagnostics, keybinds)
     }
 }
@@ -1035,6 +1203,13 @@ fn reject_navigate_binding(
     diagnostics: &mut Vec<String>,
     source: BindingSource,
 ) -> bool {
+    if binding.trigger.is_sequence() {
+        // Sequences are validated in a second pass, once both registries are
+        // populated, because a sequence head has to be checked against normal-mode
+        // keys that come from both.
+        return false;
+    }
+
     if binding.trigger.is_prefix() {
         let diag = format!(
             "navigate keybinding must not include prefix: {field} = {:?}; disabling binding",
@@ -1076,6 +1251,13 @@ fn reject_binding(
     diagnostics: &mut Vec<String>,
     source: BindingSource,
 ) -> bool {
+    if binding.trigger.is_sequence() {
+        // Sequences are validated in a second pass, once both registries are
+        // populated, because a sequence head has to be checked against normal-mode
+        // keys that come from both.
+        return false;
+    }
+
     if binding.trigger.is_prefix() && registry.prefix_rhs_is_reserved(binding.trigger.combo()) {
         if source == BindingSource::Default && registry.prefix_source == BindingSource::User {
             return true;
@@ -2513,5 +2695,109 @@ width = "80%"
             .collect_diagnostics()
             .iter()
             .any(|diag| diag.contains("popup size on non-popup custom command")));
+    }
+
+    #[test]
+    fn sequence_rejected_when_it_prefixes_another_sequence() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+modal = true
+new_workspace = "leader w"
+new_tab = "leader w n"
+"#,
+        )
+        .unwrap();
+        let keybinds = config.keybinds();
+        assert_eq!(
+            keybinds.new_workspace.labels(),
+            vec!["leader w".to_string()]
+        );
+        assert!(keybinds
+            .new_tab
+            .bindings
+            .iter()
+            .all(|b| !b.trigger.is_sequence()));
+    }
+
+    #[test]
+    fn sequence_rejected_when_head_collides_with_normal_mode_key() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+modal = true
+new_workspace = "h j"
+"#,
+        )
+        .unwrap();
+        let keybinds = config.keybinds();
+        // `h` already focuses the pane to the left in normal mode.
+        assert!(keybinds
+            .new_workspace
+            .bindings
+            .iter()
+            .all(|b| !b.trigger.is_sequence()));
+    }
+
+    #[test]
+    fn sequence_head_may_be_a_freed_key() {
+        // `goto` defaults to "prefix+g", which makes bare `g` act in normal mode, so
+        // it has to be unbound before `g` can head a sequence.
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+modal = true
+goto = ""
+next_tab = "g t"
+previous_tab = "g shift+t"
+"#,
+        )
+        .unwrap();
+        let keybinds = config.keybinds();
+        assert_eq!(keybinds.next_tab.labels(), vec!["g t".to_string()]);
+        assert_eq!(
+            keybinds.previous_tab.labels(),
+            vec!["g shift+t".to_string()]
+        );
+    }
+
+    #[test]
+    fn sequence_head_rejected_when_a_prefix_binding_claims_it() {
+        // `goto` is left at its "prefix+g" default here, so `g` is taken.
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+modal = true
+next_tab = "g t"
+"#,
+        )
+        .unwrap();
+        let keybinds = config.keybinds();
+        assert!(keybinds
+            .next_tab
+            .bindings
+            .iter()
+            .all(|b| !b.trigger.is_sequence()));
+    }
+
+    #[test]
+    fn sequence_conflict_diagnostic_names_both_fields() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+modal = true
+new_workspace = "leader w"
+new_tab = "leader w n"
+"#,
+        )
+        .unwrap();
+        let diagnostics = config.collect_diagnostics();
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diag| diag.contains("kept keys.new_workspace")
+                    && diag.contains("disabled keys.new_tab")),
+            "diagnostics: {diagnostics:?}"
+        );
     }
 }
