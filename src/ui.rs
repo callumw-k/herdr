@@ -962,8 +962,9 @@ mod tests {
         let one_tab_size = app.workspaces[0].tabs[0].runtimes[&one_tab_pane].current_size();
         let two_tab_size =
             app.workspaces[1].tabs[background_tab].runtimes[&two_tab_pane].current_size();
-        assert_eq!(one_tab_size, (20, 53));
-        assert_eq!(two_tab_size, (19, 53));
+        // Each lone pane gives a row to its title strip.
+        assert_eq!(one_tab_size, (19, 53));
+        assert_eq!(two_tab_size, (18, 53));
     }
 
     #[tokio::test]
@@ -989,7 +990,7 @@ mod tests {
         assert_eq!(app.view.terminal_area, Rect::new(0, 2, 44, 18));
         assert_eq!(
             app.workspaces[0].tabs[background_tab].runtimes[&background_pane].current_size(),
-            (18, 43)
+            (17, 43)
         );
     }
 

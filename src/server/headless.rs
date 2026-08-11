@@ -8412,8 +8412,9 @@ next_tab = ""
         assert!(!mobile_surface.contains("background"));
 
         let foreground_terminal_area = Rect::new(26, 1, 94, 39);
+        // Height loses the lone pane's title strip, width the scrollbar gutter.
         let expected_pane_size = (
-            foreground_terminal_area.height,
+            foreground_terminal_area.height.saturating_sub(1),
             foreground_terminal_area.width.saturating_sub(1),
         );
         assert_eq!(
@@ -8473,7 +8474,11 @@ next_tab = ""
         server.resize_shared_runtime_to_effective_size();
 
         let terminal_area = server.app.state.view.terminal_area;
-        let expected = (terminal_area.height, terminal_area.width.saturating_sub(1));
+        // Height loses the lone pane's title strip, width the scrollbar gutter.
+        let expected = (
+            terminal_area.height.saturating_sub(1),
+            terminal_area.width.saturating_sub(1),
+        );
         assert_eq!(
             server
                 .app

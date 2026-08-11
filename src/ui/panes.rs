@@ -106,6 +106,11 @@ fn shrink_for_one_cell_gap(size: u16) -> u16 {
     }
 }
 
+/// A lone pane has no split borders to hang its name on, so it keeps a one-row
+/// strip across the top for the title. Both the resize and the render path read
+/// this: they must agree, or the PTY is sized to a box the pane never gets.
+pub(crate) const LONE_PANE_BORDERS: Borders = Borders::TOP;
+
 pub(crate) fn apply_pane_chrome(
     panes: Vec<PaneInfo>,
     pane_borders: bool,
@@ -141,8 +146,10 @@ pub(crate) fn apply_pane_chrome(
                 }
             }
 
-            info.borders = if !multi_pane || !pane_borders {
+            info.borders = if !pane_borders {
                 Borders::NONE
+            } else if !multi_pane {
+                LONE_PANE_BORDERS
             } else {
                 let mut borders = Borders::ALL;
                 if !pane_gaps {
@@ -227,6 +234,8 @@ pub(super) fn resize_tab_panes(
         if let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, focused_id) {
             let borders = if multi_pane && app.pane_borders && app.pane_outer_borders {
                 Borders::ALL
+            } else if !multi_pane && app.pane_borders {
+                LONE_PANE_BORDERS
             } else {
                 Borders::NONE
             };
@@ -287,6 +296,8 @@ pub(super) fn compute_pane_infos(
         let focused_id = ws.layout.focused();
         let borders = if multi_pane && app.pane_borders && app.pane_outer_borders {
             Borders::ALL
+        } else if !multi_pane && app.pane_borders {
+            LONE_PANE_BORDERS
         } else {
             Borders::NONE
         };
@@ -988,7 +999,7 @@ fn render_pane_border_titles(
         let Some(title) = ws
             .pane_state(info.id)
             .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders))
+            .and_then(|terminal| terminal.pane_label(app.show_agent_labels_on_pane_borders))
             .and_then(|label| pane_border_title(&label, info.rect.width, info.is_focused))
         else {
             continue;
@@ -1805,7 +1816,8 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
+        // One row goes to the lone pane's title strip.
+        assert_eq!(info.inner_rect, Rect::new(10, 4, 39, 7));
     }
 
     #[tokio::test]
@@ -1834,7 +1846,8 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
+        // One row goes to the lone pane's title strip.
+        assert_eq!(info.inner_rect, Rect::new(10, 4, 39, 7));
     }
 
     #[tokio::test]
@@ -1892,7 +1905,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, area);
+        assert_eq!(info.inner_rect, pane_inner_rect(area, LONE_PANE_BORDERS));
     }
 
     #[tokio::test]
@@ -1924,8 +1937,8 @@ mod tests {
         let info = &infos[0];
 
         assert_eq!(info.rect, area);
-        assert_eq!(info.scrollbar_rect, Some(Rect::new(49, 3, 1, 8)));
-        assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
+        assert_eq!(info.scrollbar_rect, Some(Rect::new(49, 4, 1, 7)));
+        assert_eq!(info.inner_rect, Rect::new(10, 4, 39, 7));
 
         app.pane_scrollbars = false;
         let infos = compute_pane_infos(
@@ -1939,7 +1952,56 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, area);
+        assert_eq!(info.inner_rect, pane_inner_rect(area, LONE_PANE_BORDERS));
+    }
+
+    #[tokio::test]
+    async fn a_lone_pane_keeps_a_title_strip_naming_its_agent_task() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        let area = Rect::new(0, 0, 40, 12);
+        app.view.terminal_area = area;
+
+        let mut ws = Workspace::test_new("test");
+        let root_pane = ws.tabs[0].root_pane;
+        ws.tabs[0].runtimes.insert(
+            root_pane,
+            TerminalRuntime::test_with_scrollback_bytes(40, 11, 1024, b""),
+        );
+        let terminal_id = ws.terminal_id(root_pane).cloned().expect("terminal id");
+        let mut terminal_state = TerminalState::new(terminal_id.clone(), "/home/user/herdr".into());
+        terminal_state.set_detected_state(
+            Some(crate::detect::Agent::Claude),
+            crate::detect::AgentState::Working,
+        );
+        terminal_state.set_terminal_title(Some("✳ Wiring the title strip".into()));
+        app.terminals.insert(terminal_id, terminal_state);
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let pane_infos = compute_pane_infos(
+            &app,
+            &terminal_runtimes,
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let info = &pane_infos[0];
+        assert_eq!(info.borders, LONE_PANE_BORDERS);
+        assert_eq!(info.inner_rect.y, area.y + 1);
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|frame| render_panes(&app, &terminal_runtimes, frame, &pane_infos, &[], &[]))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let row: String = (area.x..area.x + area.width)
+            .map(|x| buffer[(x, area.y)].symbol())
+            .collect();
+        assert!(row.contains("Wiring the title strip"), "top row: {row:?}");
     }
 
     #[tokio::test]

@@ -304,7 +304,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Ask for a workspace name before interactive creation.
 # prompt_new_workspace_name = false
 
-# Draw borders around split panes.
+# Draw borders around split panes, and a one-row title strip above a lone pane
+# so its name is visible without splitting.
 # pane_borders = true
 
 # Draw borders along the outside edge of the pane area.
