@@ -1,8 +1,9 @@
-use ratatui::{layout::Rect, style::Style, widgets::Clear, Frame};
+use ratatui::{layout::Rect, Frame};
 
 use crate::app::state::{AppState, NavigatorRow, NavigatorTarget};
 use crate::layout::PaneId;
 use crate::terminal::TerminalRuntimeRegistry;
+use crate::ui::widgets::render_panel_shell;
 
 /// Draw the selected row's pane into `area`. The pane keeps its real size and
 /// is corner-cropped by `TerminalRuntime::render`, which stops at the rect's
@@ -15,14 +16,13 @@ pub(super) fn render_preview(
     frame: &mut Frame,
     area: Rect,
 ) {
-    if area.width == 0 || area.height == 0 {
+    // `surface_dim`, not the overlay's `accent`, so the preview reads as nested
+    // inside the navigator frame rather than competing with it.
+    let Some(inner) =
+        render_panel_shell(frame, area, app.palette.surface_dim, app.palette.panel_bg)
+    else {
         return;
-    }
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        ratatui::widgets::Block::default().style(Style::default().bg(app.palette.panel_bg)),
-        area,
-    );
+    };
 
     let Some(target) = rows
         .get(app.navigator.selected)
@@ -37,7 +37,7 @@ pub(super) fn render_preview(
     else {
         return;
     };
-    runtime.render(frame, area, false);
+    runtime.render(frame, inner, false);
 }
 
 /// A pane row previews itself; tab and workspace rows preview their focused

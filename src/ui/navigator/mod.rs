@@ -722,6 +722,11 @@ mod tests {
         let preview = app.navigator_preview_rect();
         assert!(preview.width > 0, "expected a preview column at this width");
         let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(preview.x, preview.y)].symbol(),
+            "┌",
+            "preview should be framed"
+        );
         let content: String = (preview.y..preview.y + preview.height)
             .flat_map(|y| (preview.x..preview.x + preview.width).map(move |x| (x, y)))
             .map(|(x, y)| buffer[(x, y)].symbol())
