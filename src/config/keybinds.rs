@@ -339,7 +339,8 @@ pub struct NavigateKeybinds {
 #[derive(Debug, Clone)]
 pub struct Keybinds {
     pub navigate: NavigateKeybinds,
-    /// Modal input enabled. When true, normal mode is sticky and exits only via `enter_insert`.
+    /// Modal input enabled. When true, normal mode is sticky and exits via `enter_insert`,
+    /// esc, or the prefix key.
     pub modal: bool,
     /// Leader combo, usable as the first step of a sequence binding.
     pub leader: KeyCombo,
@@ -456,7 +457,8 @@ impl BindingRegistry {
         match binding.trigger {
             BindingTrigger::Direct(combo) => self.direct.get(&normalize_key_combo(combo)),
             BindingTrigger::Prefix(combo) => self.prefix.get(&normalize_key_combo(combo)),
-            // Sequence conflict detection is added in Task 3.
+            // Sequences are checked by `SequenceRegistry` in a later pass, once both
+            // registries are populated.
             BindingTrigger::Sequence(_) => None,
         }
     }
@@ -473,7 +475,8 @@ impl BindingRegistry {
             BindingTrigger::Prefix(combo) => {
                 self.prefix.insert(normalize_key_combo(combo), registered());
             }
-            // Sequence registration is added in Task 3.
+            // Sequences live in `SequenceRegistry`; filing a head here would make it
+            // look like a bound single key.
             BindingTrigger::Sequence(_) => {}
         }
     }
@@ -549,6 +552,24 @@ fn record_conflict(
     warn!(message = %diag, "config diagnostic");
     diagnostics.push(diag);
     true
+}
+
+/// Drops sequence bindings on fields that only ever dispatch as a single key.
+/// `handle_navigate_key` resolves these before the sequence matcher runs, so a sequence
+/// here would be accepted and then never fire.
+fn drop_sequence_bindings(field: &str, action: &mut ActionKeybinds, diagnostics: &mut Vec<String>) {
+    action.bindings.retain(|binding| {
+        if !binding.trigger.is_sequence() {
+            return true;
+        }
+        let diag = format!(
+            "sequence keybinding is not supported by {field}: {:?}; disabling binding",
+            binding.label
+        );
+        warn!(message = %diag, "config diagnostic");
+        diagnostics.push(diag);
+        false
+    });
 }
 
 impl Config {
@@ -844,6 +865,27 @@ impl Config {
             }
         }
 
+        for (field, action) in [
+            (
+                "keys.navigate_workspace_up",
+                &mut keybinds.navigate.workspace_up,
+            ),
+            (
+                "keys.navigate_workspace_down",
+                &mut keybinds.navigate.workspace_down,
+            ),
+            ("keys.navigate_pane_left", &mut keybinds.navigate.pane_left),
+            ("keys.navigate_pane_down", &mut keybinds.navigate.pane_down),
+            ("keys.navigate_pane_up", &mut keybinds.navigate.pane_up),
+            (
+                "keys.navigate_pane_right",
+                &mut keybinds.navigate.pane_right,
+            ),
+            ("keys.enter_insert", &mut keybinds.enter_insert),
+        ] {
+            drop_sequence_bindings(field, action, &mut diagnostics);
+        }
+
         let modal = self.keys.modal;
         let mut sequence_registry = SequenceRegistry::new();
         let mut retain_sequences = |field: &str, action: &mut ActionKeybinds| {
@@ -875,22 +917,6 @@ impl Config {
             action.bindings = kept;
         };
 
-        retain_sequences(
-            "keys.navigate_workspace_up",
-            &mut keybinds.navigate.workspace_up,
-        );
-        retain_sequences(
-            "keys.navigate_workspace_down",
-            &mut keybinds.navigate.workspace_down,
-        );
-        retain_sequences("keys.navigate_pane_left", &mut keybinds.navigate.pane_left);
-        retain_sequences("keys.navigate_pane_down", &mut keybinds.navigate.pane_down);
-        retain_sequences("keys.navigate_pane_up", &mut keybinds.navigate.pane_up);
-        retain_sequences(
-            "keys.navigate_pane_right",
-            &mut keybinds.navigate.pane_right,
-        );
-        retain_sequences("keys.enter_insert", &mut keybinds.enter_insert);
         retain_sequences("keys.help", &mut keybinds.help);
         retain_sequences("keys.settings", &mut keybinds.settings);
         retain_sequences("keys.new_workspace", &mut keybinds.new_workspace);
@@ -2825,6 +2851,40 @@ new_tab = "leader w n"
                 .iter()
                 .any(|diag| diag.contains("kept keys.new_workspace")
                     && diag.contains("disabled keys.new_tab")),
+            "diagnostics: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn sequence_rejected_on_fields_that_dispatch_single_keys_only() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+modal = true
+enter_insert = "leader i"
+navigate_pane_left = "g h"
+"#,
+        )
+        .unwrap();
+        let diagnostics = config.collect_diagnostics();
+        let keybinds = config.keybinds();
+        assert!(keybinds.enter_insert.bindings.is_empty());
+        assert!(keybinds
+            .navigate
+            .pane_left
+            .bindings
+            .iter()
+            .all(|b| !b.trigger.is_sequence()));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diag| diag
+                    .contains("sequence keybinding is not supported by keys.enter_insert")),
+            "diagnostics: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics.iter().any(|diag| diag
+                .contains("sequence keybinding is not supported by keys.navigate_pane_left")),
             "diagnostics: {diagnostics:?}"
         );
     }
