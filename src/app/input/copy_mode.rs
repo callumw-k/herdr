@@ -1294,6 +1294,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn copy_mode_navigate_escape_returns_to_copy_mode_when_modal_is_off() {
+        // Navigate mode's escape is shared with the modal path via exit_to_insert_mode,
+        // so a non-modal trip through Navigate has to land on Copy the same way, not on
+        // the hardcoded Terminal the shared function used to assume.
+        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
+        app.state.keybinds.modal = false;
+        app.state.enter_copy_mode(&app.terminal_runtimes);
+        let copy_mode = app.state.copy_mode.as_ref().expect("copy mode").clone();
+        app.state.mode = Mode::Navigate;
+
+        app.handle_key(TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+
+        assert_eq!(app.state.mode, Mode::Copy);
+        assert_eq!(app.state.copy_mode, Some(copy_mode));
+    }
+
+    #[tokio::test]
     async fn copy_mode_prefix_focus_keeps_copy_mode_on_source_pane() {
         let (mut app, first_pane, second_pane) = app_with_split_copy_screen(b"alpha\nbeta\n");
         app.state.enter_copy_mode(&app.terminal_runtimes);
