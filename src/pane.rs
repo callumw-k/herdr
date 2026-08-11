@@ -274,6 +274,16 @@ fn usable_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
     absolute_process_cwd(pid).filter(|cwd| cwd.is_dir())
 }
 
+/// The pane shell's own directory, read only while the shell is the foreground
+/// process. Restricting it to an idle prompt makes a polled report mean the
+/// same thing as an OSC 7 one, which shells emit when they draw the prompt.
+#[cfg(unix)]
+fn polled_shell_cwd(pid: u32, foreground_pgid: Option<u32>) -> Option<std::path::PathBuf> {
+    (pid > 0 && foreground_pgid == Some(pid))
+        .then(|| usable_process_cwd(pid))
+        .flatten()
+}
+
 #[cfg(unix)]
 fn foreground_member_cwd_different_from_shell(
     shell_pid: u32,
@@ -664,6 +674,7 @@ fn spawn_basic_detection_task(
     detection_content_seq: Arc<AtomicU64>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     state_events: mpsc::Sender<AppEvent>,
+    reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
 ) -> (
     tokio::task::AbortHandle,
     Arc<Notify>,
@@ -744,6 +755,14 @@ fn spawn_basic_detection_task(
                 .flatten();
             let process_group_changed =
                 foreground_group_changed(foreground_pgid, last_foreground_pgid);
+            // Shells without OSC 7, bash being the common one, never report
+            // their directory. Polling covers them; publish_reported_cwd
+            // dedupes, so a shell that does emit OSC 7 gets here first and this
+            // costs nothing.
+            #[cfg(unix)]
+            if let Some(cwd) = polled_shell_cwd(pid, foreground_pgid) {
+                publish_reported_cwd(pane_id, cwd, &reported_cwd, &state_events);
+            }
             let should_check_process = pid > 0 && {
                 let process_probe_input = ProcessProbeInput {
                     current_agent: agent,
@@ -1980,6 +1999,7 @@ impl PaneRuntime {
             detection_content_seq.clone(),
             full_lifecycle_authority_active.clone(),
             events,
+            reported_cwd.clone(),
         );
 
         Ok(Self {
@@ -2155,6 +2175,8 @@ impl PaneRuntime {
             let detect_reset = detect_reset_notify.clone();
             let pending_release = Arc::new(Mutex::new(None));
             let pending_release_for_task = pending_release.clone();
+            #[cfg(unix)]
+            let reported_cwd_for_detection = reported_cwd.clone();
 
             let handle = tokio::spawn(async move {
                 let mut agent_presence =
@@ -2237,6 +2259,19 @@ impl PaneRuntime {
                         .flatten();
                     let process_group_changed =
                         foreground_group_changed(foreground_pgid, last_foreground_pgid);
+                    // Shells without OSC 7, bash being the common one, never
+                    // report their directory. Polling covers them;
+                    // publish_reported_cwd dedupes, so a shell that does emit
+                    // OSC 7 gets here first and this costs nothing.
+                    #[cfg(unix)]
+                    if let Some(cwd) = polled_shell_cwd(pid, foreground_pgid) {
+                        publish_reported_cwd(
+                            pane_id,
+                            cwd,
+                            &reported_cwd_for_detection,
+                            &state_events,
+                        );
+                    }
                     let should_check_process = pid > 0 && {
                         let process_probe_input = ProcessProbeInput {
                             current_agent: agent,
@@ -3173,6 +3208,32 @@ mod tests {
             return;
         }
         assert_eq!(observed, Some(expected_cwd));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn polled_shell_cwd_reads_the_shell_at_an_idle_prompt() {
+        let pid = std::process::id();
+
+        assert_eq!(
+            polled_shell_cwd(pid, Some(pid)),
+            std::env::current_dir().ok(),
+            "the shell being its own foreground group is an idle prompt"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn polled_shell_cwd_stays_quiet_while_something_runs_in_the_foreground() {
+        let pid = std::process::id();
+
+        assert_eq!(
+            polled_shell_cwd(pid, Some(pid.wrapping_add(1))),
+            None,
+            "another foreground group means a process is running, not a prompt"
+        );
+        assert_eq!(polled_shell_cwd(pid, None), None);
+        assert_eq!(polled_shell_cwd(0, Some(0)), None, "no child pid yet");
     }
 
     #[cfg(unix)]
