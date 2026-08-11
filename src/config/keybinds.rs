@@ -56,7 +56,7 @@ impl BindingConfig {
             if raw.is_empty() {
                 continue;
             }
-            match parse_binding_string(raw) {
+            match parse_binding_string(raw, None) {
                 Some(ParsedBinding::Single(binding)) => {
                     if matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9')) {
                         labels.push(binding.label);
@@ -128,12 +128,14 @@ pub enum CustomCommandAction {
 pub enum BindingTrigger {
     Direct(KeyCombo),
     Prefix(KeyCombo),
+    /// First combo of a multi-key sequence. The remaining combos live in `ResolvedBinding::tail`.
+    Sequence(KeyCombo),
 }
 
 impl BindingTrigger {
     pub fn combo(self) -> KeyCombo {
         match self {
-            Self::Direct(combo) | Self::Prefix(combo) => combo,
+            Self::Direct(combo) | Self::Prefix(combo) | Self::Sequence(combo) => combo,
         }
     }
 
@@ -144,12 +146,19 @@ impl BindingTrigger {
     pub fn is_prefix(self) -> bool {
         matches!(self, Self::Prefix(_))
     }
+
+    #[allow(dead_code)] // read starting in a later modal-input task
+    pub fn is_sequence(self) -> bool {
+        matches!(self, Self::Sequence(_))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedBinding {
     pub trigger: BindingTrigger,
     pub label: String,
+    /// Combos after the first for a sequence binding. Empty for `Direct` and `Prefix`.
+    pub tail: Vec<KeyCombo>,
 }
 
 impl ResolvedBinding {
@@ -160,6 +169,13 @@ impl ResolvedBinding {
 
     fn matches_terminal_key(&self, key: &TerminalKey) -> bool {
         terminal_key_matches_combo(key, self.trigger.combo())
+    }
+
+    #[allow(dead_code)] // read starting in a later modal-input task
+    pub fn sequence_combos(&self) -> Vec<KeyCombo> {
+        let mut combos = vec![normalize_key_combo(self.trigger.combo())];
+        combos.extend(self.tail.iter().copied().map(normalize_key_combo));
+        combos
     }
 }
 
@@ -176,7 +192,7 @@ impl ActionKeybinds {
         } else {
             format!("prefix+{label}")
         };
-        let trigger = parse_binding_string(&raw)
+        let trigger = parse_binding_string(&raw, None)
             .and_then(|parsed| match parsed {
                 ParsedBinding::Single(binding) => Some(binding),
                 ParsedBinding::Range(_) => None,
@@ -189,7 +205,7 @@ impl ActionKeybinds {
 
     #[cfg(test)]
     pub fn direct(label: &str) -> Self {
-        let trigger = parse_binding_string(label)
+        let trigger = parse_binding_string(label, None)
             .and_then(|parsed| match parsed {
                 ParsedBinding::Single(binding) => Some(binding),
                 ParsedBinding::Range(_) => None,
@@ -424,6 +440,8 @@ impl BindingRegistry {
         match binding.trigger {
             BindingTrigger::Direct(combo) => self.direct.get(&normalize_key_combo(combo)),
             BindingTrigger::Prefix(combo) => self.prefix.get(&normalize_key_combo(combo)),
+            // Sequence conflict detection is added in Task 3.
+            BindingTrigger::Sequence(_) => None,
         }
     }
 
@@ -439,6 +457,8 @@ impl BindingRegistry {
             BindingTrigger::Prefix(combo) => {
                 self.prefix.insert(normalize_key_combo(combo), registered());
             }
+            // Sequence registration is added in Task 3.
+            BindingTrigger::Sequence(_) => {}
         }
     }
 }
@@ -548,6 +568,7 @@ impl Config {
             diagnostics.push(diag);
         }
         keybinds.leader = leader;
+        let leader = Some(keybinds.leader);
 
         macro_rules! field_source {
             ($field:ident) => {
@@ -567,6 +588,7 @@ impl Config {
                         &mut registry,
                         &mut diagnostics,
                         $source,
+                        leader,
                     );
                 }
             };
@@ -589,6 +611,7 @@ impl Config {
                             &mut registry,
                             &mut diagnostics,
                             $source,
+                            leader,
                         );
                     }
                 }
@@ -603,6 +626,7 @@ impl Config {
                         &mut navigate_registry,
                         &mut diagnostics,
                         $source,
+                        leader,
                     );
                 }
             };
@@ -781,6 +805,7 @@ fn append_custom_command_bindings(
             registry,
             diagnostics,
             BindingSource::User,
+            Some(keybinds.leader),
         );
         if bindings.bindings.is_empty() {
             continue;
@@ -823,6 +848,7 @@ fn parse_action_bindings(
     registry: &mut BindingRegistry,
     diagnostics: &mut Vec<String>,
     source: BindingSource,
+    leader: Option<KeyCombo>,
 ) -> ActionKeybinds {
     let mut bindings = Vec::new();
     for raw in config.values() {
@@ -830,7 +856,7 @@ fn parse_action_bindings(
         if raw.is_empty() {
             continue;
         }
-        match parse_binding_string(raw) {
+        match parse_binding_string(raw, leader) {
             Some(ParsedBinding::Single(binding)) => {
                 if reject_binding(field, &binding, registry, diagnostics, source) {
                     continue;
@@ -859,6 +885,7 @@ fn parse_navigate_bindings(
     registry: &mut BindingRegistry,
     diagnostics: &mut Vec<String>,
     source: BindingSource,
+    leader: Option<KeyCombo>,
 ) -> ActionKeybinds {
     let mut bindings = Vec::new();
     for raw in config.values() {
@@ -866,7 +893,7 @@ fn parse_navigate_bindings(
         if raw.is_empty() {
             continue;
         }
-        match parse_binding_string(raw) {
+        match parse_binding_string(raw, leader) {
             Some(ParsedBinding::Single(binding)) => {
                 if reject_navigate_binding(field, &binding, registry, diagnostics, source) {
                     continue;
@@ -895,6 +922,7 @@ fn parse_indexed_bindings(
     registry: &mut BindingRegistry,
     diagnostics: &mut Vec<String>,
     source: BindingSource,
+    leader: Option<KeyCombo>,
 ) -> Vec<IndexedKeybind> {
     let mut bindings = Vec::new();
     for raw in config.values() {
@@ -902,7 +930,7 @@ fn parse_indexed_bindings(
         if raw.is_empty() {
             continue;
         }
-        match parse_binding_string(raw) {
+        match parse_binding_string(raw, leader) {
             Some(ParsedBinding::Single(binding)) => {
                 push_indexed_binding(field, binding, registry, diagnostics, source, &mut bindings);
             }
@@ -983,6 +1011,7 @@ fn append_legacy_indexed_bindings(
         let binding = ResolvedBinding {
             trigger: BindingTrigger::Direct(combo),
             label: format!("{}+{idx}", configured_label.trim()),
+            tail: Vec::new(),
         };
         if reject_binding(field, &binding, registry, diagnostics, source) {
             continue;
@@ -1081,8 +1110,13 @@ fn reject_binding(
     false
 }
 
-fn parse_binding_string(raw: &str) -> Option<ParsedBinding> {
+fn parse_binding_string(raw: &str, leader: Option<KeyCombo>) -> Option<ParsedBinding> {
     let trimmed = raw.trim();
+
+    if trimmed.split_whitespace().count() > 1 {
+        return parse_sequence_binding(trimmed, leader);
+    }
+
     let (trigger_prefix, body) = if let Some(rest) = trimmed.strip_prefix("prefix+") {
         (true, rest)
     } else {
@@ -1108,6 +1142,7 @@ fn parse_binding_string(raw: &str) -> Option<ParsedBinding> {
                     } else {
                         key_label
                     },
+                    tail: Vec::new(),
                 }
             })
             .collect();
@@ -1127,6 +1162,36 @@ fn parse_binding_string(raw: &str) -> Option<ParsedBinding> {
             BindingTrigger::Direct(combo)
         },
         label,
+        tail: Vec::new(),
+    }))
+}
+
+fn parse_sequence_binding(trimmed: &str, leader: Option<KeyCombo>) -> Option<ParsedBinding> {
+    if trimmed.starts_with("prefix+") {
+        return None;
+    }
+
+    let mut combos = Vec::new();
+    for token in trimmed.split_whitespace() {
+        let combo = if token == "leader" {
+            leader?
+        } else {
+            parse_key_combo(token)?
+        };
+        combos.push(combo);
+    }
+
+    let mut combos = combos.into_iter();
+    let head = combos.next()?;
+    let tail: Vec<KeyCombo> = combos.collect();
+    if tail.is_empty() {
+        return None;
+    }
+
+    Some(ParsedBinding::Single(ResolvedBinding {
+        trigger: BindingTrigger::Sequence(head),
+        label: trimmed.to_string(),
+        tail,
     }))
 }
 
@@ -1507,6 +1572,63 @@ mod tests {
             .iter()
             .map(|binding| binding.trigger)
             .collect()
+    }
+
+    #[test]
+    fn sequence_binding_parses_head_and_tail() {
+        let leader = Some((KeyCode::Char(' '), KeyModifiers::empty()));
+        let Some(ParsedBinding::Single(binding)) = parse_binding_string("leader w n", leader)
+        else {
+            panic!("expected a single sequence binding");
+        };
+        assert!(binding.trigger.is_sequence());
+        assert_eq!(
+            binding.sequence_combos(),
+            vec![
+                (KeyCode::Char(' '), KeyModifiers::empty()),
+                (KeyCode::Char('w'), KeyModifiers::empty()),
+                (KeyCode::Char('n'), KeyModifiers::empty()),
+            ]
+        );
+        assert_eq!(binding.label, "leader w n");
+    }
+
+    #[test]
+    fn sequence_binding_accepts_modified_steps_and_non_leader_heads() {
+        let leader = Some((KeyCode::Char(' '), KeyModifiers::empty()));
+        let Some(ParsedBinding::Single(binding)) = parse_binding_string("g ctrl+t", leader) else {
+            panic!("expected a single sequence binding");
+        };
+        assert_eq!(
+            binding.sequence_combos(),
+            vec![
+                (KeyCode::Char('g'), KeyModifiers::empty()),
+                (KeyCode::Char('t'), KeyModifiers::CONTROL),
+            ]
+        );
+    }
+
+    #[test]
+    fn single_key_and_prefix_bindings_keep_empty_tails() {
+        let leader = Some((KeyCode::Char(' '), KeyModifiers::empty()));
+        let Some(ParsedBinding::Single(direct)) = parse_binding_string("ctrl+t", leader) else {
+            panic!("expected a single direct binding");
+        };
+        assert!(direct.trigger.is_direct());
+        assert!(direct.tail.is_empty());
+
+        let Some(ParsedBinding::Single(prefixed)) = parse_binding_string("prefix+n", leader) else {
+            panic!("expected a single prefix binding");
+        };
+        assert!(prefixed.trigger.is_prefix());
+        assert!(prefixed.tail.is_empty());
+    }
+
+    #[test]
+    fn sequence_binding_rejects_prefix_and_unknown_leader() {
+        let leader = Some((KeyCode::Char(' '), KeyModifiers::empty()));
+        assert!(parse_binding_string("prefix+w n", leader).is_none());
+        assert!(parse_binding_string("leader w", None).is_none());
     }
 
     #[test]
