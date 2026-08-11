@@ -16,7 +16,7 @@ pub use self::{
     keybinds::{
         format_key_combo, normalize_key_combo, terminal_key_matches_combo, ActionKeybinds,
         BindingConfig, CommandKeybindConfig, CustomCommandAction, CustomCommandKeybind,
-        IndexedKeybind, Keybinds, LiveKeybindConfig,
+        IndexedKeybind, Keybinds, LiveKeybindConfig, ResolvedBinding,
     },
     model::{
         validated_sidebar_bounds, AgentPanelSortConfig, Config, ConfigReloadReport,
@@ -33,6 +33,8 @@ pub use self::{
     theme::{parse_color, CustomThemeColors, ThemeConfig, THEME_NAMES},
 };
 
+#[cfg(test)]
+pub(crate) use self::keybinds::action_from_sequence;
 pub(crate) use self::keybinds::parse_key_combo;
 pub(crate) use self::{io::upsert_top_level_bool, theme::canonical_theme_name};
 

@@ -129,6 +129,10 @@ impl App {
         self.state.update_dismissed = true;
 
         if key.code == KeyCode::Esc || self.state.is_prefix_key(&raw_key) {
+            if self.state.keybinds.modal && !self.state.pending_sequence.is_empty() {
+                self.state.pending_sequence.clear();
+                return;
+            }
             exit_to_insert_mode(&mut self.state);
             return;
         }
@@ -141,6 +145,37 @@ impl App {
         {
             exit_to_insert_mode(&mut self.state);
             return;
+        }
+
+        if self.state.keybinds.modal {
+            self.state.pending_sequence.push(raw_key.clone());
+            match sequence_action_for_pending(&self.state) {
+                SequenceMatch::Partial => return,
+                SequenceMatch::Complete(action) => {
+                    self.state.pending_sequence.clear();
+                    if action == NavigateAction::EditScrollback {
+                        self.launch_focused_scrollback_editor();
+                    } else {
+                        self.execute_tui_navigate_action(action, ActionContext::Navigate);
+                    }
+                    self.selection_autoscroll_deadline = None;
+                    return;
+                }
+                SequenceMatch::CompleteCommand(binding) => {
+                    self.state.pending_sequence.clear();
+                    self.launch_custom_command(binding, ActionContext::Navigate);
+                    return;
+                }
+                SequenceMatch::None => {
+                    let resumed = self.state.pending_sequence.len() > 1;
+                    self.state.pending_sequence.clear();
+                    if resumed {
+                        // Mid-sequence miss: the sequence is abandoned and this key is
+                        // not also treated as a fresh single-key binding, matching vim.
+                        return;
+                    }
+                }
+            }
         }
 
         if self
@@ -1449,6 +1484,10 @@ pub(crate) fn handle_navigate_key(state: &mut AppState, key: KeyEvent) {
     let terminal_key = TerminalKey::from(key);
 
     if state.is_prefix_key(&terminal_key) || key.code == KeyCode::Esc {
+        if state.keybinds.modal && !state.pending_sequence.is_empty() {
+            state.pending_sequence.clear();
+            return;
+        }
         exit_to_insert_mode(state);
         return;
     }
@@ -1460,6 +1499,38 @@ pub(crate) fn handle_navigate_key(state: &mut AppState, key: KeyEvent) {
     {
         exit_to_insert_mode(state);
         return;
+    }
+
+    if state.keybinds.modal {
+        state.pending_sequence.push(terminal_key.clone());
+        match sequence_action_for_pending(state) {
+            SequenceMatch::Partial => return,
+            SequenceMatch::Complete(action) => {
+                state.pending_sequence.clear();
+                execute_navigate_action_in_context(
+                    state,
+                    &mut terminal_runtimes,
+                    action,
+                    ActionContext::Navigate,
+                );
+                return;
+            }
+            SequenceMatch::CompleteCommand(_binding) => {
+                // App-only: launching a custom command needs terminal runtimes and
+                // event channels this test harness doesn't have, same as EditScrollback above.
+                state.pending_sequence.clear();
+                return;
+            }
+            SequenceMatch::None => {
+                let resumed = state.pending_sequence.len() > 1;
+                state.pending_sequence.clear();
+                if resumed {
+                    // Mid-sequence miss: the sequence is abandoned and this key is
+                    // not also treated as a fresh single-key binding, matching vim.
+                    return;
+                }
+            }
+        }
     }
 
     if handle_navigate_reserved_key(state, terminal_key.clone()) {
@@ -1619,13 +1690,10 @@ fn action_for_key(
         .or_else(|| indexed_navigation_action(state, &key, dispatch))
 }
 
-fn non_indexed_action_for_key(
-    state: &AppState,
-    key: &TerminalKey,
-    dispatch: BindingDispatch,
-) -> Option<NavigateAction> {
-    let kb = &state.keybinds;
-    for (bindings, action) in [
+fn action_table(
+    kb: &crate::config::Keybinds,
+) -> Vec<(&crate::config::ActionKeybinds, NavigateAction)> {
+    vec![
         (&kb.help, NavigateAction::Help),
         (&kb.settings, NavigateAction::Settings),
         (&kb.workspace_picker, NavigateAction::WorkspacePicker),
@@ -1680,12 +1748,103 @@ fn non_indexed_action_for_key(
         ),
         (&kb.detach, NavigateAction::Detach),
         (&kb.goto, NavigateAction::OpenNavigator),
-    ] {
+    ]
+}
+
+fn non_indexed_action_for_key(
+    state: &AppState,
+    key: &TerminalKey,
+    dispatch: BindingDispatch,
+) -> Option<NavigateAction> {
+    for (bindings, action) in action_table(&state.keybinds) {
         if action_matches(bindings, key, dispatch) {
             return Some(action);
         }
     }
     None
+}
+
+pub(crate) enum SequenceMatch {
+    None,
+    Partial,
+    Complete(NavigateAction),
+    CompleteCommand(crate::config::CustomCommandKeybind),
+}
+
+fn sequence_matches(
+    binding: &crate::config::ResolvedBinding,
+    pending: &[TerminalKey],
+) -> Option<bool> {
+    if !binding.trigger.is_sequence() {
+        return None;
+    }
+    let combos = binding.sequence_combos();
+    if combos.len() < pending.len() {
+        return None;
+    }
+    let aligned = pending
+        .iter()
+        .zip(combos.iter())
+        .all(|(key, combo)| crate::config::terminal_key_matches_combo(key, *combo));
+    if !aligned {
+        return None;
+    }
+    Some(combos.len() == pending.len())
+}
+
+fn sequence_action_for_pending(state: &AppState) -> SequenceMatch {
+    let pending = &state.pending_sequence;
+    if pending.is_empty() {
+        return SequenceMatch::None;
+    }
+
+    let mut partial = false;
+    for (bindings, action) in action_table(&state.keybinds) {
+        for binding in &bindings.bindings {
+            match sequence_matches(binding, pending) {
+                Some(true) => return SequenceMatch::Complete(action),
+                Some(false) => partial = true,
+                None => {}
+            }
+        }
+    }
+
+    for command in &state.keybinds.custom_commands {
+        for binding in &command.bindings.bindings {
+            match sequence_matches(binding, pending) {
+                Some(true) => return SequenceMatch::CompleteCommand(command.clone()),
+                Some(false) => partial = true,
+                None => {}
+            }
+        }
+    }
+
+    if partial {
+        SequenceMatch::Partial
+    } else {
+        SequenceMatch::None
+    }
+}
+
+#[allow(dead_code)] // consumed by task 6's pending-sequence hint UI
+pub(crate) fn sequence_bindings(state: &AppState) -> Vec<&crate::config::ResolvedBinding> {
+    let pending = &state.pending_sequence;
+    let mut matches = Vec::new();
+    for (bindings, _) in action_table(&state.keybinds) {
+        for binding in &bindings.bindings {
+            if sequence_matches(binding, pending).is_some() {
+                matches.push(binding);
+            }
+        }
+    }
+    for command in &state.keybinds.custom_commands {
+        for binding in &command.bindings.bindings {
+            if sequence_matches(binding, pending).is_some() {
+                matches.push(binding);
+            }
+        }
+    }
+    matches
 }
 
 #[cfg(test)]
@@ -4099,5 +4258,87 @@ navigate_pane_down = "ctrl+j"
         )));
 
         assert_eq!(app.state.mode, Mode::Terminal);
+    }
+
+    #[test]
+    fn sequence_fires_on_completion() {
+        // ToggleSidebar is a plain state flip: unlike NewTab it needs no PTY or
+        // tokio runtime, keeping this test focused on sequence dispatch itself.
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.keybinds.modal = true;
+        app.state.keybinds.toggle_sidebar = crate::config::action_from_sequence(&["g", "t"]);
+        app.state.mode = Mode::Navigate;
+
+        let collapsed_before = app.state.sidebar_collapsed;
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('g'),
+            KeyModifiers::empty(),
+        )));
+        assert_eq!(app.state.pending_sequence.len(), 1);
+        assert_eq!(app.state.sidebar_collapsed, collapsed_before);
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('t'),
+            KeyModifiers::empty(),
+        )));
+        assert!(app.state.pending_sequence.is_empty());
+        assert_eq!(app.state.sidebar_collapsed, !collapsed_before);
+        assert_eq!(app.state.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn sequence_miss_clears_pending_and_falls_through() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.keybinds.modal = true;
+        app.state.keybinds.new_tab = crate::config::action_from_sequence(&["g", "t"]);
+        app.state.mode = Mode::Navigate;
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('g'),
+            KeyModifiers::empty(),
+        )));
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('z'),
+            KeyModifiers::empty(),
+        )));
+
+        assert!(app.state.pending_sequence.is_empty());
+        assert_eq!(app.state.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn esc_clears_pending_sequence_before_leaving_normal_mode() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.keybinds.modal = true;
+        app.state.keybinds.new_tab = crate::config::action_from_sequence(&["g", "t"]);
+        app.state.mode = Mode::Navigate;
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('g'),
+            KeyModifiers::empty(),
+        )));
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::empty(),
+        )));
+
+        assert!(app.state.pending_sequence.is_empty());
+        assert_eq!(app.state.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn sequences_are_inert_when_modal_is_off() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.keybinds.modal = false;
+        app.state.keybinds.new_tab = crate::config::action_from_sequence(&["g", "t"]);
+        app.state.mode = Mode::Navigate;
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('g'),
+            KeyModifiers::empty(),
+        )));
+
+        assert!(app.state.pending_sequence.is_empty());
     }
 }

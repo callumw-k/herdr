@@ -273,6 +273,22 @@ impl ActionKeybinds {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn action_from_sequence(steps: &[&str]) -> ActionKeybinds {
+    let combos: Vec<KeyCombo> = steps
+        .iter()
+        .filter_map(|step| parse_key_combo(step))
+        .collect();
+    let (head, tail) = combos.split_first().expect("sequence needs a head");
+    ActionKeybinds {
+        bindings: vec![ResolvedBinding {
+            trigger: BindingTrigger::Sequence(*head),
+            label: steps.join(" "),
+            tail: tail.to_vec(),
+        }],
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IndexedKeybind {
     pub trigger: BindingTrigger,
