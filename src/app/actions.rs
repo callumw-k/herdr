@@ -672,6 +672,10 @@ impl AppState {
                     terminal
                         .and_then(|terminal| terminal.manual_label.as_deref().map(str::to_string))
                 })
+                // Pane borders distrust the OSC title, but the navigator is a
+                // search index: an agent's own title is the only thing that
+                // tells two `claude` panes apart.
+                .or_else(|| terminal.and_then(|terminal| terminal.terminal_title_stripped()))
                 .or_else(|| {
                     terminal.and_then(|terminal| terminal.agent_name.as_deref().map(str::to_string))
                 })
@@ -3977,6 +3981,26 @@ mod tests {
         assert!(
             rows.iter().any(|row| row.label.contains("claude")),
             "a scattered subsequence should still match via fuzzy search, got {rows:?}"
+        );
+    }
+
+    #[test]
+    fn navigator_search_matches_an_agents_own_terminal_title() {
+        let mut state = app_with_workspaces(&["one"]);
+        let pane = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].terminal_id(pane).cloned().unwrap();
+        let terminal = state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.agent_name = Some("claude".into());
+        terminal.set_terminal_title(Some("✳ Brainstorming the navigator".into()));
+        state.open_navigator();
+        state.navigator.query = "brainstorming".into();
+
+        let rows = state.navigator_rows();
+
+        assert!(
+            rows.iter()
+                .any(|row| row.label == "Brainstorming the navigator"),
+            "the osc title should name the pane and be searchable, got {rows:?}"
         );
     }
 

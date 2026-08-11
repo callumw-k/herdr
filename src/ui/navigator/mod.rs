@@ -471,7 +471,11 @@ fn pane_detail(
     if let Some(terminal_id) = tab.terminal_id(pane_id) {
         if let Some(terminal) = app.terminals.get(terminal_id) {
             let presentation = terminal.effective_presentation();
-            if let Some(title) = presentation.title {
+            if let Some(title) = presentation
+                .title
+                .clone()
+                .or_else(|| terminal.terminal_title_stripped())
+            {
                 parts.push(title);
             }
             let display_agent = terminal.effective_display_agent();
