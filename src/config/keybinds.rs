@@ -496,14 +496,7 @@ impl SequenceRegistry {
             .head_is_taken(head)
             .or_else(|| navigate_registry.head_is_taken(head))
         {
-            if source == BindingSource::Default && existing.source == BindingSource::User {
-                return true;
-            }
-            let existing_field = &existing.field;
-            let diag = format!("{}: kept {existing_field}, disabled {field}", binding.label);
-            warn!(message = %diag, "config diagnostic");
-            diagnostics.push(diag);
-            return true;
+            return record_conflict(source, existing, field, &binding.label, diagnostics);
         }
 
         for (existing_combos, existing) in &self.entries {
@@ -512,14 +505,7 @@ impl SequenceRegistry {
             if !overlaps {
                 continue;
             }
-            if source == BindingSource::Default && existing.source == BindingSource::User {
-                return true;
-            }
-            let existing_field = &existing.field;
-            let diag = format!("{}: kept {existing_field}, disabled {field}", binding.label);
-            warn!(message = %diag, "config diagnostic");
-            diagnostics.push(diag);
-            return true;
+            return record_conflict(source, existing, field, &binding.label, diagnostics);
         }
 
         self.entries.push((
@@ -531,6 +517,23 @@ impl SequenceRegistry {
         ));
         false
     }
+}
+
+fn record_conflict(
+    source: BindingSource,
+    existing: &RegisteredBinding,
+    field: &str,
+    label: &str,
+    diagnostics: &mut Vec<String>,
+) -> bool {
+    if source == BindingSource::Default && existing.source == BindingSource::User {
+        return true;
+    }
+    let existing_field = &existing.field;
+    let diag = format!("{label}: kept {existing_field}, disabled {field}");
+    warn!(message = %diag, "config diagnostic");
+    diagnostics.push(diag);
+    true
 }
 
 impl Config {
@@ -826,21 +829,31 @@ impl Config {
             }
         }
 
+        let modal = self.keys.modal;
         let mut sequence_registry = SequenceRegistry::new();
         let mut retain_sequences = |field: &str, action: &mut ActionKeybinds| {
             let mut kept = Vec::with_capacity(action.bindings.len());
             for binding in std::mem::take(&mut action.bindings) {
-                if binding.trigger.is_sequence()
-                    && sequence_registry.reject(
+                if binding.trigger.is_sequence() {
+                    if !modal {
+                        let diag = format!(
+                            "sequence keybinding requires keys.modal = true: {field} = {:?}; disabling binding",
+                            binding.label
+                        );
+                        warn!(message = %diag, "config diagnostic");
+                        diagnostics.push(diag);
+                        continue;
+                    }
+                    if sequence_registry.reject(
                         field,
                         &binding,
                         &registry,
                         &navigate_registry,
                         &mut diagnostics,
                         BindingSource::User,
-                    )
-                {
-                    continue;
+                    ) {
+                        continue;
+                    }
                 }
                 kept.push(binding);
             }
@@ -2797,6 +2810,25 @@ new_tab = "leader w n"
                 .iter()
                 .any(|diag| diag.contains("kept keys.new_workspace")
                     && diag.contains("disabled keys.new_tab")),
+            "diagnostics: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn sequence_rejected_when_modal_is_disabled() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+modal = false
+new_tab = "g t"
+"#,
+        )
+        .unwrap();
+        let diagnostics = config.collect_diagnostics();
+        let keybinds = config.keybinds();
+        assert!(keybinds.new_tab.bindings.is_empty());
+        assert!(
+            diagnostics.iter().any(|diag| diag.contains("keys.modal")),
             "diagnostics: {diagnostics:?}"
         );
     }
