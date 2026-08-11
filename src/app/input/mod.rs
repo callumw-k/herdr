@@ -56,7 +56,8 @@ pub(crate) use self::{
         open_new_workspace_dialog,
     },
     navigate::{
-        terminal_direct_indexed_navigation_action, terminal_direct_non_indexed_navigation_action,
+        sequence_bindings, terminal_direct_indexed_navigation_action,
+        terminal_direct_non_indexed_navigation_action,
     },
     settings::open_settings_at,
 };

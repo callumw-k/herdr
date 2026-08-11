@@ -17,6 +17,7 @@ mod fuzzy;
 mod git_refresh;
 mod ids;
 mod input;
+pub(crate) use input::sequence_bindings;
 pub(crate) mod pane_graphics;
 mod popup;
 mod runtime;

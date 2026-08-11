@@ -127,6 +127,29 @@ pub(super) fn render_copy_mode_overlay(app: &AppState, frame: &mut Frame, area: 
     render_bottom_bar(frame, overlay_area, line, app.palette.panel_bg);
 }
 
+pub(super) fn pending_sequence_hint(state: &AppState) -> Option<String> {
+    if !state.keybinds.modal || state.pending_sequence.is_empty() {
+        return None;
+    }
+    let depth = state.pending_sequence.len();
+    let mut continuations: Vec<String> = Vec::new();
+    for binding in crate::app::sequence_bindings(state) {
+        let combos = binding.sequence_combos();
+        if combos.len() <= depth {
+            continue;
+        }
+        let label = crate::config::format_key_combo(combos[depth]);
+        if !continuations.contains(&label) {
+            continuations.push(label);
+        }
+    }
+    if continuations.is_empty() {
+        return None;
+    }
+    continuations.sort();
+    Some(continuations.join(" "))
+}
+
 pub(super) fn render_navigate_overlay(app: &AppState, frame: &mut Frame, area: Rect) {
     let key = Style::default()
         .fg(app.palette.accent)
@@ -137,6 +160,31 @@ pub(super) fn render_navigate_overlay(app: &AppState, frame: &mut Frame, area: R
         .fg(panel_contrast_fg(&app.palette))
         .bg(app.palette.accent)
         .add_modifier(Modifier::BOLD);
+    let mode_label = if app.keybinds.modal {
+        "NORMAL"
+    } else {
+        "NAVIGATE"
+    };
+
+    if let Some(hint) = pending_sequence_hint(app) {
+        let pending_label = app
+            .pending_sequence
+            .iter()
+            .map(|key| crate::config::format_key_combo((key.code, key.modifiers)))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let line = Line::from(vec![
+            Span::styled(format!(" {mode_label} "), mode_style),
+            Span::raw(" "),
+            Span::styled(pending_label, key),
+            Span::raw("  "),
+            Span::styled(hint, dim),
+        ]);
+        let overlay_y = area.y + area.height.saturating_sub(1);
+        let overlay_area = Rect::new(area.x, overlay_y, area.width, 1);
+        render_bottom_bar(frame, overlay_area, line, app.palette.panel_bg);
+        return;
+    }
 
     let kb = &app.keybinds;
     let new_tab = prefix_rhs_label(&kb.new_tab);
@@ -155,7 +203,7 @@ pub(super) fn render_navigate_overlay(app: &AppState, frame: &mut Frame, area: R
         keybind_label(&kb.navigate.workspace_down)
     );
     let line = Line::from(vec![
-        Span::styled(" NAVIGATE ", mode_style),
+        Span::styled(format!(" {mode_label} "), mode_style),
         Span::raw(" "),
         Span::styled("esc", key),
         Span::styled(" back  ", dim),
@@ -312,4 +360,36 @@ pub(super) fn render_context_menu(app: &AppState, frame: &mut Frame) {
         .highlight_symbol(" ");
     let mut state = ListState::default().with_selected(Some(menu.list.highlighted));
     frame.render_stateful_widget(list, inner, &mut state);
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::config::action_from_sequence;
+    use crate::input::TerminalKey;
+
+    #[test]
+    fn pending_hint_lists_valid_continuations() {
+        let mut state = AppState::test_new();
+        state.keybinds.modal = true;
+        state.keybinds.new_tab = action_from_sequence(&["g", "t"]);
+        state.keybinds.close_tab = action_from_sequence(&["g", "d"]);
+        state.pending_sequence = vec![TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('g'),
+            KeyModifiers::empty(),
+        ))];
+
+        let hint = pending_sequence_hint(&state).expect("expected a hint");
+        assert!(hint.contains('t'), "hint: {hint}");
+        assert!(hint.contains('d'), "hint: {hint}");
+    }
+
+    #[test]
+    fn pending_hint_is_absent_with_no_pending_keys() {
+        let mut state = AppState::test_new();
+        state.keybinds.modal = true;
+        assert!(pending_sequence_hint(&state).is_none());
+    }
 }

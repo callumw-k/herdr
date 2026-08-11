@@ -1826,7 +1826,6 @@ fn sequence_action_for_pending(state: &AppState) -> SequenceMatch {
     }
 }
 
-#[allow(dead_code)] // consumed by task 6's pending-sequence hint UI
 pub(crate) fn sequence_bindings(state: &AppState) -> Vec<&crate::config::ResolvedBinding> {
     let pending = &state.pending_sequence;
     let mut matches = Vec::new();
