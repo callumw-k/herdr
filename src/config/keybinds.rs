@@ -58,14 +58,17 @@ impl BindingConfig {
             }
             match parse_binding_string(raw, None) {
                 Some(ParsedBinding::Single(binding)) => {
-                    if matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9')) {
+                    if !binding.trigger.is_sequence()
+                        && matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9'))
+                    {
                         labels.push(binding.label);
                     }
                 }
                 Some(ParsedBinding::Range(range)) => {
                     labels.extend(range.into_iter().filter_map(|binding| {
-                        matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9'))
-                            .then_some(binding.label)
+                        (!binding.trigger.is_sequence()
+                            && matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9')))
+                        .then_some(binding.label)
                     }));
                 }
                 None => {}
@@ -147,7 +150,6 @@ impl BindingTrigger {
         matches!(self, Self::Prefix(_))
     }
 
-    #[allow(dead_code)] // read starting in a later modal-input task
     pub fn is_sequence(self) -> bool {
         matches!(self, Self::Sequence(_))
     }
@@ -964,7 +966,9 @@ fn push_indexed_binding(
     source: BindingSource,
     bindings: &mut Vec<IndexedKeybind>,
 ) {
-    if !matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9')) {
+    if binding.trigger.is_sequence()
+        || !matches!(binding.trigger.combo().0, KeyCode::Char('1'..='9'))
+    {
         let diag = format!(
             "indexed keybinding must use 1..9: {field} = {:?}; disabling binding",
             binding.label
@@ -2276,6 +2280,25 @@ switch_tab = "prefix+?"
         }));
         assert!(!diagnostics.iter().any(|diag| {
             diag.contains("kept keys.switch_tab") && diag.contains("disabled keys.help")
+        }));
+    }
+
+    #[test]
+    fn sequence_shaped_indexed_binding_is_rejected() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+switch_tab = "5 n"
+"#,
+        )
+        .unwrap();
+
+        let diagnostics = config.collect_diagnostics();
+        let kb = config.keybinds();
+
+        assert!(kb.switch_tab.is_empty());
+        assert!(diagnostics.iter().any(|diag| {
+            diag.contains("indexed keybinding must use 1..9") && diag.contains("keys.switch_tab")
         }));
     }
 
