@@ -1277,6 +1277,11 @@ fn render_workspace_list(
         } else {
             label
         };
+        let display_label = if ws.pinned_path.is_some() {
+            format!("{display_label} ⚲")
+        } else {
+            display_label
+        };
         let parent_group = (!card.indented)
             .then(|| workspace_parent_group_state(app, i))
             .flatten();
