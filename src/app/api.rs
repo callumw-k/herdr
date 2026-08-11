@@ -283,7 +283,18 @@ impl App {
             } else {
                 None
             };
-        let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
+        let cwd_report = if let AppEvent::TerminalCwdReported { pane_id, cwd } = &ev {
+            // Captured before the state layer applies the report, because
+            // afterwards an unchanged cwd is indistinguishable from a change.
+            let previous_cwd = self
+                .find_pane(*pane_id)
+                .map(|(_, pane)| pane.attached_terminal_id.clone())
+                .and_then(|terminal_id| self.state.terminals.get(&terminal_id))
+                .map(|terminal| terminal.cwd.clone());
+            Some((*pane_id, cwd.clone(), previous_cwd))
+        } else {
+            None
+        };
         let previous_toast = self.state.toast.clone();
         let pane_updates = self.state.handle_app_event(ev);
         if let Some(agents) = manifest_update_agents {
@@ -303,8 +314,14 @@ impl App {
             }
         }
         self.sync_full_lifecycle_authority_detection_pauses();
-        if terminal_cwd_reported {
+        if let Some((pane_id, cwd, previous_cwd)) = cwd_report {
             self.request_git_identity_refresh(Instant::now());
+            // Every pane reports its cwd at the first prompt after spawn or
+            // restore, so only relocate on a directory the pane was not
+            // already in. Otherwise a restart would undo manual placement.
+            if previous_cwd.as_deref() != Some(cwd.as_path()) {
+                self.reclaim_pane_after_cwd_change(pane_id, &cwd);
+            }
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }

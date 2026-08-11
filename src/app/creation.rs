@@ -659,7 +659,9 @@ impl App {
         match move_result {
             Some(move_result) if move_result.changed => true,
             Some(move_result) => {
-                tracing::warn!(
+                // Expected, not a fault: a zoomed source tab declines on
+                // purpose, and the pane stays where the user put it.
+                tracing::debug!(
                     %workspace_id,
                     reason = ?move_result.reason,
                     "auto-move into pinned workspace declined"
@@ -671,6 +673,41 @@ impl App {
                 false
             }
         }
+    }
+
+    /// Re-run the pinned-path claim after a pane reports a new cwd, so a
+    /// directory jump relocates the pane the way opening it there would have.
+    /// Only fires at an idle shell prompt: a foreground process or a detected
+    /// agent means something is running that should not be moved out from
+    /// under the user.
+    pub(crate) fn reclaim_pane_after_cwd_change(&mut self, pane_id: PaneId, cwd: &std::path::Path) {
+        let Some((ws_idx, pane)) = self.find_pane(pane_id) else {
+            return;
+        };
+        let terminal_id = pane.attached_terminal_id.clone();
+        let Some(terminal) = self.state.terminals.get(&terminal_id) else {
+            return;
+        };
+        // AppState rejects reports that are not absolute directories without
+        // storing them, so a stored cwd that differs from the report means it
+        // was rejected.
+        if terminal.cwd != cwd {
+            return;
+        }
+        if terminal.foreground_process_name.is_some() || terminal.detected_agent.is_some() {
+            return;
+        }
+        // Follow the pane only when it is the one the user is sitting in: a
+        // background pane changing directory on its own must not drag them out
+        // of the workspace they are working in.
+        let focus = self.state.active == Some(ws_idx)
+            && self
+                .state
+                .workspaces
+                .get(ws_idx)
+                .and_then(|ws| ws.focused_pane_id())
+                == Some(pane_id);
+        self.auto_move_pane_to_pinned_workspace(ws_idx, pane_id, cwd, focus, None);
     }
 }
 

@@ -260,6 +260,12 @@ impl App {
                 self.state.mobile_switcher_scroll = 0;
                 self.state.mode = Mode::Navigate;
             }
+            NavigateAction::PinWorkspacePath => {
+                if let Some(ws_idx) = workspace_action_target(&self.state, context) {
+                    self.toggle_workspace_path_pin_via_api(ws_idx);
+                    leave_navigate_mode(&mut self.state);
+                }
+            }
             NavigateAction::PreviousWorkspace => {
                 if let Some(ws_idx) = self.relative_visible_workspace(-1) {
                     self.focus_workspace_idx_via_api(ws_idx);
@@ -522,6 +528,52 @@ impl App {
     pub(crate) fn close_workspace_idx_via_api(&mut self, ws_idx: usize) {
         let workspace_id = self.public_workspace_id(ws_idx);
         self.runtime_workspace_close("tui.workspace.close", workspace_id);
+    }
+
+    pub(crate) fn toggle_workspace_path_pin_via_api(&mut self, ws_idx: usize) {
+        let Some(current) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .map(|ws| ws.pinned_path.clone())
+        else {
+            return;
+        };
+        let Some(cwd) = self.focused_pane_cwd_in_workspace(ws_idx) else {
+            return;
+        };
+        let next = crate::workspace::toggled_pin(current.as_deref(), &cwd);
+        let previous_toast = self.state.toast.clone();
+        let workspace_id = self.public_workspace_id(ws_idx);
+        self.runtime_workspace_set_path(
+            "tui.workspace.set_path",
+            crate::api::schema::WorkspaceSetPathParams {
+                workspace_id,
+                path: next
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+            },
+        );
+        let (title, context) = match &next {
+            Some(path) => (
+                "pinned workspace path".to_string(),
+                path.display().to_string(),
+            ),
+            None => (
+                "unpinned workspace path".to_string(),
+                "no longer claims a path".to_string(),
+            ),
+        };
+        self.state.toast = Some(crate::app::state::ToastNotification {
+            // The only neutral informational toast kind; `reloaded config`
+            // reuses it the same way.
+            kind: crate::app::state::ToastKind::UpdateInstalled,
+            title,
+            context,
+            position: None,
+            target: None,
+        });
+        self.sync_toast_deadline(previous_toast);
     }
 
     pub(crate) fn move_workspace_via_api(&mut self, source_ws_idx: usize, insert_idx: usize) {
@@ -1469,6 +1521,7 @@ pub(crate) enum NavigateAction {
     SwitchTab(usize),
     FocusAgent(usize),
     WorkspacePicker,
+    PinWorkspacePath,
     PreviousWorkspace,
     NextWorkspace,
     PreviousAgent,
@@ -1610,6 +1663,7 @@ fn non_indexed_action_for_key(
         (&kb.help, NavigateAction::Help),
         (&kb.settings, NavigateAction::Settings),
         (&kb.workspace_picker, NavigateAction::WorkspacePicker),
+        (&kb.pin_workspace_path, NavigateAction::PinWorkspacePath),
         (&kb.new_workspace, NavigateAction::NewWorkspace),
         (&kb.new_worktree, NavigateAction::NewWorktree),
         (&kb.open_worktree, NavigateAction::OpenWorktree),
@@ -1972,6 +2026,9 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::OpenNavigator => state.open_navigator_from(terminal_runtimes),
+        // App-only: toggling the pin needs the runtime API and toast state this
+        // test harness doesn't have, same as NewFloat above.
+        NavigateAction::PinWorkspacePath => {}
     }
 
     finish_action_context(state, context, previous_mode);

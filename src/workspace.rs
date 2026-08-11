@@ -23,7 +23,7 @@ mod tab;
 #[cfg(test)]
 use self::git::git_ahead_behind;
 use self::git::git_status_cache_key_for_space;
-pub(crate) use self::pinned_path::{expand_pinned_path, path_claims};
+pub(crate) use self::pinned_path::{expand_pinned_path, path_claims, toggled_pin};
 pub(crate) use self::{git::git_status_snapshot_for_cwd_with_demand, tab::MovedPane};
 pub use self::{
     git::{

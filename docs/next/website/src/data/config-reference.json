@@ -278,6 +278,12 @@
           "description": "Open the session navigator."
         },
         {
+          "key": "keys.pin_workspace_path",
+          "type": "keybinding",
+          "default": "\"prefix+.\"",
+          "description": "Pin the active workspace to the focused pane's directory, or unpin it when it is already pinned there."
+        },
+        {
           "key": "keys.navigate_workspace_up",
           "type": "keybinding",
           "default": "\"up\"",
