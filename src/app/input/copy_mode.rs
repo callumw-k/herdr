@@ -17,7 +17,11 @@ impl App {
         }
         self.state.update_dismissed = true;
         if self.state.is_prefix_key(&key) {
-            self.state.mode = Mode::Prefix;
+            self.state.mode = if self.state.keybinds.modal {
+                Mode::Navigate
+            } else {
+                Mode::Prefix
+            };
             return;
         }
         self.state
@@ -1216,6 +1220,33 @@ mod tests {
         assert_eq!(app.state.mode, Mode::Prefix);
         assert_eq!(copy_mode_offset_from_bottom(&app, pane_id), 0);
         assert!(app.state.copy_mode.is_some());
+    }
+
+    #[tokio::test]
+    async fn copy_mode_prefix_key_enters_prefix_mode_when_not_modal() {
+        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
+        app.state.enter_copy_mode(&app.terminal_runtimes);
+
+        app.handle_copy_mode_key(TerminalKey::new(
+            app.state.prefix_code,
+            app.state.prefix_mods,
+        ));
+
+        assert_eq!(app.state.mode, Mode::Prefix);
+    }
+
+    #[tokio::test]
+    async fn copy_mode_prefix_key_enters_navigate_mode_when_modal() {
+        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
+        app.state.keybinds.modal = true;
+        app.state.enter_copy_mode(&app.terminal_runtimes);
+
+        app.handle_copy_mode_key(TerminalKey::new(
+            app.state.prefix_code,
+            app.state.prefix_mods,
+        ));
+
+        assert_eq!(app.state.mode, Mode::Navigate);
     }
 
     #[tokio::test]

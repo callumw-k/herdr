@@ -4048,8 +4048,10 @@ navigate_pane_down = "ctrl+j"
         app.state.keybinds.modal = true;
         app.state.mode = Mode::Navigate;
 
+        // Enter routes through leave_navigate_mode (NavigateAction::SwitchWorkspace),
+        // unlike plain pane-focus movement which was already sticky beforehand.
         app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
-            KeyCode::Char('l'),
+            KeyCode::Enter,
             KeyModifiers::empty(),
         )));
 
