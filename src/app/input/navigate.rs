@@ -137,17 +137,26 @@ impl App {
             return;
         }
 
-        if self
-            .state
-            .keybinds
-            .enter_insert
-            .matches_direct_key(&raw_key)
+        // Only modal input reserves this key, and only between sequences: mid-sequence
+        // it is an ordinary step, so `leader w i` stays reachable.
+        if self.state.keybinds.modal
+            && self.state.pending_sequence.is_empty()
+            && self
+                .state
+                .keybinds
+                .enter_insert
+                .matches_direct_key(&raw_key)
         {
             exit_to_insert_mode(&mut self.state);
             return;
         }
 
         if self.state.keybinds.modal {
+            if matches!(key.code, KeyCode::Modifier(_)) {
+                // A pane requesting report-all-keys makes the host send lone modifier
+                // presses; buffering one would abandon the sequence it belongs to.
+                return;
+            }
             self.state.pending_sequence.push(raw_key.clone());
             match sequence_action_for_pending(&self.state) {
                 SequenceMatch::Partial => return,
@@ -1492,16 +1501,21 @@ pub(crate) fn handle_navigate_key(state: &mut AppState, key: KeyEvent) {
         return;
     }
 
-    if state
-        .keybinds
-        .enter_insert
-        .matches_direct_key(&terminal_key)
+    if state.keybinds.modal
+        && state.pending_sequence.is_empty()
+        && state
+            .keybinds
+            .enter_insert
+            .matches_direct_key(&terminal_key)
     {
         exit_to_insert_mode(state);
         return;
     }
 
     if state.keybinds.modal {
+        if matches!(key.code, KeyCode::Modifier(_)) {
+            return;
+        }
         state.pending_sequence.push(terminal_key.clone());
         match sequence_action_for_pending(state) {
             SequenceMatch::Partial => return,
@@ -2196,9 +2210,9 @@ fn leave_navigate_mode(state: &mut AppState) {
 
 fn exit_to_insert_mode(state: &mut AppState) {
     state.pending_sequence.clear();
-    if state.active.is_some() {
-        state.mode = Mode::Terminal;
-    }
+    // Copy mode outlives a trip through normal mode, so hand back to whichever mode
+    // owns the focused pane rather than assuming the pane is typeable.
+    leave_command_mode(state);
 }
 
 fn finish_action_context(state: &mut AppState, context: ActionContext, previous_mode: Mode) {
@@ -4330,6 +4344,142 @@ navigate_pane_down = "ctrl+j"
 
         assert!(app.state.pending_sequence.is_empty());
         assert_eq!(app.state.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn enter_insert_key_is_inert_when_modal_is_off() {
+        // `enter_insert` parses whether or not modal input is on, so an ungated exit
+        // branch would both close the overlay and shadow a `prefix+i` binding.
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.keybinds.modal = false;
+        app.state.keybinds.enter_insert = crate::config::ActionKeybinds::direct("i");
+        app.state.keybinds.toggle_sidebar = crate::config::ActionKeybinds::prefix("i");
+        app.state.mode = Mode::Navigate;
+        let collapsed_before = app.state.sidebar_collapsed;
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('i'),
+            KeyModifiers::empty(),
+        )));
+
+        assert_eq!(app.state.sidebar_collapsed, !collapsed_before);
+    }
+
+    #[test]
+    fn enter_insert_key_is_a_sequence_step_mid_sequence() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.keybinds.modal = true;
+        app.state.keybinds.enter_insert = crate::config::ActionKeybinds::direct("i");
+        app.state.keybinds.toggle_sidebar = crate::config::action_from_sequence(&["g", "i"]);
+        app.state.mode = Mode::Navigate;
+        let collapsed_before = app.state.sidebar_collapsed;
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('g'),
+            KeyModifiers::empty(),
+        )));
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('i'),
+            KeyModifiers::empty(),
+        )));
+
+        assert_eq!(app.state.sidebar_collapsed, !collapsed_before);
+        assert_eq!(app.state.mode, Mode::Navigate);
+    }
+
+    #[test]
+    fn lone_modifier_key_does_not_abort_a_pending_sequence() {
+        // Panes that request report-all-keys make the host deliver bare modifier
+        // presses, which must not count as a sequence step.
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.keybinds.modal = true;
+        app.state.keybinds.toggle_sidebar = crate::config::action_from_sequence(&["g", "t"]);
+        app.state.mode = Mode::Navigate;
+        let collapsed_before = app.state.sidebar_collapsed;
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('g'),
+            KeyModifiers::empty(),
+        )));
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Modifier(crossterm::event::ModifierKeyCode::LeftShift),
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(app.state.pending_sequence.len(), 1);
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('t'),
+            KeyModifiers::empty(),
+        )));
+
+        assert_eq!(app.state.sidebar_collapsed, !collapsed_before);
+    }
+
+    #[test]
+    fn entering_normal_mode_clears_a_stale_pending_sequence() {
+        let mut app = app_with_test_workspaces(&["test"]);
+        app.state.keybinds.modal = true;
+        app.state.keybinds.toggle_sidebar = crate::config::action_from_sequence(&["g", "t"]);
+        app.state.mode = Mode::Navigate;
+
+        app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('g'),
+            KeyModifiers::empty(),
+        )));
+        // A mouse click, a focus change, anything that moves mode without a key.
+        app.state.mode = Mode::Terminal;
+        assert_eq!(app.state.pending_sequence.len(), 1);
+
+        app.handle_terminal_key_headless(TerminalKey::new(
+            app.state.prefix_code,
+            app.state.prefix_mods,
+        ));
+
+        assert_eq!(app.state.mode, Mode::Navigate);
+        assert!(app.state.pending_sequence.is_empty());
+    }
+
+    #[test]
+    fn sequence_completes_a_custom_command() {
+        let mut state = crate::app::state::AppState::test_new();
+        state.keybinds.modal = true;
+        state.keybinds.custom_commands = vec![crate::config::CustomCommandKeybind {
+            bindings: crate::config::action_from_sequence(&["g", "m"]),
+            label: "g m".into(),
+            command: "true".into(),
+            action: crate::config::CustomCommandAction::Shell,
+            description: None,
+            width: None,
+            height: None,
+        }];
+        state.mode = Mode::Navigate;
+
+        handle_navigate_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::empty()),
+        );
+        assert!(matches!(
+            sequence_action_for_pending(&state),
+            SequenceMatch::Partial
+        ));
+
+        state.pending_sequence.push(TerminalKey::from(KeyEvent::new(
+            KeyCode::Char('m'),
+            KeyModifiers::empty(),
+        )));
+        let matched = sequence_action_for_pending(&state);
+        let SequenceMatch::CompleteCommand(binding) = matched else {
+            panic!("expected the custom command to complete");
+        };
+        assert_eq!(binding.command, "true");
+
+        state.pending_sequence.pop();
+        handle_navigate_key(
+            &mut state,
+            KeyEvent::new(KeyCode::Char('m'), KeyModifiers::empty()),
+        );
+        assert!(state.pending_sequence.is_empty());
+        assert_eq!(state.mode, Mode::Navigate);
     }
 
     #[test]

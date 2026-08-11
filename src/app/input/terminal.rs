@@ -121,11 +121,14 @@ impl App {
         }
 
         if self.state.is_prefix_key(&key) {
-            self.state.mode = if self.state.keybinds.modal {
-                Mode::Navigate
+            if self.state.keybinds.modal {
+                // Anything left over from a previous visit is stale: a mode change from
+                // elsewhere (a mouse click, say) never gets to clear the buffer.
+                self.state.pending_sequence.clear();
+                self.state.mode = Mode::Navigate;
             } else {
-                Mode::Prefix
-            };
+                self.state.mode = Mode::Prefix;
+            }
             return None;
         }
 

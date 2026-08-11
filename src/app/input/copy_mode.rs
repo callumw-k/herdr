@@ -17,11 +17,14 @@ impl App {
         }
         self.state.update_dismissed = true;
         if self.state.is_prefix_key(&key) {
-            self.state.mode = if self.state.keybinds.modal {
-                Mode::Navigate
+            if self.state.keybinds.modal {
+                // Anything left over from a previous visit is stale: a mode change from
+                // elsewhere (a mouse click, say) never gets to clear the buffer.
+                self.state.pending_sequence.clear();
+                self.state.mode = Mode::Navigate;
             } else {
-                Mode::Prefix
-            };
+                self.state.mode = Mode::Prefix;
+            }
             return;
         }
         self.state
@@ -1260,6 +1263,29 @@ mod tests {
             app.state.prefix_mods,
         ))
         .await;
+        app.handle_key(TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()))
+            .await;
+
+        assert_eq!(app.state.mode, Mode::Copy);
+        assert_eq!(app.state.copy_mode, Some(copy_mode));
+    }
+
+    #[tokio::test]
+    async fn copy_mode_normal_mode_escape_returns_to_copy_mode() {
+        // Modal input routes the prefix key to normal mode instead of prefix mode, but
+        // leaving it has to land where the non-modal path lands.
+        let (mut app, _) = app_with_copy_screen(b"alpha\nbeta\n");
+        app.state.keybinds.modal = true;
+        app.state.enter_copy_mode(&app.terminal_runtimes);
+        let copy_mode = app.state.copy_mode.as_ref().expect("copy mode").clone();
+
+        app.handle_key(TerminalKey::new(
+            app.state.prefix_code,
+            app.state.prefix_mods,
+        ))
+        .await;
+        assert_eq!(app.state.mode, Mode::Navigate);
+
         app.handle_key(TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()))
             .await;
 
