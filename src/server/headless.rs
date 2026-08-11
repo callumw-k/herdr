@@ -4077,7 +4077,17 @@ impl HeadlessServer {
     }
 
     fn retained_pty_update_allowed_by_app_state(&self) -> bool {
+        // A pane's dirty rows go straight into the last frame at that pane's own
+        // rect, so anything drawn over a pane during a full render has to decline
+        // the fast path or the patch paints through it.
+        let floats_visible = self
+            .app
+            .state
+            .active
+            .and_then(|ws_idx| self.app.state.workspaces.get(ws_idx))
+            .is_some_and(|ws| ws.float_layout.is_some() && !ws.floats_hidden);
         self.app.state.mode == app::Mode::Terminal
+            && !floats_visible
             && self.app.state.popup_pane.is_none()
             && self.app.state.selection.is_none()
             && self.app.state.copy_mode.is_none()
@@ -9180,6 +9190,50 @@ next_tab = ""
                 .expect("full popup fallback frame"),
         );
         assert!(frame_text(&updated).contains("Zopup-aaaa"));
+    }
+
+    #[tokio::test]
+    async fn retained_pty_update_declines_while_a_float_is_visible() {
+        let (mut server, client_rx, tiled_pane) = retained_test_server(b"tiled-aaaa");
+        let workspace = &mut server.app.state.workspaces[0];
+        let float = crate::layout::PaneId::alloc();
+        workspace.register_new_pane_with_number(float, workspace.next_public_pane_number);
+        workspace.tabs[0].push_float(
+            float,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        workspace.insert_test_runtime(
+            float,
+            crate::terminal::TerminalRuntime::test_with_screen_bytes(40, 12, b"float-aaaa"),
+        );
+
+        server.render_and_stream();
+        let initial = read_server_frame(
+            client_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("initial float frame"),
+        );
+        assert!(frame_text(&initial).contains("float-aaaa"));
+
+        // The tiled pane underneath streams while the float itself stays clean.
+        // Patching its dirty rows straight into the last frame would paint over
+        // the float, which only the full render path composites.
+        let runtime = server
+            .app
+            .state
+            .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, tiled_pane)
+            .expect("tiled runtime");
+        runtime.test_process_pty_bytes(b"\rZ");
+
+        assert!(!server.render_retained_pty_update_and_stream());
+        server.render_and_stream();
+        let updated = read_server_frame(
+            client_rx
+                .recv_timeout(Duration::from_millis(100))
+                .expect("full float fallback frame"),
+        );
+        assert!(frame_text(&updated).contains("float-aaaa"));
+        assert!(frame_text(&updated).contains("Ziled-aaaa"));
     }
 
     #[tokio::test]
