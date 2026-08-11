@@ -467,7 +467,7 @@ impl AppState {
         terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,
     ) {
         self.navigator.query.clear();
-        self.navigator.search_focused = false;
+        self.navigator.search_focused = true;
         self.navigator.state_filter = None;
         self.navigator.scroll = 0;
         self.navigator.expanded_workspaces.clear();
@@ -4182,6 +4182,7 @@ mod tests {
         let selected = state.navigator_rows()[state.navigator.selected].clone();
 
         assert!(selected.is_current);
+        assert!(state.navigator.search_focused);
         assert!(state
             .navigator
             .expanded_workspaces
