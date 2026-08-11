@@ -623,13 +623,30 @@ fn sanitized_osc_debug_payload(payload: &[u8]) -> String {
     sanitized
 }
 
+/// Whether a `file://` authority names this machine. Shells emit the real
+/// hostname rather than an empty authority, so accepting only `localhost`
+/// would discard every report they send.
+fn host_is_local(host: &str) -> bool {
+    if host.is_empty() || host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    crate::platform::local_hostname()
+        .is_some_and(|local| first_dns_label(local).eq_ignore_ascii_case(first_dns_label(host)))
+}
+
+/// Compared on the first label so a short name still matches an FQDN, which is
+/// what differs between `hostname` and what mDNS or a search domain reports.
+fn first_dns_label(host: &str) -> &str {
+    host.split('.').next().unwrap_or(host)
+}
+
 fn parse_file_uri_cwd(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     let path = if rest.starts_with('/') {
         rest
     } else if let Some(slash) = rest.find('/') {
         let host = &rest[..slash];
-        if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
+        if !host_is_local(host) {
             return None;
         }
         &rest[slash..]
@@ -972,7 +989,50 @@ mod tests {
     fn reported_cwd_rejects_invalid_or_empty_values() {
         assert_eq!(parse_reported_cwd(b""), None);
         assert_eq!(parse_reported_cwd(b"\xff"), None);
-        assert_eq!(parse_reported_cwd(b"file://remote/tmp"), None);
+        assert_eq!(parse_reported_cwd(foreign_host_uri().as_bytes()), None);
+    }
+
+    /// A `file://` URI whose authority cannot be this machine, however the
+    /// host running the suite happens to be named.
+    fn foreign_host_uri() -> String {
+        let local = crate::platform::local_hostname().unwrap_or("localhost");
+        format!("file://not-{}/tmp", first_dns_label(local))
+    }
+
+    #[test]
+    fn reported_cwd_accepts_this_machines_own_hostname() {
+        // Shells emit file://<hostname>/path, not an empty authority, so this
+        // is the shape nearly every real OSC 7 report arrives in.
+        let Some(hostname) = crate::platform::local_hostname() else {
+            return;
+        };
+        assert_eq!(
+            parse_reported_cwd(format!("file://{hostname}/tmp/herdr").as_bytes()),
+            Some(PathBuf::from("/tmp/herdr"))
+        );
+        assert_eq!(
+            parse_reported_cwd(
+                format!("file://{}/tmp/herdr", hostname.to_ascii_uppercase()).as_bytes()
+            ),
+            Some(PathBuf::from("/tmp/herdr")),
+            "hostname comparison must be case-insensitive"
+        );
+        assert_eq!(
+            parse_reported_cwd(
+                format!("file://{}.example.com/tmp/herdr", first_dns_label(hostname)).as_bytes()
+            ),
+            Some(PathBuf::from("/tmp/herdr")),
+            "a short hostname must still match the FQDN a search domain reports"
+        );
+    }
+
+    #[test]
+    fn host_is_local_still_rejects_a_foreign_machine() {
+        let local = crate::platform::local_hostname().unwrap_or("localhost");
+        assert!(!host_is_local(&format!("not-{}", first_dns_label(local))));
+        assert!(host_is_local(""));
+        assert!(host_is_local("localhost"));
+        assert!(host_is_local("LocalHost"));
     }
 
     // -----------------------------------------------------------------------

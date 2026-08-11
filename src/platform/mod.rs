@@ -127,6 +127,37 @@ pub(crate) fn take_terminal_resize_signal() -> bool {
     false
 }
 
+/// This machine's own hostname, read once per process. Shells report their cwd
+/// as `file://<hostname>/path`, so recognising our own name is what separates a
+/// local report from one a remote shell sent over an ssh session.
+pub(crate) fn local_hostname() -> Option<&'static str> {
+    static HOSTNAME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HOSTNAME.get_or_init(read_local_hostname).as_deref()
+}
+
+#[cfg(unix)]
+fn read_local_hostname() -> Option<String> {
+    // One byte spare: gethostname may omit the terminator when the name
+    // exactly fills the buffer.
+    let mut buffer = [0u8; 256];
+    if unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len() - 1) } != 0 {
+        return None;
+    }
+    let end = buffer
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(buffer.len());
+    let name = std::str::from_utf8(&buffer[..end]).ok()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+#[cfg(not(unix))]
+fn read_local_hostname() -> Option<String> {
+    let name = std::env::var("COMPUTERNAME").ok()?;
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 #[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardCommand {
