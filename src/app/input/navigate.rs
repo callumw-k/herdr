@@ -4289,9 +4289,15 @@ navigate_pane_down = "ctrl+j"
 
     #[test]
     fn sequence_miss_clears_pending_and_falls_through() {
+        // resize_mode is bound to bare 'z' so a regression that lets the missed
+        // key also fire as a fresh single-key binding is observable: it would
+        // flip mode to Resize instead of leaving it at Navigate. The default
+        // zoom binding (also plain 'z') is cleared so it can't claim the key first.
         let mut app = app_with_test_workspaces(&["test"]);
         app.state.keybinds.modal = true;
         app.state.keybinds.new_tab = crate::config::action_from_sequence(&["g", "t"]);
+        app.state.keybinds.zoom = crate::config::ActionKeybinds::default();
+        app.state.keybinds.resize_mode = crate::config::ActionKeybinds::prefix("z");
         app.state.mode = Mode::Navigate;
 
         app.handle_navigate_key(TerminalKey::from(KeyEvent::new(
