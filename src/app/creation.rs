@@ -586,25 +586,43 @@ impl App {
     }
 
     /// The workspace whose pinned path claims `cwd`, if it is not the one the
-    /// pane was created in. Deepest pinned path wins so a worktree pinned
-    /// under its repo takes precedence over the repo.
+    /// pane is already in. Deepest pinned path wins so a worktree pinned
+    /// under its repo takes precedence over the repo. The pane's own
+    /// workspace competes on depth too: nothing pulls a pane towards a pin
+    /// no more specific than the one it already sits under.
     pub(crate) fn claiming_workspace(
         &self,
         cwd: &std::path::Path,
         source_ws_idx: usize,
     ) -> Option<usize> {
-        self.state
+        // Measured on the canonical path so the depths being compared match
+        // the paths path_claims actually compared.
+        let claim_depth = |ws: &Workspace| -> Option<usize> {
+            let pinned = ws.pinned_path.as_ref()?;
+            crate::workspace::path_claims(pinned, cwd).then(|| {
+                crate::worktree::canonical_or_original(pinned)
+                    .components()
+                    .count()
+            })
+        };
+        let (claimant, depth) = self
+            .state
             .workspaces
             .iter()
             .enumerate()
             .filter(|(ws_idx, _)| *ws_idx != source_ws_idx)
-            .filter_map(|(ws_idx, ws)| {
-                let pinned = ws.pinned_path.as_ref()?;
-                crate::workspace::path_claims(pinned, cwd)
-                    .then_some((ws_idx, pinned.components().count()))
-            })
-            .max_by_key(|(_, depth)| *depth)
-            .map(|(ws_idx, _)| ws_idx)
+            .filter_map(|(ws_idx, ws)| Some((ws_idx, claim_depth(ws)?)))
+            .max_by_key(|(_, depth)| *depth)?;
+        // Two workspaces pinned to one directory would otherwise trade the
+        // pane back and forth on every directory change inside it.
+        let source_depth = self
+            .state
+            .workspaces
+            .get(source_ws_idx)
+            .and_then(claim_depth);
+        source_depth
+            .is_none_or(|source| source < depth)
+            .then_some(claimant)
     }
 
     /// Route a freshly created pane into the workspace that claims its cwd.
@@ -767,6 +785,40 @@ mod tests {
 
         assert_eq!(
             app.claiming_workspace(std::path::Path::new("/ws/src"), 0),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_duplicate_pin_does_not_claim_a_pane_from_its_twin() {
+        let app = app_with_pinned_workspaces(&[("a", Some("/ws")), ("b", Some("/ws"))]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/ws/src"), 0),
+            None
+        );
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/ws/src"), 1),
+            None
+        );
+    }
+
+    #[test]
+    fn a_shallower_pin_does_not_claim_a_pane_from_a_deeper_one() {
+        let app = app_with_pinned_workspaces(&[("deep", Some("/a/b")), ("shallow", Some("/a"))]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/a/b/c"), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn a_deeper_pin_still_claims_a_pane_from_a_shallower_one() {
+        let app = app_with_pinned_workspaces(&[("shallow", Some("/a")), ("deep", Some("/a/b"))]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/a/b/c"), 0),
             Some(1)
         );
     }
