@@ -369,6 +369,12 @@ pub struct KeysConfig {
     pub navigate_pane_up: BindingConfig,
     /// Focus the pane to the right in navigate mode. Default: "l". Right arrow is always an alias.
     pub navigate_pane_right: BindingConfig,
+    /// Enable modal input, where the prefix key opens a sticky normal mode. Default: false
+    pub modal: bool,
+    /// Leader key usable as the first step of a sequence binding. Default: "space"
+    pub leader: String,
+    /// Leave normal mode and type into the focused pane. Default: "i"
+    pub enter_insert: BindingConfig,
     /// Detach from server/client mode, or exit --no-session mode. Default: "prefix+q".
     pub detach: BindingConfig,
     /// Reload config.toml in the running app/server. Default: "prefix+shift+r".
@@ -502,6 +508,12 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     navigate_pane_right: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    modal: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    leader: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enter_insert: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     detach: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reload_config: Option<BindingConfig>,
@@ -625,6 +637,9 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(navigate_pane_down);
         apply_field!(navigate_pane_up);
         apply_field!(navigate_pane_right);
+        apply_field!(modal);
+        apply_field!(leader);
+        apply_field!(enter_insert);
         apply_field!(detach);
         apply_field!(reload_config);
         apply_field!(open_notification_target);
@@ -1029,6 +1044,9 @@ impl Default for KeysConfig {
             navigate_pane_down: BindingConfig::one("j"),
             navigate_pane_up: BindingConfig::one("k"),
             navigate_pane_right: BindingConfig::one("l"),
+            modal: false,
+            leader: "space".into(),
+            enter_insert: BindingConfig::one("i"),
             detach: BindingConfig::one("prefix+q"),
             reload_config: BindingConfig::one("prefix+shift+r"),
             open_notification_target: BindingConfig::one("prefix+o"),

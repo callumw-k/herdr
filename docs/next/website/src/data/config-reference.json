@@ -314,6 +314,24 @@
           "description": "Focus the pane to the right in navigate mode. Right arrow is always an alias."
         },
         {
+          "key": "keys.modal",
+          "type": "boolean",
+          "default": "false",
+          "description": "Enable modal input, where the prefix key opens a sticky normal mode."
+        },
+        {
+          "key": "keys.leader",
+          "type": "string",
+          "default": "\"space\"",
+          "description": "Leader key usable as the first step of a sequence binding."
+        },
+        {
+          "key": "keys.enter_insert",
+          "type": "keybinding",
+          "default": "\"i\"",
+          "description": "Leave normal mode and type into the focused pane."
+        },
+        {
           "key": "keys.detach",
           "type": "keybinding",
           "default": "\"prefix+q\"",

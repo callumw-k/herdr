@@ -306,6 +306,13 @@ pub struct NavigateKeybinds {
 #[derive(Debug, Clone)]
 pub struct Keybinds {
     pub navigate: NavigateKeybinds,
+    /// Modal input enabled. When true, normal mode is sticky and exits only via `enter_insert`.
+    #[allow(dead_code)] // read starting in a later modal-input task
+    pub modal: bool,
+    /// Leader combo, usable as the first step of a sequence binding.
+    pub leader: KeyCombo,
+    /// Key that leaves normal mode for the focused pane.
+    pub enter_insert: ActionKeybinds,
     pub help: ActionKeybinds,
     pub settings: ActionKeybinds,
     pub new_workspace: ActionKeybinds,
@@ -474,6 +481,9 @@ impl Config {
                 pane_up: empty_action!(),
                 pane_right: empty_action!(),
             },
+            modal: self.keys.modal,
+            leader: (KeyCode::Char(' '), KeyModifiers::empty()),
+            enter_insert: empty_action!(),
             help: empty_action!(),
             settings: empty_action!(),
             new_workspace: empty_action!(),
@@ -527,6 +537,17 @@ impl Config {
             toggle_sidebar: empty_action!(),
             custom_commands: Vec::new(),
         };
+
+        let (leader, leader_diag) = parse_key_combo_with_diagnostic(
+            &self.keys.leader,
+            "keys.leader",
+            (KeyCode::Char(' '), KeyModifiers::empty()),
+        );
+        if let Some(diag) = leader_diag {
+            warn!(message = %diag, "config diagnostic");
+            diagnostics.push(diag);
+        }
+        keybinds.leader = leader;
 
         macro_rules! field_source {
             ($field:ident) => {
@@ -602,6 +623,7 @@ impl Config {
             apply_navigate!(keybinds.navigate.pane_down, navigate_pane_down, source);
             apply_navigate!(keybinds.navigate.pane_up, navigate_pane_up, source);
             apply_navigate!(keybinds.navigate.pane_right, navigate_pane_right, source);
+            apply_navigate!(keybinds.enter_insert, enter_insert, source);
             apply_action!(keybinds.help, help, source);
             apply_action!(keybinds.settings, settings, source);
             apply_action!(keybinds.new_workspace, new_workspace, source);
@@ -1916,6 +1938,32 @@ command = "echo hi"
             diag.contains("disabled keys.navigate_workspace_down")
                 && (diag.contains("keys.next_tab") || diag.contains("keys.command"))
         }));
+    }
+
+    #[test]
+    fn modal_config_defaults_are_off_with_space_leader() {
+        let config = Config::default();
+        let keybinds = config.keybinds();
+        assert!(!keybinds.modal);
+        assert_eq!(keybinds.leader, (KeyCode::Char(' '), KeyModifiers::empty()));
+        assert_eq!(keybinds.enter_insert.labels(), vec!["i".to_string()]);
+    }
+
+    #[test]
+    fn modal_config_reads_user_values() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+modal = true
+leader = "comma"
+enter_insert = "a"
+"#,
+        )
+        .unwrap();
+        let keybinds = config.keybinds();
+        assert!(keybinds.modal);
+        assert_eq!(keybinds.leader, (KeyCode::Char(','), KeyModifiers::empty()));
+        assert_eq!(keybinds.enter_insert.labels(), vec!["a".to_string()]);
     }
 
     #[test]
