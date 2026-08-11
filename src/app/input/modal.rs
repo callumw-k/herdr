@@ -170,6 +170,9 @@ pub(crate) fn handle_navigator_key(
     if state.navigator.search_focused {
         match key.code {
             KeyCode::Esc => {
+                leave_modal(state);
+            }
+            KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
                 state.navigator.search_focused = false;
             }
             KeyCode::Enter => {
@@ -2009,7 +2012,7 @@ mod tests {
     }
 
     #[test]
-    fn navigator_empty_search_escape_returns_to_commands() {
+    fn navigator_ctrl_a_returns_to_commands() {
         let mut state = state_with_workspaces(&["alpha", "beta"]);
         let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         state.mode = Mode::Navigator;
@@ -2018,7 +2021,7 @@ mod tests {
         handle_navigator_key(
             &mut state,
             &terminal_runtimes,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         );
 
         assert_eq!(state.mode, Mode::Navigator);
@@ -2047,7 +2050,7 @@ mod tests {
     }
 
     #[test]
-    fn navigator_search_escape_blurs_then_next_escape_closes() {
+    fn navigator_ctrl_a_keeps_the_query_and_escape_closes_from_search() {
         let mut state = state_with_workspaces(&["alpha", "beta"]);
         let terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
         state.mode = Mode::Navigator;
@@ -2057,7 +2060,7 @@ mod tests {
         handle_navigator_key(
             &mut state,
             &terminal_runtimes,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL),
         );
 
         assert_eq!(state.mode, Mode::Navigator);
@@ -2090,15 +2093,6 @@ mod tests {
         );
 
         assert_eq!(state.navigator.query, "al");
-
-        handle_navigator_key(
-            &mut state,
-            &terminal_runtimes,
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
-        );
-
-        assert_eq!(state.mode, Mode::Navigator);
-        assert!(!state.navigator.search_focused);
 
         handle_navigator_key(
             &mut state,

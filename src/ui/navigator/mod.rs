@@ -560,8 +560,10 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
             Span::styled(" new  ", dim),
             Span::styled("ctrl+u", key),
             Span::styled(" clear  ", dim),
+            Span::styled("ctrl+a", key),
+            Span::styled(" keys  ", dim),
             Span::styled("esc", key),
-            Span::styled(" back", dim),
+            Span::styled(" close", dim),
         ])
     } else {
         let mut spans = vec![
