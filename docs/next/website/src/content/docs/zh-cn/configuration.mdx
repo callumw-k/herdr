@@ -143,6 +143,46 @@ next_tab = ["prefix+n", "ctrl+alt+]"]
 
 如果你已有旧的自定义按键绑定，并想使用新的默认值，请运行 `herdr config reset-keys`。Herdr 会备份 `config.toml`，移除 `[keys]` 和 `[[keys.command]]`，并在重启或执行 `herdr server reload-config` 后使用内置的 v2 默认值。
 
+## 模态输入
+
+Herdr 可以让前缀键变为固定的、vim 风格的普通模式，而不是一次性的前缀模式。默认关闭:
+
+```toml
+[keys]
+modal = true
+```
+
+启用 `modal = true` 后，按下前缀键会打开普通模式并保持打开状态，而不是执行一个命令后就返回到面板。无修饰键直接充当命令：普通模式打开时，所有现有的 `prefix+X` 绑定也可以作为裸键 `X` 使用。`keys.enter_insert`（默认 `i`）会退出普通模式，返回到当前聚焦面板中的输入状态。`esc` 和前缀键同样会退出普通模式。如果序列输入到一半，`esc` 会先清除该序列，并停留在普通模式，而不是直接退出。
+
+模态输入激活时，模式栏会显示 `NORMAL`；序列输入到一半时，模式栏会显示有效的后续按键。
+
+### 序列绑定
+
+一个绑定可以串联两步或更多步，写在与单键绑定相同的字段中，用空格分隔：
+
+```toml
+new_workspace = ["prefix+n", "leader w n"]
+```
+
+`keys.leader`（默认 `"space"`）会将 `leader` 标记展开为序列的第一步。序列需要 `keys.modal = true`：当模态输入关闭时，Herdr 会在加载配置时拒绝序列绑定，并给出诊断信息。
+
+由于普通模式下裸按键本身就充当命令，序列不能以某个已被现有 `prefix+X` 绑定占用的字母开头。大多数常用字母已被默认绑定占用：`g` 用于 goto，`w` 用于工作区选择器，`s` 用于设置，`q` 用于分离会话。以 `leader` 为起点可以避免这种冲突，因此除非先释放起始字母，否则应以 `leader` 开头：
+
+```toml
+[keys]
+modal = true
+leader = "space"
+enter_insert = "i"
+workspace_picker = ["prefix+w", "leader p"]
+
+# `g` is free only because goto has given it up.
+goto = ""
+next_tab = "g t"
+previous_tab = "g shift+t"
+```
+
+序列之间存在歧义时同样会被拒绝：一个序列不能是另一个序列的前缀，序列的起始键也不能已被占用为普通模式按键。
+
 ## 索引跳转
 
 索引式按键绑定在普通按键绑定字段中使用 `1..9`：

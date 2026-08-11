@@ -143,6 +143,46 @@ Key strings accept plain keys, modifier combinations such as `ctrl+a`, `shift+n`
 
 If you have old custom keybindings and want the new defaults, run `herdr config reset-keys`. Herdr backs up `config.toml`, removes `[keys]` and `[[keys.command]]`, and uses built-in v2 defaults after restart or `herdr server reload-config`.
 
+## Modal input
+
+Herdr can turn the prefix key into a sticky, vim-style normal mode instead of a one-shot prefix. It is off by default:
+
+```toml
+[keys]
+modal = true
+```
+
+With `modal = true`, pressing the prefix key opens normal mode and keeps it open, instead of returning to the pane after one command. Unmodified keys act as commands directly: every existing `prefix+X` binding also works as bare `X` while normal mode is open. `keys.enter_insert` (default `i`) leaves normal mode and returns to typing in the focused pane. `esc` and the prefix key also leave normal mode. If a sequence is half-typed, `esc` clears that sequence first and stays in normal mode rather than exiting.
+
+The mode bar shows `NORMAL` while modal input is active, and shows the valid continuations while a sequence is half-typed.
+
+### Sequence bindings
+
+A binding can chain two or more steps, written space-separated in the same fields used for single-key bindings:
+
+```toml
+new_workspace = ["prefix+n", "leader w n"]
+```
+
+`keys.leader` (default `"space"`) expands the `leader` token as a sequence's first step. Sequences need `keys.modal = true`: Herdr rejects a sequence binding at config load, with a diagnostic, when modal input is off.
+
+Because bare letters act as commands in normal mode, a sequence cannot start with a letter an existing `prefix+X` binding already claims. Most useful letters are claimed by the defaults: `g` for goto, `w` for the workspace picker, `s` for settings, `q` for detach. Rooting sequences under `leader` avoids this collision, so lead with `leader` unless you free the head letter first:
+
+```toml
+[keys]
+modal = true
+leader = "space"
+enter_insert = "i"
+workspace_picker = ["prefix+w", "leader p"]
+
+# `g` is free only because goto has given it up.
+goto = ""
+next_tab = "g t"
+previous_tab = "g shift+t"
+```
+
+Sequences are also rejected when they are ambiguous: one sequence cannot be a prefix of another, and a sequence's head key cannot already be claimed as a normal-mode key.
+
 ## Indexed jumps
 
 Indexed keybindings use `1..9` in normal keybinding fields:
