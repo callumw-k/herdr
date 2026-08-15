@@ -440,7 +440,6 @@ pub(super) fn render_panes(
                 && !pane_is_scrolled_back(rt)
                 && app.pane_exposes_host_cursor(ws_idx, info.id);
             rt.render(frame, info.inner_rect, show_cursor);
-            render_pane_scrollbar(app, frame, info, rt);
 
             let should_dim = !info.is_focused && multi_pane && !terminal_active;
             if should_dim {
@@ -454,36 +453,7 @@ pub(super) fn render_panes(
                 }
             }
 
-            let (copy_search_top, copy_search_bottom, copy_search_matches) =
-                validated_copy_mode_search_matches(app, info, rt);
-            render_copy_mode_search_highlights(
-                app,
-                frame,
-                info,
-                copy_search_top,
-                copy_search_bottom,
-                &copy_search_matches,
-                false,
-            );
-            render_selection_highlight(
-                &app.selection,
-                frame,
-                info.id,
-                info.inner_rect,
-                rt.scroll_metrics(),
-                &app.palette,
-                app.host_terminal_theme,
-            );
-            render_copy_mode_search_highlights(
-                app,
-                frame,
-                info,
-                copy_search_top,
-                copy_search_bottom,
-                &copy_search_matches,
-                true,
-            );
-            render_copy_mode_cursor(app, frame, info);
+            render_pane_overlays(app, frame, info, rt);
         }
     }
 
@@ -513,6 +483,7 @@ pub(super) fn render_panes(
                 && !pane_is_scrolled_back(rt)
                 && app.pane_exposes_host_cursor(ws_idx, info.id);
             rt.render(frame, info.inner_rect, show_cursor);
+            render_pane_overlays(app, frame, info, rt);
         }
     }
 
@@ -527,6 +498,50 @@ pub(super) fn render_panes(
     }
 
     render_pane_borders(app, ws, pane_infos, split_borders, stack_bars, frame);
+}
+
+/// Everything drawn on top of a pane's terminal content: scrollbar, copy-mode
+/// search highlights, text selection and the copy-mode cursor. Tiled panes and
+/// floats draw their frames differently but need the same overlays. The
+/// scrollbar is a no-op for floats, which get no scrollbar lane.
+fn render_pane_overlays(
+    app: &AppState,
+    frame: &mut Frame,
+    info: &PaneInfo,
+    rt: &crate::terminal::TerminalRuntime,
+) {
+    render_pane_scrollbar(app, frame, info, rt);
+
+    let (copy_search_top, copy_search_bottom, copy_search_matches) =
+        validated_copy_mode_search_matches(app, info, rt);
+    render_copy_mode_search_highlights(
+        app,
+        frame,
+        info,
+        copy_search_top,
+        copy_search_bottom,
+        &copy_search_matches,
+        false,
+    );
+    render_selection_highlight(
+        &app.selection,
+        frame,
+        info.id,
+        info.inner_rect,
+        rt.scroll_metrics(),
+        &app.palette,
+        app.host_terminal_theme,
+    );
+    render_copy_mode_search_highlights(
+        app,
+        frame,
+        info,
+        copy_search_top,
+        copy_search_bottom,
+        &copy_search_matches,
+        true,
+    );
+    render_copy_mode_cursor(app, frame, info);
 }
 
 /// A one-cell band down the right edge and along the bottom of a float, so it
@@ -2889,6 +2904,60 @@ mod tests {
             content.contains("RIGHTFLOAT"),
             "right float missing: {content:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn render_panes_highlights_a_selection_inside_a_float() {
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.view.terminal_area = Rect::new(0, 0, 40, 10);
+
+        let float_id = PaneId::from_raw(710);
+        let mut ws = Workspace::test_new("test");
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_screen_bytes(18, 8, b"FLOATTEXT"),
+        );
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        app.selection = Some(Selection::range(float_id, 0, 0, 2, None));
+
+        let inner_rect = Rect::new(1, 1, 18, 8);
+        let pane_infos = vec![PaneInfo {
+            id: float_id,
+            rect: Rect::new(0, 0, 20, 10),
+            inner_rect,
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused: true,
+        }];
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    &pane_infos,
+                    &[],
+                    &[],
+                )
+            })
+            .unwrap();
+
+        let expected = automatic_selection_style(&app.palette, app.host_terminal_theme);
+        let buffer = terminal.backend().buffer();
+        for col in 0..3u16 {
+            let style = buffer[(inner_rect.x + col, inner_rect.y)].style();
+            assert_eq!(style.bg, expected.bg, "column {col} not highlighted");
+            assert_eq!(style.fg, expected.fg, "column {col} not highlighted");
+        }
     }
 
     #[tokio::test]
