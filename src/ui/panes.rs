@@ -2,7 +2,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
 
@@ -495,15 +495,17 @@ pub(super) fn render_panes(
             let title = pane_label(app, ws, info.id);
             let block = Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Thick)
                 .border_style(Style::default().fg(if info.is_focused {
                     app.palette.accent
                 } else {
-                    app.palette.overlay0
+                    app.palette.overlay1
                 }))
                 .title(
                     pane_border_title(&title, info.rect.width, info.is_focused).unwrap_or_default(),
                 )
                 .style(Style::default().bg(app.palette.panel_bg));
+            render_float_shadow(frame, info.rect, app.palette.surface_dim);
             frame.render_widget(Clear, info.rect);
             frame.render_widget(block, info.rect);
             let show_cursor = info.is_focused
@@ -525,6 +527,26 @@ pub(super) fn render_panes(
     }
 
     render_pane_borders(app, ws, pane_infos, split_borders, stack_bars, frame);
+}
+
+/// A one-cell band down the right edge and along the bottom of a float, so it
+/// reads as lifted off the tiled panes behind it rather than blending into
+/// them. Drawn before the float's own `Clear`, over content already on screen.
+fn render_float_shadow(frame: &mut Frame, rect: Rect, shadow: Color) {
+    let area = frame.area();
+    let strips = [
+        Rect::new(rect.right(), rect.y.saturating_add(1), 1, rect.height),
+        Rect::new(rect.x.saturating_add(1), rect.bottom(), rect.width, 1),
+    ];
+    let buf = frame.buffer_mut();
+    for strip in strips {
+        let strip = strip.intersection(area);
+        for y in strip.top()..strip.bottom() {
+            for x in strip.left()..strip.right() {
+                buf[(x, y)].set_bg(shadow);
+            }
+        }
+    }
 }
 
 /// Where to find an already-valid, currently-drawn row to repurpose as a
