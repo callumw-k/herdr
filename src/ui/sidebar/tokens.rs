@@ -39,6 +39,7 @@ pub(super) fn agent_rows(
     config: &AgentsSidebarConfig,
     entry: &AgentPanelEntry,
     state_text: &str,
+    suppress_workspace: bool,
 ) -> Vec<Vec<ResolvedToken>> {
     config
         .rows_for_agent(entry.agent)
@@ -53,6 +54,7 @@ pub(super) fn agent_rows(
                         AgentSidebarToken::StateText => {
                             Some(ResolvedTokenKind::StateText(state_text.to_string()))
                         }
+                        AgentSidebarToken::Workspace if suppress_workspace => None,
                         AgentSidebarToken::Workspace => {
                             Some(ResolvedTokenKind::Workspace(entry.primary_label.clone()))
                         }
@@ -65,6 +67,15 @@ pub(super) fn agent_rows(
                         AgentSidebarToken::Agent => {
                             entry.agent_label.clone().map(ResolvedTokenKind::Agent)
                         }
+                        // The dim second row is per-agent context, so prefer the most
+                        // specific thing this pane knows about itself over the agent name,
+                        // which repeats on every row.
+                        AgentSidebarToken::Activity => entry
+                            .terminal_title_stripped
+                            .clone()
+                            .map(ResolvedTokenKind::TerminalTitle)
+                            .or_else(|| entry.pane_label.clone().map(ResolvedTokenKind::Pane))
+                            .or_else(|| entry.agent_label.clone().map(ResolvedTokenKind::Agent)),
                         AgentSidebarToken::TerminalTitle => entry
                             .terminal_title
                             .clone()
@@ -179,6 +190,37 @@ mod tests {
     }
 
     #[test]
+    fn activity_prefers_terminal_title_then_pane_then_agent() {
+        let config = AgentsSidebarConfig {
+            rows: vec![vec![AgentSidebarToken::Activity]],
+            ..Default::default()
+        };
+
+        let mut entry = entry();
+        assert_eq!(
+            agent_rows(&config, &entry, "working", false)[0][0].kind,
+            ResolvedTokenKind::Agent("pi".into())
+        );
+
+        entry.pane_label = Some("build".into());
+        assert_eq!(
+            agent_rows(&config, &entry, "working", false)[0][0].kind,
+            ResolvedTokenKind::Pane("build".into())
+        );
+
+        entry.terminal_title_stripped = Some("fixing sidebar".into());
+        assert_eq!(
+            agent_rows(&config, &entry, "working", false)[0][0].kind,
+            ResolvedTokenKind::TerminalTitle("fixing sidebar".into())
+        );
+
+        entry.agent_label = None;
+        entry.pane_label = None;
+        entry.terminal_title_stripped = None;
+        assert!(agent_rows(&config, &entry, "working", false).is_empty());
+    }
+
+    #[test]
     fn missing_custom_tokens_elide_rows_and_separators() {
         let entry = entry();
         let config = AgentsSidebarConfig {
@@ -193,7 +235,7 @@ mod tests {
             ..Default::default()
         };
 
-        let rows = agent_rows(&config, &entry, "working");
+        let rows = agent_rows(&config, &entry, "working", false);
 
         assert_eq!(rows.len(), 2);
         assert_eq!(
@@ -223,7 +265,7 @@ mod tests {
         };
 
         assert_eq!(
-            agent_rows(&config, &entry, "deep in the mines"),
+            agent_rows(&config, &entry, "deep in the mines", false),
             vec![vec![
                 ResolvedToken::unstyled(ResolvedTokenKind::StateText("deep in the mines".into())),
                 ResolvedToken::unstyled(ResolvedTokenKind::Custom("reviewing auth".into())),
@@ -249,7 +291,7 @@ mod tests {
         };
 
         assert_eq!(
-            agent_rows(&config, &entry, "working"),
+            agent_rows(&config, &entry, "working", false),
             vec![vec![
                 ResolvedToken::unstyled(ResolvedTokenKind::TerminalTitle("⠋ raw title".into())),
                 ResolvedToken::unstyled(ResolvedTokenKind::TerminalTitle("raw title".into())),
@@ -271,7 +313,7 @@ mod tests {
         pi.agent_label = Some("renamed pi".into());
 
         assert_eq!(
-            agent_rows(&config, &pi, "working"),
+            agent_rows(&config, &pi, "working", false),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent(
                 "renamed pi".into()
             ))]]
@@ -279,7 +321,7 @@ mod tests {
 
         pi.agent = None;
         assert_eq!(
-            agent_rows(&config, &pi, "working"),
+            agent_rows(&config, &pi, "working", false),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
                 "repo".into()
             ))]]

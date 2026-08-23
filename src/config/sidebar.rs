@@ -108,6 +108,7 @@ pub enum AgentSidebarToken {
     Tab,
     Pane,
     Agent,
+    Activity,
     TerminalTitle,
     TerminalTitleStripped,
     Custom(String),
@@ -238,6 +239,7 @@ fn agent_token_name(token: &AgentSidebarToken) -> String {
         AgentSidebarToken::Tab => "tab".into(),
         AgentSidebarToken::Pane => "pane".into(),
         AgentSidebarToken::Agent => "agent".into(),
+        AgentSidebarToken::Activity => "activity".into(),
         AgentSidebarToken::TerminalTitle => "terminal_title".into(),
         AgentSidebarToken::TerminalTitleStripped => "terminal_title_stripped".into(),
         AgentSidebarToken::Custom(name) => format!("${name}"),
@@ -292,6 +294,7 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
                 ("tab", Self::Tab),
                 ("pane", Self::Pane),
                 ("agent", Self::Agent),
+                ("activity", Self::Activity),
                 ("terminal_title", Self::TerminalTitle),
                 ("terminal_title_stripped", Self::TerminalTitleStripped),
             ],
@@ -391,12 +394,8 @@ impl Default for AgentsSidebarConfig {
     fn default() -> Self {
         Self {
             rows: vec![
-                vec![
-                    AgentSidebarToken::StateIcon,
-                    AgentSidebarToken::Workspace,
-                    AgentSidebarToken::Tab,
-                ],
-                vec![AgentSidebarToken::Agent],
+                vec![AgentSidebarToken::Workspace, AgentSidebarToken::Tab],
+                vec![AgentSidebarToken::StateIcon, AgentSidebarToken::Activity],
             ],
             rows_by_agent: BTreeMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
@@ -441,12 +440,8 @@ mod tests {
         assert_eq!(
             config.agents.rows,
             vec![
-                vec![
-                    AgentSidebarToken::StateIcon,
-                    AgentSidebarToken::Workspace,
-                    AgentSidebarToken::Tab,
-                ],
-                vec![AgentSidebarToken::Agent],
+                vec![AgentSidebarToken::Workspace, AgentSidebarToken::Tab],
+                vec![AgentSidebarToken::StateIcon, AgentSidebarToken::Activity],
             ]
         );
         assert!(config.agents.rows_by_agent.is_empty());

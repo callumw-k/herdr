@@ -361,7 +361,7 @@ The expanded desktop sidebar renders each inner array in `rows` as one line. The
 row_gap = 0
 rows = [
   ["state_icon", "workspace", "tab"],
-  ["agent"],
+  ["activity"],
 ]
 
 [ui.sidebar.spaces]
@@ -380,6 +380,7 @@ Agent rows accept these built-in tokens:
 - `tab` — tab name when available.
 - `pane` — pane name when available.
 - `agent` — detected or reported agent display name.
+- `activity` — the first value present out of `terminal_title_stripped`, `pane`, and `agent`.
 - `terminal_title` — latest OSC 0/2 terminal title after safety normalization.
 - `terminal_title_stripped` — the terminal title with one recognized leading activity or spinner glyph and its following whitespace removed.
 - `$name` — custom pane metadata named `name`.

@@ -548,7 +548,36 @@ fn resolved_agent_rows(app: &AppState, entry: &AgentPanelEntry) -> Vec<Vec<Resol
         .get(agent_panel_status_key(entry.state, entry.seen))
         .map(String::as_str)
         .unwrap_or_else(|| state_label(entry.state, entry.seen));
-    tokens::agent_rows(&app.sidebar_agents, entry, label)
+    tokens::agent_rows(
+        &app.sidebar_agents,
+        entry,
+        label,
+        agent_panel_groups_by_space(app),
+    )
+}
+
+/// Entries only run in workspace order when nothing has re-sorted them, so a
+/// custom view sort drops the headers instead of scattering them.
+pub(crate) fn agent_panel_groups_by_space(app: &AppState) -> bool {
+    matches!(app.agent_panel_sort, AgentPanelSort::Spaces)
+        && app
+            .agent_view_override
+            .as_ref()
+            .is_none_or(|view| view.sort.is_empty())
+}
+
+pub(crate) fn agent_group_header_rows(
+    app: &AppState,
+    entries: &[AgentPanelEntry],
+    index: usize,
+) -> u16 {
+    let starts_group = match index.checked_sub(1) {
+        None => true,
+        Some(previous) => entries
+            .get(previous)
+            .is_some_and(|previous| previous.ws_idx != entries[index].ws_idx),
+    };
+    u16::from(starts_group && agent_panel_groups_by_space(app))
 }
 
 pub(crate) fn agent_entry_height_in_body(
@@ -581,7 +610,8 @@ fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> 
     let mut visible = 0usize;
     let entries = agent_panel_entries(app);
     for (index, entry) in entries.iter().enumerate().skip(scroll) {
-        let height = agent_entry_height_in_body(app, entry, body.height);
+        let height = agent_entry_height_in_body(app, entry, body.height)
+            .saturating_add(agent_group_header_rows(app, &entries, index));
         if used_rows.saturating_add(height) > body.height {
             break;
         }
@@ -601,7 +631,9 @@ fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
     let mut start = entries.len();
     for (index, entry) in entries.iter().enumerate().rev() {
         let gap = agent_entry_gap(app, index, entries.len());
-        let needed = agent_entry_height_in_body(app, entry, body.height).saturating_add(gap);
+        let needed = agent_entry_height_in_body(app, entry, body.height)
+            .saturating_add(agent_group_header_rows(app, &entries, index))
+            .saturating_add(gap);
         if used_rows.saturating_add(needed) > body.height {
             break;
         }
@@ -1500,9 +1532,21 @@ fn render_agent_detail(
     for (index, detail) in details.iter().enumerate().skip(scroll) {
         let label_color = state_label_color(detail.state, detail.seen, p);
         let rows = resolved_agent_rows(app, detail);
+        let header_rows = agent_group_header_rows(app, &details, index);
         let height = (rows.len().max(1) as u16).min(body.height);
-        if row_y.saturating_add(height) > body_bottom {
+        if row_y.saturating_add(height).saturating_add(header_rows) > body_bottom {
             break;
+        }
+
+        if header_rows > 0 {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![Span::styled(
+                    format!(" {}", detail.primary_label),
+                    Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD),
+                )])),
+                Rect::new(body.x, row_y, body.width, 1),
+            );
+            row_y = row_y.saturating_add(header_rows);
         }
 
         let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
