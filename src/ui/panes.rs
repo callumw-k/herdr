@@ -7,9 +7,7 @@ use ratatui::{
 };
 
 use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
-#[cfg(test)]
-use super::text::display_width;
-use super::text::truncate_end;
+use super::text::{display_width, truncate_end};
 use super::widgets::panel_contrast_fg;
 use crate::app::state::Palette;
 use crate::app::{AppState, Mode};
@@ -477,7 +475,6 @@ pub(super) fn render_panes(
                     pane_border_title(&title, info.rect.width, info.is_focused).unwrap_or_default(),
                 )
                 .style(Style::default().bg(app.palette.panel_bg));
-            render_float_shadow(frame, info.rect, app.palette.surface_dim);
             frame.render_widget(Clear, info.rect);
             frame.render_widget(block, info.rect);
             let show_cursor = info.is_focused
@@ -544,26 +541,6 @@ fn render_pane_overlays(
         true,
     );
     render_copy_mode_cursor(app, frame, info);
-}
-
-/// A one-cell band down the right edge and along the bottom of a float, so it
-/// reads as lifted off the tiled panes behind it rather than blending into
-/// them. Drawn before the float's own `Clear`, over content already on screen.
-fn render_float_shadow(frame: &mut Frame, rect: Rect, shadow: Color) {
-    let area = frame.area();
-    let strips = [
-        Rect::new(rect.right(), rect.y.saturating_add(1), 1, rect.height),
-        Rect::new(rect.x.saturating_add(1), rect.bottom(), rect.width, 1),
-    ];
-    let buf = frame.buffer_mut();
-    for strip in strips {
-        let strip = strip.intersection(area);
-        for y in strip.top()..strip.bottom() {
-            for x in strip.left()..strip.right() {
-                buf[(x, y)].set_bg(shadow);
-            }
-        }
-    }
 }
 
 /// Where to find an already-valid, currently-drawn row to repurpose as a
@@ -707,17 +684,24 @@ fn render_stack_bar(
         StackBarKind::Summary { count } => format!("+{count} more"),
     };
     let text = pane_border_title(&label, bar.rect.width, false).unwrap_or_default();
-    let style = Style::default()
+    let border_style = Style::default().fg(app.palette.overlay0);
+    let label_style = Style::default()
         .fg(app.palette.subtext0)
-        .bg(app.palette.surface0)
         .add_modifier(Modifier::BOLD);
+    // A collapsed member is one row tall, so its top and bottom borders share
+    // that row. Closing both ends with corners keeps a hidden pane readable as
+    // a box rather than a bare label, which matters most for floats with no
+    // neighbouring pane border to sit against.
+    let fill = (bar.rect.width as usize).saturating_sub(2 + display_width(text.as_str()));
     frame.render_widget(Clear, bar.rect);
     frame.render_widget(
-        Paragraph::new(Line::from(text)).style(style).block(
-            Block::default()
-                .borders(Borders::LEFT | Borders::RIGHT)
-                .border_style(style),
-        ),
+        Paragraph::new(Line::from(vec![
+            Span::styled("┌", border_style),
+            Span::styled(text, label_style),
+            Span::styled("─".repeat(fill), border_style),
+            Span::styled("┐", border_style),
+        ]))
+        .style(Style::default().bg(app.palette.panel_bg)),
         bar.rect,
     );
 }
@@ -2356,8 +2340,8 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let row: String = (5..25).map(|x| buffer[(x, 3)].symbol()).collect();
         assert!(row.contains("claude"), "bar row: {row:?}");
-        assert_eq!(buffer[(5, 3)].symbol(), "│");
-        assert_eq!(buffer[(24, 3)].symbol(), "│");
+        assert_eq!(buffer[(5, 3)].symbol(), "┌");
+        assert_eq!(buffer[(24, 3)].symbol(), "┐");
     }
 
     #[test]
@@ -2700,8 +2684,9 @@ mod tests {
         );
         // Distinguishes an actual bar draw from a leftover generic border
         // title: a plain bordered pane on a 1-row rect draws "─" at its left
-        // edge from the junction table, not the "│" render_stack_bar uses.
-        assert_eq!(buffer[(0, 9)].symbol(), "│", "bar row: {collapsed_row:?}");
+        // edge from the junction table, not the corner render_stack_bar uses.
+        assert_eq!(buffer[(0, 9)].symbol(), "┌", "bar row: {collapsed_row:?}");
+        assert_eq!(buffer[(29, 9)].symbol(), "┐", "bar row: {collapsed_row:?}");
 
         let content: String = (0..9)
             .flat_map(|y| (0..30).map(move |x| (x, y)))
@@ -3319,13 +3304,18 @@ mod tests {
         let bar_row: String = (0..20).map(|x| buffer[(x, 9)].symbol()).collect();
         assert!(bar_row.contains("collapsed"), "bar row: {bar_row:?}");
         // The generic per-pane junction table turns a lone TOP+BOTTOM+LEFT
-        // border on a 1-row rect into "─" at the left edge, not the "│"
-        // render_stack_bar draws there — a leftover generic draw would show
-        // up as this row's leftmost cell reverting to a horizontal dash.
+        // border on a 1-row rect into a plain "─" at the left edge, not the
+        // corner render_stack_bar draws there — a leftover generic draw would
+        // show up as this row's leftmost cell reverting to a horizontal dash.
         assert_eq!(
             buffer[(0, 9)].symbol(),
-            "│",
+            "┌",
             "generic border drew over the bar's own left edge"
+        );
+        assert_eq!(
+            buffer[(19, 9)].symbol(),
+            "┐",
+            "collapsed bar did not close its right edge"
         );
     }
 }
