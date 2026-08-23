@@ -212,42 +212,47 @@ fn matching_response_controls(bytes: &[u8], expected: u32) -> bool {
     matched
 }
 
-pub(super) fn valid_control(control: &str, image_id: u32) -> bool {
+pub(super) fn valid_control(control: &str, image_id: u32, expected_len: usize) -> bool {
     if control.len() > 1024 || control.contains([';', '\x1b']) {
         return false;
     }
-    let mut action = false;
+    let mut seen = 0_u32;
+    let mut action = None;
     let mut format = false;
     let mut image = false;
     let mut quiet = false;
-    let mut cursor = false;
+    let mut width = None;
+    let mut height = None;
+    let mut placement = [false; 5];
+    let mut has_placement_controls = false;
     for field in control.split(',') {
         let Some((key, value)) = field.split_once('=') else {
             return false;
         };
-        if key == "t"
-            || !matches!(
-                key,
-                "a" | "f"
-                    | "s"
-                    | "v"
-                    | "i"
-                    | "p"
-                    | "c"
-                    | "r"
-                    | "z"
-                    | "C"
-                    | "q"
-                    | "x"
-                    | "y"
-                    | "w"
-                    | "h"
-                    | "X"
-                    | "Y"
-            )
-        {
+        let key_bit = match key {
+            "a" => 1 << 0,
+            "f" => 1 << 1,
+            "s" => 1 << 2,
+            "v" => 1 << 3,
+            "i" => 1 << 4,
+            "p" => 1 << 5,
+            "c" => 1 << 6,
+            "r" => 1 << 7,
+            "z" => 1 << 8,
+            "C" => 1 << 9,
+            "q" => 1 << 10,
+            "x" => 1 << 11,
+            "y" => 1 << 12,
+            "w" => 1 << 13,
+            "h" => 1 << 14,
+            "X" => 1 << 15,
+            "Y" => 1 << 16,
+            _ => return false,
+        };
+        if seen & key_bit != 0 {
             return false;
         }
+        seen |= key_bit;
         let numeric = value
             .strip_prefix('-')
             .unwrap_or(value)
@@ -258,15 +263,47 @@ pub(super) fn valid_control(control: &str, image_id: u32) -> bool {
             return false;
         }
         match key {
-            "a" => action = value == "T",
+            "a" if matches!(value, "T" | "t") => action = Some(value),
+            "a" => return false,
             "f" => format = value == "32",
+            "s" => width = value.parse::<usize>().ok().filter(|value| *value > 0),
+            "v" => height = value.parse::<usize>().ok().filter(|value| *value > 0),
             "i" => image = value.parse() == Ok(image_id),
             "q" => quiet = value == "0",
-            "C" => cursor = value == "1",
+            "p" => {
+                placement[0] = true;
+                has_placement_controls = true;
+            }
+            "c" => {
+                placement[1] = true;
+                has_placement_controls = true;
+            }
+            "r" => {
+                placement[2] = true;
+                has_placement_controls = true;
+            }
+            "z" => {
+                placement[3] = true;
+                has_placement_controls = true;
+            }
+            "C" => {
+                placement[4] = value == "1";
+                has_placement_controls = true;
+            }
+            "x" | "y" | "w" | "h" | "X" | "Y" => has_placement_controls = true,
             _ => {}
         }
     }
-    action && format && image && quiet && cursor
+    let dimensions_match = width
+        .zip(height)
+        .and_then(|(width, height)| width.checked_mul(height)?.checked_mul(4))
+        == Some(expected_len);
+    let profile_matches = match action {
+        Some("T") => placement.into_iter().all(|present| present),
+        Some("t") => !has_placement_controls,
+        _ => false,
+    };
+    format && image && quiet && dimensions_match && profile_matches
 }
 
 #[cfg(test)]
@@ -313,18 +350,25 @@ mod tests {
     }
 
     #[test]
-    fn validated_control_is_one_owned_rgba_transmit_and_display() {
+    fn validated_control_accepts_only_owned_rgba_direct_profiles() {
         assert!(valid_control(
             "a=T,f=32,s=10,v=20,i=42,p=7,c=5,r=6,z=-1,C=1,q=0,x=2",
-            42
+            42,
+            800,
         ));
+        assert!(valid_control("a=t,f=32,s=10,v=20,i=42,q=0", 42, 800,));
         for invalid in [
-            "a=T,f=24,i=42,C=1,q=0",
-            "a=T,f=32,i=41,C=1,q=0",
-            "a=T,t=f,f=32,i=42,C=1,q=0",
-            "a=p,f=32,i=42,C=1,q=0",
+            "a=T,f=24,s=10,v=20,i=42,p=7,c=5,r=6,z=-1,C=1,q=0",
+            "a=T,f=32,s=10,v=20,i=41,p=7,c=5,r=6,z=-1,C=1,q=0",
+            "a=T,t=f,f=32,s=10,v=20,i=42,p=7,c=5,r=6,z=-1,C=1,q=0",
+            "a=p,f=32,s=10,v=20,i=42,q=0",
+            "a=t,f=32,s=10,v=20,i=42,C=1,q=0",
+            "a=t,f=32,s=10,v=20,i=42,p=7,q=0",
+            "a=t,f=32,s=10,v=19,i=42,q=0",
+            "a=t,f=32,s=10,i=42,q=0",
+            "a=t,f=32,s=10,s=10,v=20,i=42,q=0",
         ] {
-            assert!(!valid_control(invalid, 42), "{invalid}");
+            assert!(!valid_control(invalid, 42, 800), "{invalid}");
         }
     }
 

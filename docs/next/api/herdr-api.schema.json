@@ -2126,6 +2126,7 @@
             "kilo",
             "hermes",
             "qodercli",
+            "qwen",
             "cursor",
             "mastracode",
             "antigravity_cli",
@@ -7372,6 +7373,7 @@
             "kilo",
             "hermes",
             "qodercli",
+            "qwen",
             "cursor",
             "mastracode",
             "antigravity_cli",
@@ -9576,6 +9578,14 @@
                   "default": false,
                   "description": "Accepts damage metadata while still consuming a complete canonical file.",
                   "type": "boolean"
+                },
+                "file_frame_direct_max_bytes": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 },
                 "file_frame_directory": {
                   "type": [

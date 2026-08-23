@@ -177,6 +177,8 @@ pub enum ResponseResult {
         file_frame_formats: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         file_frame_max_bytes: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file_frame_direct_max_bytes: Option<usize>,
         /// Accepts damage metadata while still consuming a complete canonical file.
         #[serde(default)]
         file_frame_damage: bool,

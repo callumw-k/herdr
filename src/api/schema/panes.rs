@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) const PANE_GRAPHICS_SET_MAX_BYTES: usize = 512 * 1024;
 pub(crate) const PANE_GRAPHICS_STREAM_MAX_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const PANE_GRAPHICS_DIRECT_FILE_MAX_BYTES: usize = 400 * 1024 * 1024;
 pub(crate) const PANE_GRAPHICS_MAX_LAYERS_PER_PANE: usize = 16;
 pub(crate) const PANE_GRAPHICS_MAX_LAYERS_TOTAL: usize = 64;
 pub(crate) const PANE_GRAPHICS_MAX_INLINE_BYTES_TOTAL: usize = 64 * 1024 * 1024;

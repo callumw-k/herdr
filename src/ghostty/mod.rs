@@ -1034,6 +1034,10 @@ impl Terminal {
         self.get_bool(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING)
     }
 
+    pub fn modify_other_keys_enabled(&self) -> Result<bool, Error> {
+        self.get_bool(ffi::GhosttyTerminalData_GHOSTTY_TERMINAL_DATA_MODIFY_OTHER_KEYS)
+    }
+
     pub fn active_screen(&self) -> Result<ActiveScreen, Error> {
         let mut out = ffi::GhosttyTerminalScreen_GHOSTTY_TERMINAL_SCREEN_PRIMARY;
         unsafe {
@@ -3488,6 +3492,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn kitty_graphics_file_upload_can_be_placed_later() {
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-kitty-file-upload-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pixel.rgba");
+        std::fs::write(&path, [255, 0, 0, 255]).unwrap();
+
+        let mut terminal = Terminal::new(10, 5, 0).unwrap();
+        terminal.enable_kitty_graphics().unwrap();
+        terminal.resize(10, 5, 8, 16).unwrap();
+        let mut upload = Vec::new();
+        crate::kitty_graphics::encode_kitty_regular_file(
+            &mut upload,
+            &[],
+            "a=t,f=32,s=1,v=1,i=10,q=0",
+            path.to_str().unwrap(),
+        );
+        terminal.write(&upload);
+        assert!(terminal.kitty_image_placements().unwrap().is_empty());
+
+        terminal.write(b"\x1b_Ga=p,i=10,p=5,c=10,r=5,C=1,q=2\x1b\\");
+        let placements = terminal.kitty_image_placements().unwrap();
+        assert_eq!(placements.len(), 1);
+        assert_eq!(placements[0].image_id, 10);
+        assert_eq!(placements[0].placement_id, 5);
+        assert_eq!(placements[0].image_width, 1);
+        assert_eq!(placements[0].image_height, 1);
+        assert_eq!(placements[0].format, KittyImageFormat::Rgba);
+        assert_eq!(placements[0].data, [255, 0, 0, 255]);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn kitty_graphics_unicode_placeholder_placement_is_queryable() {
         let mut terminal = Terminal::new(10, 5, 0).unwrap();
@@ -3596,6 +3637,17 @@ mod tests {
         mouse_event.set_position(0.0, 0.0);
         let encoded_mouse = mouse_encoder.encode(&mouse_event).unwrap();
         assert_eq!(encoded_mouse, b"\x1b[<0;1;1M");
+    }
+
+    #[test]
+    fn modify_other_keys_query_tracks_mode_two() {
+        let mut terminal = Terminal::new(80, 24, 0).unwrap();
+
+        assert!(!terminal.modify_other_keys_enabled().unwrap());
+        terminal.write(b"\x1b[>4;2m");
+        assert!(terminal.modify_other_keys_enabled().unwrap());
+        terminal.write(b"\x1b[>4;0m");
+        assert!(!terminal.modify_other_keys_enabled().unwrap());
     }
 
     #[test]

@@ -87,26 +87,17 @@ impl HeadlessServer {
                 if let (Some(key), Some((image_id, path, expected_len, transfer_id))) =
                     (direct_key.clone(), direct_frame)
                 {
-                    let mut next_cache = self
-                        .clients
-                        .get(&client_id)
-                        .map(|client| client.graphics_cache.clone())
-                        .unwrap_or_default();
-                    let command = (!internal_changed)
-                        .then(|| {
-                            crate::kitty_graphics::prepare_direct_file(
-                                &self.app.state,
-                                &self.app.pane_graphics,
-                                self.app.state.view.tab_surface(),
-                                self.clients
-                                    .get(&client_id)
-                                    .map(|client| client.cell_size)
-                                    .unwrap_or_default(),
-                                &mut next_cache,
-                                &key,
-                            )
-                        })
-                        .flatten();
+                    let command = self.clients.get(&client_id).and_then(|client| {
+                        crate::kitty_graphics::prepare_direct_file(
+                            &self.app.state,
+                            &self.app.pane_graphics,
+                            self.app.state.view.tab_surface(),
+                            client.cell_size,
+                            !internal_changed,
+                            &client.graphics_cache,
+                            &key,
+                        )
+                    });
                     let Some(command) = command else {
                         if self.install_inline_fallback(&key) {
                             if msg.respond_to.send(response).is_err() {
@@ -161,9 +152,6 @@ impl HeadlessServer {
                                     respond_to: msg.respond_to,
                                 });
                             }
-                            if let Some(client) = self.clients.get_mut(&client_id) {
-                                client.graphics_cache = next_cache;
-                            }
                             return if internal_changed {
                                 RenderImpact::Full
                             } else {
@@ -211,7 +199,9 @@ impl HeadlessServer {
         let Some(len) = len else {
             return false;
         };
-        if !self.app.pane_graphics.can_store_inline(key, len) {
+        if len > crate::api::schema::PANE_GRAPHICS_STREAM_MAX_BYTES
+            || !self.app.pane_graphics.can_store_inline(key, len)
+        {
             return false;
         }
         let data = self
@@ -365,13 +355,15 @@ impl HeadlessServer {
 
         if let Some(client) = self.clients.get_mut(&client_id) {
             client.direct_graphics = false;
-            client.graphics_cache.forget_pane_layer(&key, image_id);
         }
         self.app.direct_graphics_available = false;
         if !self.install_inline_fallback(&key) {
             self.retire_direct_gate(&key);
             self.retire_all_direct_graphics();
             return true;
+        }
+        if let Some(client) = self.clients.get_mut(&client_id) {
+            client.graphics_cache.forget_pane_layer(&key, image_id);
         }
         let gate = self
             .app

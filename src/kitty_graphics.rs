@@ -18,6 +18,7 @@ use crate::layout::{PaneId, PaneInfo};
 use crate::terminal::TerminalRuntimeRegistry;
 
 const KITTY_CHUNK_BYTES: usize = 3072;
+const MAX_OVERSIZED_SOURCES: usize = 256;
 pub(crate) const HEADLESS_GRAPHICS_TRANSACTION_BUDGET: usize =
     crate::protocol::MAX_GRAPHICS_FRAME_SIZE - crate::protocol::MAX_FRAME_SIZE;
 const HOST_IMAGE_ID_BASE: u32 = 10_000;
@@ -223,14 +224,17 @@ pub(crate) fn encode_local_pane_graphics(
 ) -> EncodedGraphics {
     let visible = app.mode == Mode::Terminal && cell_size.is_known();
     if graphics.slots.is_empty() {
-        let mut bytes = cache.clear_pane_sources();
         if !visible {
-            bytes.extend(cache.clear_bytes());
             return EncodedGraphics {
-                bytes,
+                bytes: cache.clear_bytes(),
                 incomplete: false,
             };
         }
+        let mut bytes = if transaction_budget.is_none() && cache.has_pane_sources() {
+            cache.clear_pane_sources()
+        } else {
+            Vec::new()
+        };
         let placements = collect_visible_placements(
             app,
             graphics,
@@ -238,14 +242,16 @@ pub(crate) fn encode_local_pane_graphics(
             surface,
             cell_size,
             &cache.images,
+            &cache.oversized,
         );
         let view_changed = cache.update_view(active_view_key(app));
-        cache.reset_incremental_state();
-        encode_terminal_graphics_update_legacy(&mut bytes, &placements, view_changed, cache);
-        return EncodedGraphics {
-            bytes,
-            incomplete: false,
-        };
+        let mut encoded =
+            encode_terminal_graphics_update(cache, &placements, view_changed, transaction_budget);
+        if !bytes.is_empty() {
+            bytes.extend(encoded.bytes);
+            encoded.bytes = bytes;
+        }
+        return encoded;
     }
 
     let live_pane_sources = graphics
@@ -265,6 +271,7 @@ pub(crate) fn encode_local_pane_graphics(
             surface,
             cell_size,
             &cache.images,
+            &cache.oversized,
         )
     } else {
         Vec::new()
@@ -345,6 +352,31 @@ pub(crate) fn has_visible_pane_graphics(
         }
     }
     false
+}
+
+fn encode_terminal_graphics_update(
+    cache: &mut HostGraphicsCache,
+    placements: &[HostPlacement],
+    view_changed: bool,
+    transaction_budget: Option<usize>,
+) -> EncodedGraphics {
+    if transaction_budget.is_some() {
+        cache.request_placement_replay();
+        return encode_graphics_update_incremental(
+            cache,
+            placements,
+            &HashSet::new(),
+            transaction_budget,
+        );
+    }
+
+    cache.reset_incremental_state();
+    let mut bytes = Vec::new();
+    encode_terminal_graphics_update_legacy(&mut bytes, placements, view_changed, cache);
+    EncodedGraphics {
+        bytes,
+        incomplete: false,
+    }
 }
 
 fn encode_terminal_graphics_update_legacy(
@@ -542,9 +574,11 @@ fn encode_graphics_update_incremental(
     cache.sources.retain(|source, _| {
         matches!(source, HostSourceKey::PaneLayer { .. }) || desired_sources.contains(source)
     });
-    cache
-        .oversized
-        .retain(|source, _| live_pane_sources.contains(source) || desired_sources.contains(source));
+    cache.oversized.retain(|source, _| {
+        matches!(source, HostSourceKey::Terminal { .. })
+            || live_pane_sources.contains(source)
+            || desired_sources.contains(source)
+    });
 
     let mut stale = cache
         .placements
@@ -582,9 +616,7 @@ fn encode_graphics_update_incremental(
         if cache.images.get(&host_id) != Some(&signature)
             && !image_transaction_fits(placement, transaction_budget)
         {
-            cache
-                .oversized
-                .insert(placement.source_key.clone(), signature);
+            cache.quarantine_oversized(placement.source_key.clone(), signature);
             continue;
         }
         let mut candidate = cache.clone();
@@ -824,7 +856,7 @@ impl HostGraphicsCache {
             self.placements.retain(|(id, _), _| *id != image_id);
             self.replayed_placements.retain(|(id, _)| *id != image_id);
         }
-        self.reset_incremental_state();
+        self.reset_incremental_progress();
         bytes
     }
 
@@ -834,11 +866,24 @@ impl HostGraphicsCache {
             .any(|source| matches!(source, HostSourceKey::PaneLayer { .. }))
     }
 
-    fn reset_incremental_state(&mut self) {
-        self.oversized.clear();
+    fn reset_incremental_progress(&mut self) {
         self.continuation = None;
         self.replay_placements = false;
         self.replayed_placements.clear();
+    }
+
+    fn reset_incremental_state(&mut self) {
+        self.oversized.clear();
+        self.reset_incremental_progress();
+    }
+
+    fn quarantine_oversized(&mut self, source: HostSourceKey, signature: ImageSignature) {
+        if !self.oversized.contains_key(&source) && self.oversized.len() >= MAX_OVERSIZED_SOURCES {
+            if let Some(evicted) = self.oversized.keys().next().cloned() {
+                self.oversized.remove(&evicted);
+            }
+        }
+        self.oversized.insert(source, signature);
     }
 
     pub(crate) fn trust_pane_layer(
@@ -969,6 +1014,7 @@ fn collect_visible_placements(
     surface: crate::ui::TabSurfaceView<'_>,
     cell_size: HostCellSize,
     uploaded_images: &HashMap<u32, ImageSignature>,
+    oversized_images: &HashMap<HostSourceKey, ImageSignature>,
 ) -> Vec<HostPlacement> {
     let ws_idx = match app.active {
         Some(idx) => idx,
@@ -1028,11 +1074,15 @@ fn collect_visible_placements(
                 continue;
             }
         };
+        let mut requested_images = HashSet::new();
         for placement in runtime.kitty_image_placements_with_data_filter(|descriptor| {
-            let format_code = kitty_format_code(descriptor.format);
-            let signature = image_signature_from_descriptor(descriptor, format_code);
-            let host_id = host_image_id_for_signature(info.id, signature);
-            uploaded_images.get(&host_id).copied() != Some(signature)
+            terminal_image_needs_data(
+                info.id,
+                descriptor,
+                uploaded_images,
+                oversized_images,
+                &mut requested_images,
+            )
         }) {
             let scrollback_offset = runtime
                 .scroll_metrics()
@@ -1057,6 +1107,25 @@ fn collect_visible_placements(
         "collect_visible_placements: done"
     );
     placements
+}
+
+fn terminal_image_needs_data(
+    pane_id: PaneId,
+    descriptor: KittyImageDescriptor,
+    uploaded_images: &HashMap<u32, ImageSignature>,
+    oversized_images: &HashMap<HostSourceKey, ImageSignature>,
+    requested_images: &mut HashSet<(HostSourceKey, ImageSignature)>,
+) -> bool {
+    let format_code = kitty_format_code(descriptor.format);
+    let signature = image_signature_from_descriptor(descriptor, format_code);
+    let host_id = host_image_id_for_signature(pane_id, signature);
+    let source = HostSourceKey::Terminal {
+        pane_id,
+        image_id: descriptor.image_id,
+    };
+    uploaded_images.get(&host_id).copied() != Some(signature)
+        && oversized_images.get(&source).copied() != Some(signature)
+        && requested_images.insert((source, signature))
 }
 
 fn pane_graphics_host_placement(
@@ -1180,38 +1249,53 @@ pub(crate) fn prepare_direct_file(
     graphics: &crate::app::pane_graphics::Runtime,
     surface: crate::ui::TabSurfaceView<'_>,
     cell_size: HostCellSize,
-    cache: &mut HostGraphicsCache,
+    allow_placement: bool,
+    cache: &HostGraphicsCache,
     key: &crate::app::pane_graphics::Key,
 ) -> Option<DirectFileCommand> {
-    if app.mode != Mode::Terminal || !cell_size.is_known() || app.active.is_none() {
-        return None;
-    }
-    let info = surface.pane_infos.iter().find(|info| info.id == key.0)?;
     let slot = graphics.slots.get(key)?;
     let layer = slot.layer.as_ref()?;
     layer.direct_lease()?;
-    let placement = pane_graphics_host_placement(
-        info,
-        &key.1,
-        slot.host_image_id,
-        cell_size,
-        layer,
-        &cache.images,
-        false,
-    );
-    let (command, clipped, format_code, placement_id) =
-        direct_file_command(&placement, slot.host_image_id)?;
-    cache
-        .images
-        .insert(slot.host_image_id, image_signature(&placement, format_code));
-    cache.placements.insert(
-        (slot.host_image_id, placement_id),
-        placement_signature(clipped, layer.z_index, 0),
-    );
-    cache
-        .sources
-        .insert(placement.source_key, slot.host_image_id);
-    Some(command)
+
+    let info = allow_placement
+        .then(|| surface.pane_infos.iter().find(|info| info.id == key.0))
+        .flatten()
+        .filter(|_| app.mode == Mode::Terminal && cell_size.is_known() && app.active.is_some());
+    if let Some(command) = info
+        .map(|info| {
+            pane_graphics_host_placement(
+                info,
+                &key.1,
+                slot.host_image_id,
+                cell_size,
+                layer,
+                &cache.images,
+                false,
+            )
+        })
+        .and_then(|placement| direct_file_command(&placement, slot.host_image_id))
+        .map(|(command, _, _, _)| command)
+    {
+        return Some(command);
+    }
+
+    let inline_fallback_available = layer.data_len()
+        <= crate::api::schema::PANE_GRAPHICS_STREAM_MAX_BYTES
+        && graphics.can_store_inline(key, layer.data_len());
+    (!inline_fallback_available).then(|| direct_file_upload_command(layer, slot.host_image_id))
+}
+
+fn direct_file_upload_command(
+    layer: &crate::app::pane_graphics::Layer,
+    host_image_id: u32,
+) -> DirectFileCommand {
+    DirectFileCommand {
+        leading: Vec::new(),
+        control: format!(
+            "a=t,f=32,s={},v={},i={host_image_id},q=0",
+            layer.image_width, layer.image_height
+        ),
+    }
 }
 
 fn direct_file_command(
@@ -2505,6 +2589,235 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn terminal_only_headless_budget_does_not_let_large_image_starve_small_image() {
+        let mut large = test_placement(0, 0);
+        large.placement.data_len = 24 * 1024 * 1024;
+        let mut small = test_placement(4, 0);
+        small.placement.image_id = 8;
+        small.source_key = HostSourceKey::Terminal {
+            pane_id: small.pane_id,
+            image_id: 8,
+        };
+        let small_source = small.source_key.clone();
+        let mut cache = HostGraphicsCache::default();
+
+        let large_only = encode_terminal_graphics_update(
+            &mut cache,
+            std::slice::from_ref(&large),
+            false,
+            Some(HEADLESS_GRAPHICS_TRANSACTION_BUDGET),
+        );
+        assert!(large_only.bytes.is_empty());
+        assert_eq!(cache.oversized.len(), 1);
+        assert!(cache.images.is_empty());
+
+        let hidden = encode_terminal_graphics_update(
+            &mut cache,
+            &[],
+            true,
+            Some(HEADLESS_GRAPHICS_TRANSACTION_BUDGET),
+        );
+        assert!(hidden.bytes.is_empty());
+        assert_eq!(cache.oversized.len(), 1);
+
+        let with_small = encode_terminal_graphics_update(
+            &mut cache,
+            &[large, small],
+            false,
+            Some(HEADLESS_GRAPHICS_TRANSACTION_BUDGET),
+        );
+        assert!(String::from_utf8_lossy(&with_small.bytes).contains("a=t"));
+        assert!(with_small.bytes.len() <= HEADLESS_GRAPHICS_TRANSACTION_BUDGET);
+        assert!(!with_small.incomplete);
+        assert_eq!(cache.oversized.len(), 1);
+        assert_eq!(cache.images.len(), 1);
+        assert!(cache.sources.contains_key(&small_source));
+    }
+
+    #[test]
+    fn budgeted_pane_cleanup_precedes_terminal_image_upload() {
+        let mut cache = HostGraphicsCache::default();
+        let pane_source = HostSourceKey::PaneLayer {
+            pane_id: PaneId::from_raw(1),
+            layer_id: "primary".into(),
+        };
+        cache.sources.insert(pane_source, 99);
+        cache.images.insert(
+            99,
+            ImageSignature {
+                image_width: 30,
+                image_height: 30,
+                format_code: 32,
+                data_len: 30 * 30 * 4,
+                data_fingerprint: 9,
+            },
+        );
+        let terminal = test_placement(0, 0);
+
+        let cleanup = encode_terminal_graphics_update(
+            &mut cache,
+            std::slice::from_ref(&terminal),
+            false,
+            Some(HEADLESS_GRAPHICS_TRANSACTION_BUDGET),
+        );
+        assert!(cleanup.incomplete);
+        let cleanup = String::from_utf8(cleanup.bytes).unwrap();
+        assert!(cleanup.contains("a=d,d=I,i=99"));
+        assert!(!cleanup.contains("a=t"));
+        assert!(cache.images.is_empty());
+
+        let upload = encode_terminal_graphics_update(
+            &mut cache,
+            &[terminal],
+            false,
+            Some(HEADLESS_GRAPHICS_TRANSACTION_BUDGET),
+        );
+        assert!(String::from_utf8_lossy(&upload.bytes).contains("a=t"));
+    }
+
+    #[test]
+    fn terminal_only_high_level_path_preserves_budget_quarantine() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = crate::workspace::Workspace::test_new("graphics-budget-dispatch");
+        let pane_id = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Terminal;
+        crate::ui::compute_view(&mut app, Rect::new(0, 0, 80, 24));
+
+        let source = HostSourceKey::Terminal {
+            pane_id,
+            image_id: 7,
+        };
+        let mut cache = HostGraphicsCache::default();
+        cache.quarantine_oversized(
+            source.clone(),
+            ImageSignature {
+                image_width: 3456,
+                image_height: 2234,
+                format_code: 32,
+                data_len: 3456 * 2234 * 4,
+                data_fingerprint: 42,
+            },
+        );
+
+        let encoded = encode_local_pane_graphics(
+            &app,
+            &crate::app::pane_graphics::Runtime::default(),
+            &TerminalRuntimeRegistry::new(),
+            app.view.tab_surface(),
+            HostCellSize {
+                width_px: 10,
+                height_px: 20,
+            },
+            Some(HEADLESS_GRAPHICS_TRANSACTION_BUDGET),
+            &mut cache,
+        );
+
+        assert!(encoded.bytes.is_empty());
+        assert!(cache.oversized.contains_key(&source));
+    }
+
+    #[test]
+    fn terminal_image_data_requests_deduplicate_and_reconsider_changed_signatures() {
+        let pane_id = PaneId::from_raw(1);
+        let descriptor = KittyImageDescriptor {
+            image_id: 7,
+            placement_id: 1,
+            image_width: 3456,
+            image_height: 2234,
+            format: KittyImageFormat::Rgba,
+            data_len: 3456 * 2234 * 4,
+            data_fingerprint: 42,
+        };
+        let mut requested = HashSet::new();
+        assert!(terminal_image_needs_data(
+            pane_id,
+            descriptor,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut requested,
+        ));
+        let mut second_placement = descriptor;
+        second_placement.placement_id = 2;
+        assert!(!terminal_image_needs_data(
+            pane_id,
+            second_placement,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut requested,
+        ));
+
+        let signature = image_signature_from_descriptor(descriptor, 32);
+        let source = HostSourceKey::Terminal {
+            pane_id,
+            image_id: descriptor.image_id,
+        };
+        let oversized = HashMap::from([(source, signature)]);
+        let mut requested = HashSet::new();
+        assert!(!terminal_image_needs_data(
+            pane_id,
+            descriptor,
+            &HashMap::new(),
+            &oversized,
+            &mut requested,
+        ));
+        let mut changed = descriptor;
+        changed.data_fingerprint += 1;
+        assert!(terminal_image_needs_data(
+            pane_id,
+            changed,
+            &HashMap::new(),
+            &oversized,
+            &mut requested,
+        ));
+    }
+
+    #[test]
+    fn terminal_quarantine_survives_pane_layer_cleanup_and_stays_bounded() {
+        let terminal_source = HostSourceKey::Terminal {
+            pane_id: PaneId::from_raw(1),
+            image_id: 7,
+        };
+        let signature = ImageSignature {
+            image_width: 3456,
+            image_height: 2234,
+            format_code: 32,
+            data_len: 3456 * 2234 * 4,
+            data_fingerprint: 42,
+        };
+        let pane_source = HostSourceKey::PaneLayer {
+            pane_id: PaneId::from_raw(1),
+            layer_id: "primary".into(),
+        };
+        let mut cache = HostGraphicsCache::default();
+        cache.quarantine_oversized(terminal_source.clone(), signature);
+        cache.sources.insert(pane_source, 99);
+        cache.images.insert(99, signature);
+
+        let cleared = String::from_utf8(cache.clear_pane_sources()).unwrap();
+        assert!(cleared.contains("a=d,d=I,i=99"));
+        assert!(cache.oversized.contains_key(&terminal_source));
+
+        for image_id in 0..=MAX_OVERSIZED_SOURCES as u32 {
+            cache.quarantine_oversized(
+                HostSourceKey::Terminal {
+                    pane_id: PaneId::from_raw(2),
+                    image_id,
+                },
+                ImageSignature {
+                    data_fingerprint: u64::from(image_id),
+                    ..signature
+                },
+            );
+        }
+        assert_eq!(cache.oversized.len(), MAX_OVERSIZED_SOURCES);
+        cache.clear_bytes();
+        assert!(cache.oversized.is_empty());
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import { defineConfig } from 'astro/config';
 import sitemap from '@astrojs/sitemap';
 import starlight from '@astrojs/starlight';
+import starlightLlmsTxt from 'starlight-llms-txt';
 
 const repoBlob = 'https://github.com/herdrdev/herdr/blob/master/';
 const nonCanonicalDocsPath = /^\/(?:ja\/|zh-cn\/)?docs\/(?:preview|\d+\.\d+\.\d+)(?:\/|$)/;
@@ -70,7 +71,7 @@ export default defineConfig({
     starlight({
       title: 'herdr',
       description: 'Terminal-native agent runtime and multiplexer.',
-      favicon: '/assets/favicon.png?v=14',
+      favicon: '/favicon.ico',
       defaultLocale: 'root',
       locales: {
         root: { label: 'English', lang: 'en' },
@@ -92,8 +93,29 @@ export default defineConfig({
         Sidebar: './src/components/Sidebar.astro',
         SiteTitle: './src/components/SiteTitle.astro',
       },
+      plugins: [
+        starlightLlmsTxt({
+          projectName: 'Herdr',
+          description: 'Terminal workspace manager and runtime for AI coding agents.',
+          details: 'These files document the current stable Herdr release. Preview and archived release documentation are intentionally excluded.',
+          exclude: ['docs/preview{,/**}', 'docs/+([0-9]).+([0-9]).+([0-9]){,/**}'],
+          optionalLinks: [
+            {
+              label: 'Agent guide',
+              url: 'https://herdr.dev/agent-guide.md',
+              description: 'help a human understand, set up, or troubleshoot Herdr',
+            },
+          ],
+        }),
+      ],
       customCss: ['./src/styles/starlight.css'],
       head: [
+        {
+          // Google's favicon crawler rejects icons smaller than 48px
+          tag: 'link',
+          attrs: { rel: 'icon', type: 'image/png', sizes: '192x192', href: '/assets/favicon.png' },
+        },
+        { tag: 'link', attrs: { rel: 'apple-touch-icon', href: '/assets/logo.png' } },
         // the brand display face; Starlight owns its own <head>, so the
         // marketing pages' font link doesn't reach docs
         { tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.googleapis.com' } },
@@ -209,7 +231,7 @@ export default defineConfig({
             { label: 'Socket API', translations: { ja: 'ソケット API', 'zh-CN': 'Socket API' }, slug: 'docs/socket-api' },
             { label: 'Integrations', translations: { ja: 'インテグレーション', 'zh-CN': '集成' }, slug: 'docs/integrations' },
             { label: 'Agent skill file', translations: { ja: 'エージェントスキルファイル', 'zh-CN': '智能体技能文件' }, slug: 'docs/agent-skill' },
-            { label: 'Windows beta', translations: { ja: 'Windows ベータ', 'zh-CN': 'Windows 测试版' }, slug: 'docs/windows-beta' },
+            { label: 'Windows support', translations: { ja: 'Windows サポート', 'zh-CN': 'Windows 支持' }, slug: 'docs/windows-beta' },
           ],
         },
         {

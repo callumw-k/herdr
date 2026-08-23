@@ -40,6 +40,11 @@ pub(crate) fn apply_pane_runtime_marker(command: &mut portable_pty::CommandBuild
 }
 
 #[cfg(not(windows))]
+pub(crate) fn terminal_title_for_presentation(title: &str) -> &str {
+    title
+}
+
+#[cfg(not(windows))]
 fn apply_pane_runtime_marker_platform(_command: &mut portable_pty::CommandBuilder) {}
 
 pub(crate) fn configure_background_command(command: &mut std::process::Command) {
@@ -224,6 +229,14 @@ pub(crate) struct RemoteSshConfigPaths {
 
 #[cfg(unix)]
 mod unix_common;
+#[cfg(unix)]
+pub(crate) use unix_common::{begin_cli_output, end_cli_output};
+
+#[cfg(not(unix))]
+pub(crate) fn begin_cli_output() {}
+
+#[cfg(not(unix))]
+pub(crate) fn end_cli_output() {}
 
 #[cfg(target_os = "linux")]
 mod linux;

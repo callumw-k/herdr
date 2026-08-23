@@ -13,9 +13,11 @@ use super::{
 };
 
 pub(crate) use super::unix_common::{
-    create_remote_private_dir, create_remote_ssh_config_dir, create_remote_ssh_config_file,
-    remote_bridge_endpoint_path, remote_private_temp_base, remote_reattach_argument,
-    remote_reattach_program, remote_ssh_config_paths,
+    configure_status_command, create_remote_private_dir, create_remote_ssh_config_dir,
+    create_remote_ssh_config_file, hostname, local_datetime, remote_bridge_endpoint_path,
+    remote_private_temp_base, remote_reattach_argument, remote_reattach_program,
+    remote_ssh_config_paths, set_default_plugin_pane_pwd, status_commands_supported,
+    StatusCommandGuard,
 };
 
 const WSL_MARKER_ENV_VARS: &[&str] = &["WSL_DISTRO_NAME", "WSL_INTEROP"];
@@ -38,6 +40,10 @@ pub fn raise_server_nofile_limit() {}
 
 pub(crate) fn should_draw_host_cursor_by_default() -> bool {
     running_inside_wsl()
+}
+
+pub(crate) fn should_query_host_terminal_palette() -> bool {
+    !running_inside_wsl()
 }
 
 fn running_inside_wsl() -> bool {
@@ -461,14 +467,14 @@ pub fn read_clipboard_text() -> Option<String> {
     None
 }
 
-pub fn open_url(url: &str) -> std::io::Result<()> {
+pub fn open_url(url: &str) -> std::io::Result<Option<std::process::Child>> {
     Command::new("xdg-open")
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()?;
-    Ok(())
+        .spawn()
+        .map(Some)
 }
 
 pub fn read_clipboard_image() -> Option<ClipboardImage> {

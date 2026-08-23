@@ -161,6 +161,70 @@ fn stream_set_message(
     )
 }
 
+#[cfg(unix)]
+fn sparse_direct_frame(
+    server: &HeadlessServer,
+    name: &str,
+    image_width: u32,
+    image_height: u32,
+) -> String {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let path = server
+        .app
+        .pane_graphics_files
+        .source_directory()
+        .unwrap()
+        .join(name);
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .unwrap();
+    file.set_len(u64::from(image_width) * u64::from(image_height) * 4)
+        .unwrap();
+    path.to_string_lossy().into_owned()
+}
+
+#[cfg(unix)]
+fn direct_stream_message(
+    id: &str,
+    pane_id: &str,
+    owner: &str,
+    path: String,
+    image_width: u32,
+    image_height: u32,
+) -> (api::ApiRequestMessage, std::sync::mpsc::Receiver<String>) {
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    (
+        api::ApiRequestMessage {
+            request: api::schema::Request {
+                id: id.into(),
+                method: api::schema::Method::PaneGraphicsStreamDirect(
+                    api::schema::PaneGraphicsDirectParams {
+                        pane_id: pane_id.into(),
+                        layer_id: None,
+                        z_index: 0,
+                        owner: owner.into(),
+                        image_width,
+                        image_height,
+                        format: api::schema::PaneGraphicsFormat::Rgba,
+                        path,
+                        sequence: 1,
+                        revision: 1,
+                        placement: Default::default(),
+                    },
+                ),
+            },
+            respond_to,
+            response_write_complete: None,
+            stream_active: None,
+        },
+        response_rx,
+    )
+}
+
 #[tokio::test]
 async fn pixel_mouse_activation_requires_graphics_demand_not_direct_transport() {
     let (mut server, _client_rx, pane_id) =
@@ -665,8 +729,266 @@ fn rejected_or_stale_requests_do_not_schedule_rendering() {
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn hidden_large_direct_frame_uploads_then_replays_placement_without_closing_stream() {
+    let (mut server, client_rx, _) = retained_test_server(b"active");
+    enable_graphics_and_render(&mut server, &client_rx);
+    let background_tab = server.app.state.workspaces[0].test_add_tab(Some("browser"));
+    let pane_id = server.app.state.workspaces[0].tabs[background_tab].root_pane;
+    let pane_number = server.app.state.workspaces[0]
+        .public_pane_number(pane_id)
+        .unwrap();
+    let public_pane_id = crate::workspace::public_pane_id_for_number(
+        &server.app.state.workspaces[0].id,
+        pane_number,
+    );
+    server.clients.get_mut(&1).unwrap().direct_graphics = true;
+    server.app.direct_graphics_available = true;
+    set_stream_owner(&mut server, pane_id, "browser");
+
+    let image_width = 2_048;
+    let image_height = 2_049;
+    let expected_len = u64::from(image_width) * u64::from(image_height) * 4;
+    assert!(expected_len > api::schema::PANE_GRAPHICS_STREAM_MAX_BYTES as u64);
+    let path = sparse_direct_frame(
+        &server,
+        "hidden-large-frame.rgba",
+        image_width,
+        image_height,
+    );
+    let (message, response_rx) = direct_stream_message(
+        "hidden-frame",
+        &public_pane_id,
+        "browser",
+        path,
+        image_width,
+        image_height,
+    );
+
+    assert_eq!(
+        server.handle_pane_graphics_stream_frame(message),
+        RenderImpact::None
+    );
+    let (transfer_id, image_id, control, leading) = match read_server_message(
+        client_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("hidden direct upload"),
+    ) {
+        ServerMessage::GraphicsFile {
+            transfer_id,
+            image_id,
+            control,
+            leading,
+            expected_len: sent_len,
+            ..
+        } => {
+            assert_eq!(sent_len, expected_len);
+            (transfer_id, image_id, control, leading)
+        }
+        other => panic!("expected graphics file, got {other:?}"),
+    };
+    assert!(leading.is_empty());
+    assert!(control.starts_with("a=t,"), "{control}");
+    assert!(!control.contains("p="), "{control}");
+    assert!(response_rx.try_recv().is_err());
+
+    server.app.state.workspaces[0].switch_tab(background_tab);
+    server.render_and_stream();
+    let frame = read_server_frame(
+        client_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("frame while upload is pending"),
+    );
+    assert!(!frame.graphics.windows(4).any(|bytes| bytes == b"a=p,"));
+
+    server.app.state.workspaces[0].switch_tab(0);
+    server.render_and_stream();
+    let _hidden_again = read_server_frame(
+        client_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("frame after hiding pending upload"),
+    );
+    server.start_direct_graphics_response(1, transfer_id, image_id);
+    assert!(server.complete_direct_graphics(1, transfer_id, image_id, true));
+    assert!(serde_json::from_str::<api::schema::SuccessResponse>(
+        &response_rx.recv_timeout(Duration::from_secs(1)).unwrap()
+    )
+    .is_ok());
+    let slot = &server.app.pane_graphics.slots[&graphics_key(pane_id)];
+    assert!(slot.stream_is_active());
+    assert!(slot.layer.as_ref().unwrap().terminal_only());
+
+    server.app.state.workspaces[0].switch_tab(background_tab);
+    server.render_and_stream();
+    let frame = read_server_frame(
+        client_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("placement replay after tab switch"),
+    );
+    let graphics = String::from_utf8_lossy(&frame.graphics);
+    assert!(graphics.contains("a=p,"), "{graphics:?}");
+    assert!(graphics.contains(&format!("i={image_id}")), "{graphics:?}");
+    assert!(!graphics.contains("a=t,"), "{graphics:?}");
+
+    let next_path = sparse_direct_frame(
+        &server,
+        "visible-next-frame.rgba",
+        image_width,
+        image_height,
+    );
+    let (message, next_response_rx) = direct_stream_message(
+        "visible-frame",
+        &public_pane_id,
+        "browser",
+        next_path,
+        image_width,
+        image_height,
+    );
+    assert_eq!(
+        server.handle_pane_graphics_stream_frame(message),
+        RenderImpact::None
+    );
+    match read_server_message(
+        client_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("next visible direct frame"),
+    ) {
+        ServerMessage::GraphicsFile { control, .. } => {
+            assert!(control.starts_with("a=T,"), "{control}");
+        }
+        other => panic!("expected graphics file, got {other:?}"),
+    }
+    assert!(next_response_rx.try_recv().is_err());
+    assert!(server.app.pane_graphics.slots[&graphics_key(pane_id)].stream_is_active());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn hidden_small_direct_frame_preserves_owned_inline_fallback() {
+    let (mut server, client_rx, _) = retained_test_server(b"active");
+    enable_graphics_and_render(&mut server, &client_rx);
+    let background_tab = server.app.state.workspaces[0].test_add_tab(Some("browser"));
+    let pane_id = server.app.state.workspaces[0].tabs[background_tab].root_pane;
+    let pane_number = server.app.state.workspaces[0]
+        .public_pane_number(pane_id)
+        .unwrap();
+    let public_pane_id = crate::workspace::public_pane_id_for_number(
+        &server.app.state.workspaces[0].id,
+        pane_number,
+    );
+    server.clients.get_mut(&1).unwrap().direct_graphics = true;
+    server.app.direct_graphics_available = true;
+    set_stream_owner(&mut server, pane_id, "browser");
+
+    let path = sparse_direct_frame(&server, "hidden-small-frame.rgba", 1, 1);
+    let (message, response_rx) =
+        direct_stream_message("hidden-small", &public_pane_id, "browser", path, 1, 1);
+    assert_eq!(
+        server.handle_pane_graphics_stream_frame(message),
+        RenderImpact::Graphics
+    );
+    assert!(serde_json::from_str::<api::schema::SuccessResponse>(
+        &response_rx.recv_timeout(Duration::from_secs(1)).unwrap()
+    )
+    .is_ok());
+    assert!(client_rx.recv_timeout(Duration::from_millis(50)).is_err());
+    let slot = &server.app.pane_graphics.slots[&graphics_key(pane_id)];
+    assert!(slot.stream_is_active());
+    assert_eq!(
+        slot.layer.as_ref().unwrap().inline_data(),
+        Some([0; 4].as_slice())
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn direct_frame_during_internal_redraw_uploads_without_placement() {
+    let (mut server, client_rx, pane_id) = retained_test_server(b"active");
+    enable_graphics_and_render(&mut server, &client_rx);
+    let pane_number = server.app.state.workspaces[0]
+        .public_pane_number(pane_id)
+        .unwrap();
+    let public_pane_id = crate::workspace::public_pane_id_for_number(
+        &server.app.state.workspaces[0].id,
+        pane_number,
+    );
+    server.clients.get_mut(&1).unwrap().direct_graphics = true;
+    server.app.direct_graphics_available = true;
+    set_stream_owner(&mut server, pane_id, "browser");
+    server
+        .app
+        .event_tx
+        .try_send(AppEvent::UpdateReady {
+            version: "9.9.9".into(),
+            install_command: "herdr update".into(),
+        })
+        .unwrap();
+
+    let image_width = 2_048;
+    let image_height = 2_049;
+    let path = sparse_direct_frame(&server, "redraw-frame.rgba", image_width, image_height);
+    let (message, response_rx) = direct_stream_message(
+        "redraw",
+        &public_pane_id,
+        "browser",
+        path,
+        image_width,
+        image_height,
+    );
+    assert_eq!(
+        server.handle_pane_graphics_stream_frame(message),
+        RenderImpact::Full
+    );
+    let (transfer_id, image_id) = match read_server_message(
+        client_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("direct upload during redraw"),
+    ) {
+        ServerMessage::GraphicsFile {
+            control,
+            leading,
+            transfer_id,
+            image_id,
+            ..
+        } => {
+            assert!(leading.is_empty());
+            assert!(control.starts_with("a=t,"), "{control}");
+            (transfer_id, image_id)
+        }
+        other => panic!("expected graphics file, got {other:?}"),
+    };
+    server.start_direct_graphics_response(1, transfer_id, image_id);
+    assert!(server.complete_direct_graphics(1, transfer_id, image_id, true));
+    assert!(response_rx.recv_timeout(Duration::from_secs(1)).is_ok());
+    assert!(server.app.pane_graphics.slots[&graphics_key(pane_id)].stream_is_active());
+
+    server.render_and_stream();
+    let frame = read_server_frame(
+        client_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("placement after redraw upload acknowledgement"),
+    );
+    let graphics = String::from_utf8_lossy(&frame.graphics);
+    assert!(graphics.contains("a=p,"), "{graphics:?}");
+    assert!(graphics.contains(&format!("i={image_id}")), "{graphics:?}");
+    assert!(!graphics.contains("a=t,"), "{graphics:?}");
+}
+
+#[cfg(unix)]
 fn direct_gate_server(
     data: &[u8],
+) -> (
+    HeadlessServer,
+    crate::app::pane_graphics::Key,
+    std::sync::mpsc::Receiver<String>,
+) {
+    direct_gate_server_with_file(data.len(), Some(data))
+}
+
+#[cfg(unix)]
+fn direct_gate_server_with_file(
+    len: usize,
+    data: Option<&[u8]>,
 ) -> (
     HeadlessServer,
     crate::app::pane_graphics::Key,
@@ -692,13 +1014,13 @@ fn direct_gate_server(
         .mode(0o600)
         .open(&path)
         .unwrap();
-    file.write_all(data).unwrap();
+    if let Some(data) = data {
+        file.write_all(data).unwrap();
+    } else {
+        file.set_len(len as u64).unwrap();
+    }
     drop(file);
-    let lease = server
-        .app
-        .pane_graphics_files
-        .lease(&path, data.len())
-        .unwrap();
+    let lease = server.app.pane_graphics_files.lease(&path, len).unwrap();
     let (respond_to, response_rx) = std::sync::mpsc::channel();
     let layer =
         crate::app::pane_graphics::Layer::direct(1, 1, lease.clone(), Default::default(), 0);
@@ -833,6 +1155,22 @@ fn explicit_terminal_error_acks_only_after_owned_inline_fallback() {
         ("ack".into(), Some([1, 2, 3, 4].as_slice()), false, true)
     );
     assert!(server.clients[&7].graphics_cache.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn large_direct_terminal_error_closes_without_acknowledging_or_copying() {
+    let len = crate::api::schema::PANE_GRAPHICS_STREAM_MAX_BYTES + 4;
+    let (mut server, key, response_rx) = direct_gate_server_with_file(len, None);
+    add_direct_client(&mut server, 7);
+    let (transfer_id, image_id) = direct_ids(&server, &key);
+
+    assert!(server.complete_direct_graphics(7, transfer_id, image_id, false));
+    assert!(!server.app.pane_graphics.slots.contains_key(&key));
+    assert!(matches!(
+        response_rx.try_recv(),
+        Err(std::sync::mpsc::TryRecvError::Disconnected)
+    ));
 }
 
 #[cfg(unix)]

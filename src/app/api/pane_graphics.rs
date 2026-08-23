@@ -2,8 +2,8 @@ use base64::Engine;
 
 use crate::api::schema::{
     PaneGraphicsClearParams, PaneGraphicsSetParams, PaneGraphicsStreamParams, ResponseResult,
-    PANE_GRAPHICS_MAX_LAYERS_PER_PANE, PANE_GRAPHICS_PRIMARY_LAYER_ID, PANE_GRAPHICS_SET_MAX_BYTES,
-    PANE_GRAPHICS_STREAM_MAX_BYTES,
+    PANE_GRAPHICS_DIRECT_FILE_MAX_BYTES, PANE_GRAPHICS_MAX_LAYERS_PER_PANE,
+    PANE_GRAPHICS_PRIMARY_LAYER_ID, PANE_GRAPHICS_SET_MAX_BYTES, PANE_GRAPHICS_STREAM_MAX_BYTES,
 };
 use crate::app::pane_graphics::{Key as PaneGraphicsKey, Layer, Slot};
 use crate::app::App;
@@ -65,6 +65,7 @@ impl App {
                     Vec::new()
                 },
                 file_frame_max_bytes: direct.then_some(PANE_GRAPHICS_STREAM_MAX_BYTES),
+                file_frame_direct_max_bytes: direct.then_some(PANE_GRAPHICS_DIRECT_FILE_MAX_BYTES),
                 // Damage metadata never changes the complete canonical frame contract.
                 file_frame_damage: true,
                 max_layers_per_pane: PANE_GRAPHICS_MAX_LAYERS_PER_PANE,
@@ -318,9 +319,18 @@ impl App {
         ) {
             return encode_error(id, "invalid_image", "direct frames require rgba or bgra");
         }
+        let primary = key.1 == PANE_GRAPHICS_PRIMARY_LAYER_ID;
+        let direct = self.direct_graphics_available
+            && primary
+            && params.format == crate::api::schema::PaneGraphicsFormat::Rgba;
+        let max_bytes = if direct {
+            PANE_GRAPHICS_DIRECT_FILE_MAX_BYTES
+        } else {
+            PANE_GRAPHICS_STREAM_MAX_BYTES
+        };
         let expected_len =
             match expected_len(params.format, params.image_width, params.image_height) {
-                Ok(Some(len)) if len <= PANE_GRAPHICS_STREAM_MAX_BYTES => len,
+                Ok(Some(len)) if len <= max_bytes => len,
                 _ => return encode_error(id, "invalid_image", "invalid direct RGBA dimensions"),
             };
         let lease = match self
@@ -330,10 +340,6 @@ impl App {
             Ok(lease) => lease,
             Err(err) => return encode_error(id, "invalid_frame_file", err.to_string()),
         };
-        let primary = key.1 == PANE_GRAPHICS_PRIMARY_LAYER_ID;
-        let direct = self.direct_graphics_available
-            && primary
-            && params.format == crate::api::schema::PaneGraphicsFormat::Rgba;
         if !direct && !self.pane_graphics.can_store_inline(&key, expected_len) {
             return encode_error(
                 id,
@@ -699,6 +705,14 @@ mod tests {
             value["result"]["file_frame_formats"],
             serde_json::json!(["rgba", "bgra"])
         );
+        assert_eq!(
+            value["result"]["file_frame_max_bytes"],
+            PANE_GRAPHICS_STREAM_MAX_BYTES
+        );
+        assert_eq!(
+            value["result"]["file_frame_direct_max_bytes"],
+            PANE_GRAPHICS_DIRECT_FILE_MAX_BYTES
+        );
         assert_eq!(value["result"]["file_frame_damage"], true);
         assert_eq!(value["result"]["file_frame_transport"], "direct-kitty");
     }
@@ -1039,6 +1053,24 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn sparse_direct_file(app: &App, name: &str, len: usize) -> String {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let path = app
+            .pane_graphics_files
+            .source_directory()
+            .unwrap()
+            .join(name);
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .unwrap();
+        file.set_len(len as u64).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
+    #[cfg(unix)]
     fn direct_params(
         pane_id: String,
         owner: &str,
@@ -1143,6 +1175,46 @@ mod tests {
                 .inline_data(),
             Some([5, 6, 7, 8].as_slice())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn direct_primary_rgba_accepts_fullscreen_retina_frame() {
+        let (mut app, pane_id) = app();
+        app.direct_graphics_available = true;
+        app.handle_pane_graphics_stream_open(
+            "open".into(),
+            PaneGraphicsStreamParams {
+                pane_id: pane_id.clone(),
+                layer_id: None,
+                z_index: 0,
+                owner: "owner".into(),
+            },
+        );
+        let (image_width, image_height) = (3456, 2234);
+        let len = image_width * image_height * 4;
+        let path = sparse_direct_file(&app, "retina-frame", len as usize);
+        let response = app.handle_pane_graphics_stream_direct(
+            "frame".into(),
+            crate::api::schema::PaneGraphicsDirectParams {
+                image_width,
+                image_height,
+                ..direct_params(pane_id, "owner", path)
+            },
+        );
+
+        assert!(serde_json::from_str::<SuccessResponse>(&response).is_ok());
+        assert!(app
+            .pane_graphics
+            .slots
+            .values()
+            .next()
+            .unwrap()
+            .layer
+            .as_ref()
+            .unwrap()
+            .direct_lease()
+            .is_some());
     }
 
     #[cfg(unix)]
