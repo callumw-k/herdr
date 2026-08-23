@@ -574,6 +574,7 @@ fn stack_bars_for<'a>(infos: impl Iterator<Item = &'a PaneInfo>) -> Vec<StackBar
     // stack's column (stack members all share the same x and width).
     let mut last_real: Option<(u16, FoldAnchor)> = None;
     let mut zero_run: Option<ZeroRun> = None;
+    let mut seen_active = false;
 
     for info in infos {
         if info.rect.height == 0 {
@@ -608,9 +609,11 @@ fn stack_bars_for<'a>(infos: impl Iterator<Item = &'a PaneInfo>) -> Vec<StackBar
             bars.push(StackBar {
                 rect: info.rect,
                 kind: StackBarKind::Pane(info.id),
+                below_active: seen_active,
             });
             last_real = Some((info.rect.x, FoldAnchor::Bar(bars.len() - 1)));
         } else {
+            seen_active = true;
             last_real = Some((info.rect.x, FoldAnchor::Active(info.rect)));
         }
     }
@@ -648,6 +651,7 @@ fn close_fold_run(bars: &mut Vec<StackBar>, run: ZeroRun, successor: Option<Rect
             bars.push(StackBar {
                 rect: active_edge_row(rect, false),
                 kind: StackBarKind::Summary { count: run.count },
+                below_active: true,
             });
         }
         None => {
@@ -655,6 +659,7 @@ fn close_fold_run(bars: &mut Vec<StackBar>, run: ZeroRun, successor: Option<Rect
                 bars.push(StackBar {
                     rect: active_edge_row(active_rect, true),
                     kind: StackBarKind::Summary { count: run.count },
+                    below_active: false,
                 });
             }
             // No predecessor and no successor is geometrically unreachable —
@@ -691,15 +696,21 @@ fn render_stack_bar(
     // A collapsed member is one row tall, so its top and bottom borders share
     // that row. Closing both ends with corners keeps a hidden pane readable as
     // a box rather than a bare label, which matters most for floats with no
-    // neighbouring pane border to sit against.
+    // neighbouring pane border to sit against. The corners face the expanded
+    // member so a bar below it doesn't read as a box opening off-screen.
+    let (left, right) = if bar.below_active {
+        ("└", "┘")
+    } else {
+        ("┌", "┐")
+    };
     let fill = (bar.rect.width as usize).saturating_sub(2 + display_width(text.as_str()));
     frame.render_widget(Clear, bar.rect);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("┌", border_style),
+            Span::styled(left, border_style),
             Span::styled(text, label_style),
             Span::styled("─".repeat(fill), border_style),
-            Span::styled("┐", border_style),
+            Span::styled(right, border_style),
         ]))
         .style(Style::default().bg(app.palette.panel_bg)),
         bar.rect,
@@ -1755,10 +1766,12 @@ mod tests {
             crate::popup_size::StackBar {
                 rect: Rect::new(5, 2, 20, 1),
                 kind: crate::popup_size::StackBarKind::Summary { count: 2 },
+                below_active: false,
             },
             crate::popup_size::StackBar {
                 rect: Rect::new(5, 3, 20, 1),
                 kind: crate::popup_size::StackBarKind::Pane(hidden_id),
+                below_active: false,
             },
         ];
         let mut ws = Workspace::test_new("test");
@@ -2320,6 +2333,7 @@ mod tests {
         let bar = crate::popup_size::StackBar {
             rect: Rect::new(5, 3, 20, 1),
             kind: crate::popup_size::StackBarKind::Pane(hidden_id),
+            below_active: false,
         };
 
         let mut terminal =
@@ -2394,10 +2408,12 @@ mod tests {
             crate::popup_size::StackBar {
                 rect: Rect::new(2, 2, 16, 1),
                 kind: crate::popup_size::StackBarKind::Summary { count: 2 },
+                below_active: false,
             },
             crate::popup_size::StackBar {
                 rect: Rect::new(2, 3, 16, 1),
                 kind: crate::popup_size::StackBarKind::Pane(hidden_id),
+                below_active: false,
             },
         ];
 
@@ -2456,6 +2472,7 @@ mod tests {
         let bar = crate::popup_size::StackBar {
             rect: Rect::new(5, 3, 20, 1),
             kind: crate::popup_size::StackBarKind::Summary { count: 3 },
+            below_active: false,
         };
 
         let mut terminal =
@@ -2685,8 +2702,9 @@ mod tests {
         // Distinguishes an actual bar draw from a leftover generic border
         // title: a plain bordered pane on a 1-row rect draws "─" at its left
         // edge from the junction table, not the corner render_stack_bar uses.
-        assert_eq!(buffer[(0, 9)].symbol(), "┌", "bar row: {collapsed_row:?}");
-        assert_eq!(buffer[(29, 9)].symbol(), "┐", "bar row: {collapsed_row:?}");
+        // The bar follows the active member, so its corners face back up at it.
+        assert_eq!(buffer[(0, 9)].symbol(), "└", "bar row: {collapsed_row:?}");
+        assert_eq!(buffer[(29, 9)].symbol(), "┘", "bar row: {collapsed_row:?}");
 
         let content: String = (0..9)
             .flat_map(|y| (0..30).map(move |x| (x, y)))
@@ -3183,6 +3201,30 @@ mod tests {
     }
 
     #[test]
+    fn collapsed_bars_point_their_corners_at_the_active_member() {
+        let area = Rect::new(0, 0, 20, 10);
+        let mut ws = Workspace::test_new("test");
+        let pane_infos = stacked_pane_infos(&mut ws, 3, 1, area);
+
+        let mut app = AppState::test_new();
+        app.mode = Mode::Terminal;
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let rows = render_stacked(&pane_infos, &app, area);
+        assert!(
+            rows[0].starts_with('┌') && rows[0].ends_with('┐'),
+            "bar above the active member: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[9].starts_with('└') && rows[9].ends_with('┘'),
+            "bar below the active member: {:?}",
+            rows[9]
+        );
+    }
+
+    #[test]
     fn folding_with_no_room_for_any_bar_still_shows_a_truthful_summary() {
         // count=5, active=0, height=3: MIN_ACTIVE_STACK_HEIGHT alone consumes
         // the whole area, so every other member folds to height 0 with no
@@ -3307,14 +3349,15 @@ mod tests {
         // border on a 1-row rect into a plain "─" at the left edge, not the
         // corner render_stack_bar draws there — a leftover generic draw would
         // show up as this row's leftmost cell reverting to a horizontal dash.
+        // The bar follows the active member, so its corners face back up at it.
         assert_eq!(
             buffer[(0, 9)].symbol(),
-            "┌",
+            "└",
             "generic border drew over the bar's own left edge"
         );
         assert_eq!(
             buffer[(19, 9)].symbol(),
-            "┐",
+            "┘",
             "collapsed bar did not close its right edge"
         );
     }

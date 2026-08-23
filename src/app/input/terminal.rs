@@ -2163,6 +2163,7 @@ mod tests {
         app.state.view.stack_bars = vec![crate::popup_size::StackBar {
             rect: Rect::new(30, 4, 40, 1),
             kind: crate::popup_size::StackBarKind::Pane(hidden_float),
+            below_active: false,
         }];
 
         app.state.workspaces = vec![ws];
@@ -2215,6 +2216,7 @@ mod tests {
         app.state.view.stack_bars = vec![crate::popup_size::StackBar {
             rect: Rect::new(30, 4, 40, 1),
             kind: crate::popup_size::StackBarKind::Pane(hidden_float),
+            below_active: false,
         }];
 
         app.state.workspaces = vec![ws];
@@ -2266,6 +2268,7 @@ mod tests {
         app.state.view.stack_bars = vec![crate::popup_size::StackBar {
             rect: summary_rect,
             kind: crate::popup_size::StackBarKind::Summary { count: 3 },
+            below_active: false,
         }];
 
         app.state.workspaces = vec![ws];

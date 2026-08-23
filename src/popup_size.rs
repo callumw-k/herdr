@@ -103,6 +103,9 @@ pub(crate) enum StackBarKind {
 pub(crate) struct StackBar {
     pub rect: Rect,
     pub kind: StackBarKind,
+    /// The bar sits after the stack's expanded member, so its single row
+    /// reads as that pane's bottom edge rather than its top edge.
+    pub below_active: bool,
 }
 
 impl Serialize for PopupSize {
