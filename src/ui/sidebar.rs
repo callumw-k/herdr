@@ -566,6 +566,19 @@ pub(crate) fn agent_panel_groups_by_space(app: &AppState) -> bool {
             .is_none_or(|view| view.sort.is_empty())
 }
 
+/// The group header and the entry always share the body, so an entry taller
+/// than the space left under its header is clipped instead of dropped.
+pub(crate) fn agent_entry_block_heights(
+    app: &AppState,
+    entries: &[AgentPanelEntry],
+    index: usize,
+    body_height: u16,
+) -> (u16, u16) {
+    let header = agent_group_header_rows(app, entries, index);
+    let rows = agent_entry_height_in_body(app, &entries[index], body_height.saturating_sub(header));
+    (header, rows)
+}
+
 pub(crate) fn agent_group_header_rows(
     app: &AppState,
     entries: &[AgentPanelEntry],
@@ -580,11 +593,7 @@ pub(crate) fn agent_group_header_rows(
     u16::from(starts_group && agent_panel_groups_by_space(app))
 }
 
-pub(crate) fn agent_entry_height_in_body(
-    app: &AppState,
-    entry: &AgentPanelEntry,
-    body_height: u16,
-) -> u16 {
+fn agent_entry_height_in_body(app: &AppState, entry: &AgentPanelEntry, body_height: u16) -> u16 {
     (resolved_agent_rows(app, entry)
         .len()
         .max(1)
@@ -609,9 +618,9 @@ fn agent_panel_visible_count_from(app: &AppState, area: Rect, scroll: usize) -> 
     let mut used_rows = 0u16;
     let mut visible = 0usize;
     let entries = agent_panel_entries(app);
-    for (index, entry) in entries.iter().enumerate().skip(scroll) {
-        let height = agent_entry_height_in_body(app, entry, body.height)
-            .saturating_add(agent_group_header_rows(app, &entries, index));
+    for (index, _) in entries.iter().enumerate().skip(scroll) {
+        let (header, rows) = agent_entry_block_heights(app, &entries, index, body.height);
+        let height = header.saturating_add(rows);
         if used_rows.saturating_add(height) > body.height {
             break;
         }
@@ -629,11 +638,10 @@ fn agent_panel_bottom_start(app: &AppState, area: Rect) -> usize {
     let entries = agent_panel_entries(app);
     let mut used_rows = 0u16;
     let mut start = entries.len();
-    for (index, entry) in entries.iter().enumerate().rev() {
+    for index in (0..entries.len()).rev() {
         let gap = agent_entry_gap(app, index, entries.len());
-        let needed = agent_entry_height_in_body(app, entry, body.height)
-            .saturating_add(agent_group_header_rows(app, &entries, index))
-            .saturating_add(gap);
+        let (header, rows) = agent_entry_block_heights(app, &entries, index, body.height);
+        let needed = header.saturating_add(rows).saturating_add(gap);
         if used_rows.saturating_add(needed) > body.height {
             break;
         }
@@ -1532,8 +1540,7 @@ fn render_agent_detail(
     for (index, detail) in details.iter().enumerate().skip(scroll) {
         let label_color = state_label_color(detail.state, detail.seen, p);
         let rows = resolved_agent_rows(app, detail);
-        let header_rows = agent_group_header_rows(app, &details, index);
-        let height = (rows.len().max(1) as u16).min(body.height);
+        let (header_rows, height) = agent_entry_block_heights(app, &details, index, body.height);
         if row_y.saturating_add(height).saturating_add(header_rows) > body_bottom {
             break;
         }
@@ -1725,17 +1732,16 @@ mod tests {
 
         let first = row_text(buffer, body.y, 25);
         let second = row_text(buffer, body.y + 1, 25);
-        assert!(first.contains("one"));
-        assert_eq!(second, "   pi");
+        assert_eq!(first, " one");
+        assert!(second.ends_with(" pi"));
         assert!(!first.contains("working"));
         assert!(!second.contains("working"));
 
         let workspace_x = find_symbol_x(buffer, body.y, body.width, "o");
         let workspace_style = buffer[(workspace_x, body.y)].style();
-        assert_eq!(workspace_style.fg, Some(app.palette.text));
+        assert_eq!(workspace_style.fg, Some(app.palette.subtext0));
         assert!(workspace_style.add_modifier.contains(Modifier::BOLD));
         assert!(!workspace_style.add_modifier.contains(Modifier::DIM));
-        assert_eq!(workspace_style.bg, Some(app.palette.active_row_bg));
 
         let agent_x = find_symbol_x(buffer, body.y + 1, body.width, "p");
         let agent_style = buffer[(agent_x, body.y + 1)].style();
@@ -1756,6 +1762,7 @@ rows = [[{ token = "workspace", bold = false }, { token = "agent", dim = false }
         .unwrap();
         let mut app = crate::app::state::AppState::test_new();
         app.sidebar_agents = config.ui.sidebar.agents;
+        app.agent_panel_sort = AgentPanelSort::Priority;
         let workspace = Workspace::test_new("one");
         let pane_id = workspace.tabs[0].root_pane;
         app.workspaces = vec![workspace];
@@ -2028,10 +2035,10 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         app.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
         assert_eq!(app.sidebar_agents.row_gap, 0);
 
-        let area = Rect::new(0, 0, 20, 5);
+        let area = Rect::new(0, 0, 20, 7);
         let metrics = agent_panel_scroll_metrics(&app, area);
         let body = agent_panel_body_rect(area, false);
-        let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(20, 7)).unwrap();
         terminal
             .draw(|frame| render_agent_detail(&app, &TerminalRuntimeRegistry::new(), frame, area))
             .unwrap();
@@ -2039,13 +2046,62 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         assert_eq!(metrics.viewport_rows, 2);
         assert_eq!(metrics.max_offset_from_bottom, 0);
-        assert_eq!(row_text(buffer, body.y, body.width), " pi");
-        assert_eq!(row_text(buffer, body.y + 1, body.width), " claude");
+        assert_eq!(row_text(buffer, body.y, body.width), " one");
+        assert_eq!(row_text(buffer, body.y + 1, body.width), " pi");
+        assert_eq!(row_text(buffer, body.y + 2, body.width), " two");
+        assert_eq!(row_text(buffer, body.y + 3, body.width), " claude");
+    }
+
+    #[test]
+    fn space_group_headers_render_once_per_space_and_drop_when_sorted() {
+        let mut app = crate::app::state::AppState::test_new();
+        let mut first = Workspace::test_new("one");
+        let second_tab = first.test_add_tab(Some("logs"));
+        app.workspaces = vec![first, Workspace::test_new("two")];
+        app.ensure_test_terminals();
+        for (ws_idx, tab_idx, agent) in [
+            (0usize, 0usize, Agent::Pi),
+            (0, second_tab, Agent::Pi),
+            (1, 0, Agent::Claude),
+        ] {
+            let pane_id = app.workspaces[ws_idx].tabs[tab_idx].root_pane;
+            let terminal_id = app.workspaces[ws_idx].tabs[tab_idx].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(agent);
+        }
+        app.sidebar_agents.rows = vec![
+            vec![crate::config::AgentSidebarToken::Workspace],
+            vec![crate::config::AgentSidebarToken::Agent],
+        ];
+
+        let area = Rect::new(0, 0, 20, 10);
+        let body = agent_panel_body_rect(area, false);
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        let mut rendered = |app: &AppState, rows: u16| {
+            terminal
+                .draw(|frame| {
+                    render_agent_detail(app, &TerminalRuntimeRegistry::new(), frame, area)
+                })
+                .unwrap();
+            (0..rows)
+                .map(|offset| row_text(terminal.backend().buffer(), body.y + offset, body.width))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(rendered(&app, 5), [" one", " pi", " pi", " two", " claude"]);
+
+        app.agent_panel_sort = AgentPanelSort::Priority;
+        assert_eq!(
+            rendered(&app, 6),
+            [" one", "   pi", " one", "   pi", " two", "   claude"]
+        );
     }
 
     #[test]
     fn narrow_agent_rows_preserve_later_tab_tokens() {
         let mut app = crate::app::state::AppState::test_new();
+        app.agent_panel_sort = AgentPanelSort::Priority;
         let mut workspace = Workspace::test_new("very-long-workspace-name");
         let tab_idx = workspace.test_add_tab(Some("logs"));
         let pane_id = workspace.tabs[tab_idx].root_pane;
@@ -2094,7 +2150,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             .unwrap();
         let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
         let body = agent_panel_body_rect(agent_area, false);
-        let rendered = row_text(renderer.backend().buffer(), body.y, 9);
+        let rendered = row_text(renderer.backend().buffer(), body.y + 1, 9);
 
         assert!(!rendered.contains('⠋'));
         assert!(rendered.contains('修') && rendered.contains('复'));
@@ -2158,8 +2214,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let area = Rect::new(0, 0, 20, 6);
 
         let metrics = agent_panel_scroll_metrics(&app, area);
-        assert_eq!(metrics.max_offset_from_bottom, 1);
-        assert_eq!(agent_panel_scroll_for_target(&app, area, 0, 2), 1);
+        assert_eq!(metrics.max_offset_from_bottom, 2);
+        assert_eq!(agent_panel_scroll_for_target(&app, area, 0, 2), 2);
     }
 
     #[test]

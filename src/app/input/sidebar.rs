@@ -505,8 +505,8 @@ impl AppState {
         let entries = crate::ui::agent_panel_entries(self);
         let scroll = self.agent_panel_scroll.min(metrics.max_offset_from_bottom);
         for (index, detail) in entries.iter().enumerate().skip(scroll) {
-            let height = crate::ui::agent_entry_height_in_body(self, detail, body.height);
-            let header_rows = crate::ui::agent_group_header_rows(self, &entries, index);
+            let (header_rows, height) =
+                crate::ui::agent_entry_block_heights(self, &entries, index, body.height);
             if row_y.saturating_add(height).saturating_add(header_rows) > body_bottom {
                 break;
             }
@@ -773,7 +773,7 @@ mod tests {
             "claude".into(),
             vec![
                 vec![crate::config::AgentSidebarToken::Agent],
-                vec![crate::config::AgentSidebarToken::Workspace],
+                vec![crate::config::AgentSidebarToken::StateText],
             ],
         );
         app.state.sidebar_agents.row_gap = 1;
@@ -784,19 +784,22 @@ mod tests {
             crate::ui::should_show_scrollbar(metrics),
         );
 
+        // Rows are header, agent, gap, header, agent, agent.
+        assert_eq!(app.state.agent_detail_target_at(body.y), None);
         assert_eq!(
-            app.state.agent_detail_target_at(body.y),
+            app.state.agent_detail_target_at(body.y + 1),
             Some((0, 0, first_pane))
         );
-        assert_eq!(app.state.agent_detail_target_at(body.y + 1), None);
+        assert_eq!(app.state.agent_detail_target_at(body.y + 2), None);
+        assert_eq!(app.state.agent_detail_target_at(body.y + 3), None);
         assert_eq!(
-            app.state.agent_detail_target_at(body.y + 3),
+            app.state.agent_detail_target_at(body.y + 4),
             Some((1, 0, second_pane))
         );
 
         app.state.sidebar_agents.row_gap = 0;
         assert_eq!(
-            app.state.agent_detail_target_at(body.y + 1),
+            app.state.agent_detail_target_at(body.y + 3),
             Some((1, 0, second_pane))
         );
     }
@@ -840,7 +843,7 @@ mod tests {
         let body = crate::ui::agent_panel_body_rect(detail_area, false);
 
         assert_eq!(
-            app.state.agent_detail_target_at(body.y),
+            app.state.agent_detail_target_at(body.y + 1),
             Some((0, 0, first_pane))
         );
     }
@@ -1025,17 +1028,18 @@ mod tests {
             "claude".into(),
             vec![
                 vec![crate::config::AgentSidebarToken::Agent],
-                vec![crate::config::AgentSidebarToken::Workspace],
+                vec![crate::config::AgentSidebarToken::StateText],
             ],
         );
         app.state.agent_panel_scroll = 1;
 
         let detail_area = app.state.agent_panel_rect();
         let body = crate::ui::agent_panel_body_rect(detail_area, true);
+        // Rows are header, agent, then the two-row claude entry.
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             body.x + 1,
-            body.y + 1,
+            body.y + 2,
         ));
 
         assert_eq!(app.state.workspaces[0].active_tab, second_tab);

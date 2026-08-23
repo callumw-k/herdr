@@ -360,8 +360,8 @@ The expanded desktop sidebar renders each inner array in `rows` as one line. The
 [ui.sidebar.agents]
 row_gap = 0
 rows = [
-  ["state_icon", "workspace", "tab"],
-  ["activity"],
+  ["workspace", "tab"],
+  ["state_icon", "activity"],
 ]
 
 [ui.sidebar.spaces]
@@ -393,6 +393,8 @@ Space rows accept these built-in tokens:
 - `branch` — Git branch when available.
 - `git_status` — Git ahead and behind counts when nonzero.
 - `$name` — custom workspace metadata named `name`.
+
+When the Agent panel is sorted by space, it prints a space name header above each run of agents from the same space and drops the `workspace` token from those agents' rows. A row left with no values disappears, so the default layout renders one header and one line per agent. Priority ordering and custom view sorts keep the `workspace` token and print no headers.
 
 Tokens render in their configured order. Herdr normally separates adjacent values with ` · ` and uses a single space after `state_icon`. Missing values and their separators disappear; a row disappears when none of its tokens have a value. Each layout may contain at most 16 rows, with at most 16 tokens in each row.
 
