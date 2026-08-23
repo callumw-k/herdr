@@ -5660,10 +5660,13 @@ mod tests {
     async fn headless_deferred_named_tab_create_uses_runtime_events() {
         let event_hub = api::EventHub::default();
         let mut server = test_headless_server_with_event_hub(event_hub.clone());
-        server
-            .app
-            .create_workspace_with_options(std::env::temp_dir(), true)
-            .unwrap();
+        // The tab needs a workspace to land in, but not a live one: a real shell
+        // reports its terminal title whenever it likes, and
+        // `sync_pending_terminal_titles` flushes that as `PaneUpdated` at the top
+        // of the next API request, ahead of the events under test.
+        server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("herd")];
+        server.app.state.active = Some(0);
+        server.app.state.ensure_test_terminals();
         let after_setup = event_hub.current_sequence();
 
         server.app.state.request_new_tab = true;
