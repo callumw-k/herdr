@@ -197,7 +197,7 @@ pub struct LayoutDescription {
     pub root: LayoutNode,
 }
 
-/// The float layer defaults to Stacked, unlike the tiled layer's Grid.
+/// Older clients omit this field; both layers default to Stacked.
 fn stacked_arrangement_schema() -> ArrangementSchema {
     ArrangementSchema::Stacked
 }

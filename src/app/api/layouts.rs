@@ -1003,6 +1003,7 @@ mod tests {
         let mut app = app_with_workspace();
         let root = app.state.workspaces[0].tabs[0].root_pane;
         let right = app.state.workspaces[0].test_split(Direction::Horizontal);
+        app.state.workspaces[0].tabs[0].arrangement = Arrangement::Grid;
         app.state.ensure_test_terminals();
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
         app.state.workspaces[0].tabs[0]

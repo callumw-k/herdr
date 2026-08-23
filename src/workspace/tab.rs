@@ -1000,10 +1000,10 @@ mod tests {
     }
 
     #[test]
-    fn a_new_tab_starts_in_the_grid_arrangement() {
+    fn a_new_tab_starts_in_the_stacked_arrangement() {
         let workspace = Workspace::test_new("arrangements");
         let tab = &workspace.tabs[0];
-        assert_eq!(tab.arrangement, Arrangement::Grid);
+        assert_eq!(tab.arrangement, Arrangement::Stacked);
         assert!(!tab.needs_reflow);
     }
 
@@ -1012,7 +1012,7 @@ mod tests {
         let mut workspace = Workspace::test_new("arrangements");
         let tab = &mut workspace.tabs[0];
         tab.cycle_arrangement(true);
-        assert_eq!(tab.arrangement, Arrangement::Stacked);
+        assert_eq!(tab.arrangement, Arrangement::Vertical);
         assert!(tab.needs_reflow);
     }
 
@@ -1021,7 +1021,7 @@ mod tests {
         let mut workspace = Workspace::test_new("arrangements");
         let tab = &mut workspace.tabs[0];
         tab.cycle_arrangement(false);
-        assert_eq!(tab.arrangement, Arrangement::Horizontal);
+        assert_eq!(tab.arrangement, Arrangement::Grid);
     }
 
     #[test]

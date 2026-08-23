@@ -3599,16 +3599,22 @@ navigate_pane_down = "ctrl+j"
     #[test]
     fn arrangement_next_and_previous_cycle_the_active_tab() {
         let mut state = state_with_workspaces(&["test"]);
-        assert_eq!(state.workspaces[0].tabs[0].arrangement, Arrangement::Grid);
-
-        execute_navigate_action(&mut state, NavigateAction::ArrangementNext);
         assert_eq!(
             state.workspaces[0].tabs[0].arrangement,
             Arrangement::Stacked
         );
 
+        execute_navigate_action(&mut state, NavigateAction::ArrangementNext);
+        assert_eq!(
+            state.workspaces[0].tabs[0].arrangement,
+            Arrangement::Vertical
+        );
+
         execute_navigate_action(&mut state, NavigateAction::ArrangementPrevious);
-        assert_eq!(state.workspaces[0].tabs[0].arrangement, Arrangement::Grid);
+        assert_eq!(
+            state.workspaces[0].tabs[0].arrangement,
+            Arrangement::Stacked
+        );
     }
 
     #[test]
@@ -3617,14 +3623,14 @@ navigate_pane_down = "ctrl+j"
         app.state.mode = Mode::Navigate;
         assert_eq!(
             app.state.workspaces[0].tabs[0].arrangement,
-            Arrangement::Grid
+            Arrangement::Stacked
         );
 
         app.execute_tui_navigate_action(NavigateAction::ArrangementNext, ActionContext::Navigate);
 
         assert_eq!(
             app.state.workspaces[0].tabs[0].arrangement,
-            Arrangement::Stacked
+            Arrangement::Vertical
         );
     }
 

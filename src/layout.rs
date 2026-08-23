@@ -78,9 +78,9 @@ pub enum Arrangement {
     /// Even rows.
     Horizontal,
     /// Balanced rectangular grid.
-    #[default]
     Grid,
     /// One stack holding every pane.
+    #[default]
     Stacked,
 }
 
@@ -1425,8 +1425,8 @@ mod tests {
     }
 
     #[test]
-    fn arrangement_defaults_to_grid() {
-        assert_eq!(Arrangement::default(), Arrangement::Grid);
+    fn arrangement_defaults_to_stacked() {
+        assert_eq!(Arrangement::default(), Arrangement::Stacked);
     }
 
     #[test]
