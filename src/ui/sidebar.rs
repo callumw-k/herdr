@@ -150,16 +150,16 @@ fn collect_agent_panel_entries_with_runtimes(
         .iter()
         .enumerate()
         .flat_map(|(ws_idx, ws)| {
-            let multi_tab = ws.tabs.len() > 1;
             let workspace_label = ws.display_name_from(&app.terminals, terminal_runtimes);
             ws.pane_details(&app.terminals)
                 .into_iter()
                 .map(move |detail| {
-                    let show_tab = multi_tab
-                        || ws
-                            .tabs
-                            .get(detail.tab_idx)
-                            .is_some_and(|tab| !tab.is_auto_named());
+                    // Auto-named tabs are just an index, which adds a row without saying
+                    // anything, so only named tabs earn the tab token.
+                    let show_tab = ws
+                        .tabs
+                        .get(detail.tab_idx)
+                        .is_some_and(|tab| !tab.is_auto_named());
                     AgentPanelEntry {
                         ws_idx,
                         tab_idx: detail.tab_idx,
@@ -2331,7 +2331,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             [
                 ("auto", None),
                 ("custom", Some("focus")),
-                ("multi", Some("1")),
+                ("multi", None),
                 ("multi", Some("logs")),
             ]
         );
