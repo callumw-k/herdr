@@ -590,8 +590,8 @@ pub(crate) fn agent_group_header_rows(
             .get(previous)
             .is_some_and(|previous| previous.ws_idx != entries[index].ws_idx),
     };
-    // The header plus a blank row, so the group name does not sit flush against
-    // the first agent row's highlight.
+    // A blank row plus the header, so the group name is separated from whatever
+    // sits above it and stays flush with its own agent rows.
     if starts_group && agent_panel_groups_by_space(app) {
         2
     } else {
@@ -1641,7 +1641,12 @@ fn render_agent_detail(
                     format!(" {}", detail.primary_label),
                     Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD),
                 )])),
-                Rect::new(body.x, row_y, body.width, 1),
+                Rect::new(
+                    body.x,
+                    row_y.saturating_add(header_rows.saturating_sub(1)),
+                    body.width,
+                    1,
+                ),
             );
             row_y = row_y.saturating_add(header_rows);
         }
@@ -1836,15 +1841,15 @@ mod tests {
         let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
         let body = agent_panel_body_rect(agent_area, false);
 
-        let first = row_text(buffer, body.y, 25);
+        let first = row_text(buffer, body.y + 1, 25);
         let second = row_text(buffer, body.y + 2, 25);
         assert_eq!(first, " one");
         assert!(second.ends_with(" pi"));
         assert!(!first.contains("working"));
         assert!(!second.contains("working"));
 
-        let workspace_x = find_symbol_x(buffer, body.y, body.width, "o");
-        let workspace_style = buffer[(workspace_x, body.y)].style();
+        let workspace_x = find_symbol_x(buffer, body.y + 1, body.width, "o");
+        let workspace_style = buffer[(workspace_x, body.y + 1)].style();
         assert_eq!(workspace_style.fg, Some(app.palette.subtext0));
         assert!(workspace_style.add_modifier.contains(Modifier::BOLD));
         assert!(!workspace_style.add_modifier.contains(Modifier::DIM));
@@ -2243,8 +2248,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         assert_eq!(metrics.viewport_rows, 1);
         assert_eq!(metrics.max_offset_from_bottom, 1);
-        assert_eq!(row_text(buffer, body.y, body.width), " one");
-        assert_eq!(row_text(buffer, body.y + 1, body.width), "");
+        assert_eq!(row_text(buffer, body.y, body.width), "");
+        assert_eq!(row_text(buffer, body.y + 1, body.width), " one");
         assert_eq!(row_text(buffer, body.y + 2, body.width), "▏ pi");
     }
 
@@ -2287,7 +2292,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         assert_eq!(
             rendered(&app, 7),
-            [" one", "", "▏ pi", "▏ pi", " two", "", "▏ claude"]
+            ["", " one", "▏ pi", "▏ pi", "", " two", "▏ claude"]
         );
 
         app.agent_panel_sort = AgentPanelSort::Priority;
