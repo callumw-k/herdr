@@ -1541,7 +1541,7 @@ fn render_workspace_list(
     if app.mouse_capture && list_bottom > area.y {
         let new_rect = app.sidebar_new_button_rect();
         frame.render_widget(
-            Paragraph::new(Span::styled(" new", Style::default().fg(p.overlay0))),
+            Paragraph::new(Span::styled("  new", Style::default().fg(p.overlay0))),
             new_rect,
         );
 
@@ -1584,7 +1584,7 @@ fn render_agent_detail(
 
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
-            " agents",
+            "  agents",
             Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
         )])),
         Rect::new(area.x, area.y + 1, area.width, 1),
@@ -1617,7 +1617,7 @@ fn render_agent_detail(
     }
     if details.is_empty() && app.agent_view_override.is_some() {
         frame.render_widget(
-            Paragraph::new(" no matching agents")
+            Paragraph::new("  no matching agents")
                 .style(Style::default().fg(p.overlay0).add_modifier(Modifier::DIM)),
             Rect::new(body.x, body.y, body.width, 1),
         );
@@ -1638,7 +1638,7 @@ fn render_agent_detail(
         if header_rows > 0 {
             frame.render_widget(
                 Paragraph::new(Line::from(vec![Span::styled(
-                    format!(" {}", detail.primary_label),
+                    format!("  {}", detail.primary_label),
                     Style::default().fg(p.subtext0).add_modifier(Modifier::BOLD),
                 )])),
                 Rect::new(
@@ -1843,7 +1843,7 @@ mod tests {
 
         let first = row_text(buffer, body.y + 1, 25);
         let second = row_text(buffer, body.y + 2, 25);
-        assert_eq!(first, " one");
+        assert_eq!(first, "  one");
         assert!(second.ends_with(" pi"));
         assert!(!first.contains("working"));
         assert!(!second.contains("working"));
@@ -2249,7 +2249,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(metrics.viewport_rows, 1);
         assert_eq!(metrics.max_offset_from_bottom, 1);
         assert_eq!(row_text(buffer, body.y, body.width), "");
-        assert_eq!(row_text(buffer, body.y + 1, body.width), " one");
+        assert_eq!(row_text(buffer, body.y + 1, body.width), "  one");
         assert_eq!(row_text(buffer, body.y + 2, body.width), "▏ pi");
     }
 
@@ -2292,7 +2292,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         assert_eq!(
             rendered(&app, 7),
-            ["", " one", "▏ pi", "▏ pi", "", " two", "▏ claude"]
+            ["", "  one", "▏ pi", "▏ pi", "", "  two", "▏ claude"]
         );
 
         app.agent_panel_sort = AgentPanelSort::Priority;
