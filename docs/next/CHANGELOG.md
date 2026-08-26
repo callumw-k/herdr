@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Added
+- Repos declared in a new top-level `[[repos]]` config section now get their workspace created automatically the first time you enter the directory in the focused pane, pinned to that path.
 - Added floating panes: `prefix+f` opens one, `prefix+ctrl+f` moves focus into the floating layer or back out, and `prefix+shift+f` shows or hides the layer. A tab's floats share one region and are arranged inside it, so more than one can be visible at once, and they are navigated with the same keys as tiled panes. Configure the region's default size with `ui.floating_pane_width` and `ui.floating_pane_height`.
 - Devin CLI, Cursor Agent CLI, MastraCode, Hermes Agent, and Grok CLI integrations now install and run natively on Windows.
 - Custom themes can now define separate light and dark color overrides when automatic theme switching is enabled. (#837, thanks @aneym)

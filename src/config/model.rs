@@ -326,6 +326,7 @@ pub struct Config {
     pub keys: KeysConfig,
     pub ui: UiConfig,
     pub worktrees: WorktreesConfig,
+    pub repos: Vec<RepoConfig>,
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
@@ -874,6 +875,13 @@ pub struct IndexedKeysConfig {
     pub workspaces: String,
     /// Modifier combo for agent shortcuts 1-9. Unset by default.
     pub agents: String,
+}
+
+/// A repo path that owns a workspace. Entering it creates that workspace.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct RepoConfig {
+    pub path: String,
 }
 
 #[derive(Debug, Deserialize)]

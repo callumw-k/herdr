@@ -10,6 +10,7 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "keys",
     "onboarding",
     "remote",
+    "repos",
     "server",
     "session",
     "terminal",
@@ -348,6 +349,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut diagnostics,
         &mut invalid_sections,
         |section| config.remote = section,
+    );
+    load_live_section(
+        table,
+        "repos",
+        "repos config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.repos = section,
     );
 
     diagnostics.extend(config.theme.diagnostics());
@@ -1015,6 +1024,21 @@ mouse_captur = true
     }
 
     #[test]
+    fn load_live_config_reports_invalid_repos_section() {
+        let loaded = load_live_config_from_str(
+            r#"
+[[repos]]
+path = 123
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.diagnostics.len(), 1);
+        assert!(loaded.diagnostics[0].contains("invalid repos config"));
+        assert_eq!(loaded.invalid_sections, vec!["repos"]);
+    }
+
+    #[test]
     fn startup_config_accepts_legacy_agent_panel_scope_without_warning() {
         let _guard = crate::config::test_config_env_lock().lock().unwrap();
         let path = std::env::temp_dir().join(format!(
@@ -1107,5 +1131,41 @@ mouse_capture = false
         let (updated, removed) = remove_keybinding_config_sections(content);
         assert!(!removed);
         assert_eq!(updated, content);
+    }
+
+    #[test]
+    fn repos_section_is_known_and_expands_paths() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "herdr-repos-section-{}-config.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"
+[[repos]]
+path = "~/code/active/herdr"
+
+[[repos]]
+path = ""
+"#,
+        )
+        .unwrap();
+        std::env::set_var(CONFIG_PATH_ENV_VAR, &path);
+
+        let loaded = Config::load();
+
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        let home = std::env::var("HOME").expect("HOME");
+        assert_eq!(
+            loaded.config.repo_paths(),
+            vec![std::path::PathBuf::from(format!(
+                "{home}/code/active/herdr"
+            ))],
+            "blank entries should be dropped and ~ expanded"
+        );
+
+        std::env::remove_var(CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_file(&path);
     }
 }

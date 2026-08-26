@@ -161,6 +161,16 @@ impl Config {
             keys: self.keys.local_profile(&self.keybinds()),
         })
     }
+
+    /// Declared repo paths, expanded and with blank entries dropped. A path
+    /// need not exist: a repo can be declared before it is cloned.
+    pub(crate) fn repo_paths(&self) -> Vec<std::path::PathBuf> {
+        self.repos
+            .iter()
+            .filter(|repo| !repo.path.trim().is_empty())
+            .map(|repo| crate::workspace::expand_pinned_path(&repo.path))
+            .collect()
+    }
 }
 
 #[cfg(test)]

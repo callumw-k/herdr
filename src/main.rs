@@ -160,6 +160,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # "current" for Herdr's process directory, or a fixed path such as "~/Projects".
 # new_cwd = "follow"
 
+# Repos you work in often. Entering one of these directories in the focused
+# pane creates a workspace pinned to it and moves the pane there.
+# [[repos]]
+# path = "~/Projects/herdr"
+
 [update]
 # Update channel used by background version checks and `herdr update`.
 # Stable builds default to "stable". Windows preview builds default to "preview"

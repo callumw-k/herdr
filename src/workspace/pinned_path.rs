@@ -29,6 +29,21 @@ pub(crate) fn path_claims(pinned: &Path, cwd: &Path) -> bool {
     cwd.starts_with(&pinned)
 }
 
+/// The declared repo path that owns `cwd`. Deepest declared path wins, so a
+/// repo declared inside another takes precedence, matching how
+/// `claiming_workspace` ranks pins.
+pub(crate) fn declared_repo_for<'a>(cwd: &Path, declared: &'a [PathBuf]) -> Option<&'a Path> {
+    declared
+        .iter()
+        .filter(|declared| path_claims(declared, cwd))
+        .max_by_key(|declared| {
+            crate::worktree::canonical_or_original(declared)
+                .components()
+                .count()
+        })
+        .map(PathBuf::as_path)
+}
+
 /// The pin a workspace should end up with when the user toggles it against
 /// `cwd`. `None` clears the pin, which is what a second press at the same
 /// directory means. Canonicalises both sides so a pin entered as `~/code/herdr`
@@ -127,5 +142,52 @@ mod tests {
         assert_eq!(toggled_pin(Some(&link), &real), None);
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn declares_the_repo_directory_itself_and_directories_below_it() {
+        let declared = vec![PathBuf::from("/repos/herdr")];
+        assert_eq!(
+            declared_repo_for(Path::new("/repos/herdr"), &declared),
+            Some(Path::new("/repos/herdr"))
+        );
+        assert_eq!(
+            declared_repo_for(Path::new("/repos/herdr/src/app"), &declared),
+            Some(Path::new("/repos/herdr"))
+        );
+    }
+
+    #[test]
+    fn does_not_declare_a_sibling_with_a_shared_prefix() {
+        let declared = vec![PathBuf::from("/repos/herdr")];
+        assert_eq!(
+            declared_repo_for(Path::new("/repos/herdr-worktrees/a"), &declared),
+            None
+        );
+    }
+
+    #[test]
+    fn deepest_declared_repo_wins() {
+        let declared = vec![
+            PathBuf::from("/repos/herdr"),
+            PathBuf::from("/repos/herdr/vendor/libghostty-vt"),
+        ];
+        assert_eq!(
+            declared_repo_for(
+                Path::new("/repos/herdr/vendor/libghostty-vt/src"),
+                &declared
+            ),
+            Some(Path::new("/repos/herdr/vendor/libghostty-vt"))
+        );
+    }
+
+    #[test]
+    fn undeclared_directories_match_nothing() {
+        let declared = vec![PathBuf::from("/repos/herdr")];
+        assert_eq!(
+            declared_repo_for(Path::new("/repos/other"), &declared),
+            None
+        );
+        assert_eq!(declared_repo_for(Path::new("/repos/herdr"), &[]), None);
     }
 }

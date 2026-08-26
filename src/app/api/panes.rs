@@ -4629,4 +4629,208 @@ mod tests {
         shutdown_test_runtimes(&mut app);
         let _ = std::fs::remove_dir_all(&pinned);
     }
+
+    fn app_with_declared_repo(declared: &std::path::Path) -> App {
+        let event_hub = crate::api::EventHub::default();
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(&Config::default(), true, None, api_rx, event_hub);
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = crate::config::ShellModeConfig::NonLogin;
+        app.state.workspaces = vec![Workspace::test_new("source"), Workspace::test_new("other")];
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        app.state.declared_repo_paths = vec![declared.to_path_buf()];
+        app
+    }
+
+    #[tokio::test]
+    async fn cwd_report_creates_a_workspace_for_a_declared_repo() {
+        let declared = unique_temp_path("declared-create");
+        let entered = declared.join("src");
+        std::fs::create_dir_all(&entered).unwrap();
+        let mut app = app_with_declared_repo(&declared);
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+
+        app.handle_internal_event(crate::events::AppEvent::TerminalCwdReported {
+            pane_id: source_pane,
+            cwd: entered.clone(),
+        });
+
+        // The source workspace held only this pane, so it closed behind the
+        // move and the created workspace is all that is left beside "other".
+        assert_eq!(app.state.workspaces.len(), 2);
+        let created = app
+            .state
+            .workspaces
+            .iter()
+            .find(|ws| ws.pinned_path.as_deref() == Some(declared.as_path()))
+            .expect("a workspace pinned to the declared repo");
+        assert_eq!(created.tabs.len(), 1, "no stray shell tab beside the pane");
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&declared);
+    }
+
+    #[tokio::test]
+    async fn cwd_report_does_not_create_a_second_workspace_for_a_declared_repo() {
+        let declared = unique_temp_path("declared-existing");
+        let entered = declared.join("src");
+        std::fs::create_dir_all(&entered).unwrap();
+        let mut app = app_with_declared_repo(&declared);
+        app.state.workspaces[1].pinned_path = Some(declared.clone());
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+
+        app.handle_internal_event(crate::events::AppEvent::TerminalCwdReported {
+            pane_id: source_pane,
+            cwd: entered.clone(),
+        });
+
+        // Moved into the workspace that already pins the repo, not into a new
+        // one: the source workspace closed and only the pinned one is left.
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(
+            app.state.workspaces[0].pinned_path.as_deref(),
+            Some(declared.as_path())
+        );
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&declared);
+    }
+
+    #[tokio::test]
+    async fn cwd_report_leaves_a_pane_already_inside_its_declared_repo_workspace() {
+        let declared = unique_temp_path("declared-already-pinned");
+        let entered = declared.join("src");
+        std::fs::create_dir_all(&entered).unwrap();
+        let mut app = app_with_declared_repo(&declared);
+        app.state.workspaces[0].pinned_path = Some(declared.clone());
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+        let source_id = app.state.workspaces[0].id.clone();
+
+        app.handle_internal_event(crate::events::AppEvent::TerminalCwdReported {
+            pane_id: source_pane,
+            cwd: entered.clone(),
+        });
+
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        // Identity, not just count: a bug that closed this workspace and
+        // conjured a fresh one pinned to the same repo would leave the
+        // length and tab-count assertions above none the wiser.
+        assert_eq!(
+            app.state.workspaces[0].id, source_id,
+            "the pane's own already-pinned workspace must not be replaced"
+        );
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&declared);
+    }
+
+    #[tokio::test]
+    async fn cwd_report_pins_the_source_workspace_when_its_own_origin_is_the_declared_repo() {
+        let declared = unique_temp_path("declared-own-origin");
+        let entered = declared.join("src");
+        std::fs::create_dir_all(&entered).unwrap();
+        let mut app = app_with_declared_repo(&declared);
+        app.state.workspaces[0].identity_cwd = declared.clone();
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+        let source_id = app.state.workspaces[0].id.clone();
+
+        app.handle_internal_event(crate::events::AppEvent::TerminalCwdReported {
+            pane_id: source_pane,
+            cwd: entered.clone(),
+        });
+
+        // The declared repo is the source workspace's own origin, so it gets
+        // pinned in place: no twin workspace, no pane move.
+        assert_eq!(app.state.workspaces.len(), 2, "no new workspace created");
+        assert_eq!(
+            app.state.workspaces[0].id, source_id,
+            "the source workspace must not be replaced"
+        );
+        assert_eq!(
+            app.state.workspaces[0].pinned_path.as_deref(),
+            Some(declared.as_path())
+        );
+        assert_eq!(
+            app.state.workspaces[0].tabs.len(),
+            1,
+            "the pane stayed where it was"
+        );
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&declared);
+    }
+
+    #[tokio::test]
+    async fn cwd_report_from_a_background_pane_does_not_create_a_declared_repo_workspace() {
+        let declared = unique_temp_path("declared-background");
+        let entered = declared.join("src");
+        std::fs::create_dir_all(&entered).unwrap();
+        let mut app = app_with_declared_repo(&declared);
+        let background_pane = app.state.workspaces[0].tabs[0].root_pane;
+        // Sitting in the other workspace, so the reporting pane is not focused.
+        app.state.active = Some(1);
+
+        app.handle_internal_event(crate::events::AppEvent::TerminalCwdReported {
+            pane_id: background_pane,
+            cwd: entered.clone(),
+        });
+
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert!(app
+            .state
+            .workspaces
+            .iter()
+            .all(|ws| ws.pinned_path.is_none()));
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&declared);
+    }
+
+    #[tokio::test]
+    async fn cwd_report_from_a_zoomed_source_tab_does_not_create_a_declared_repo_workspace() {
+        let declared = unique_temp_path("declared-zoomed");
+        let entered = declared.join("src");
+        std::fs::create_dir_all(&entered).unwrap();
+        let mut app = app_with_declared_repo(&declared);
+        app.state.workspaces[0].tabs[0].zoomed = true;
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+
+        app.handle_internal_event(crate::events::AppEvent::TerminalCwdReported {
+            pane_id: source_pane,
+            cwd: entered.clone(),
+        });
+
+        assert_eq!(app.state.workspaces.len(), 2, "no workspace was created");
+        assert!(app
+            .state
+            .workspaces
+            .iter()
+            .all(|ws| ws.pinned_path.is_none()));
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&declared);
+    }
+
+    #[tokio::test]
+    async fn cwd_report_running_an_agent_does_not_create_a_declared_repo_workspace() {
+        let declared = unique_temp_path("declared-agent");
+        let entered = declared.join("src");
+        std::fs::create_dir_all(&entered).unwrap();
+        let mut app = app_with_declared_repo(&declared);
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+        set_pane_terminal(&mut app, 0, |terminal| {
+            terminal.detected_agent = Some(crate::detect::Agent::Claude);
+        });
+
+        app.handle_internal_event(crate::events::AppEvent::TerminalCwdReported {
+            pane_id: source_pane,
+            cwd: entered.clone(),
+        });
+
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert!(app
+            .state
+            .workspaces
+            .iter()
+            .all(|ws| ws.pinned_path.is_none()));
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&declared);
+    }
 }

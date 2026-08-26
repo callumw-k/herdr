@@ -725,7 +725,120 @@ impl App {
                 .get(ws_idx)
                 .and_then(|ws| ws.focused_pane_id())
                 == Some(pane_id);
-        self.auto_move_pane_to_pinned_workspace(ws_idx, pane_id, cwd, focus, None);
+        if self.claiming_workspace(cwd, ws_idx).is_some() {
+            self.auto_move_pane_to_pinned_workspace(ws_idx, pane_id, cwd, focus, None);
+            return;
+        }
+        // Only the pane the user is sitting in may conjure a workspace, and
+        // never one the pane's own workspace is already pinned under:
+        // `claiming_workspace` skips the source workspace, so its pin has to
+        // be checked here.
+        let source_pin_claims = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pinned_path.as_deref())
+            .is_some_and(|pinned| crate::workspace::path_claims(pinned, cwd));
+        if !focus || source_pin_claims {
+            return;
+        }
+        let Some(repo) = crate::workspace::declared_repo_for(cwd, &self.state.declared_repo_paths)
+            .map(std::path::Path::to_path_buf)
+        else {
+            return;
+        };
+        // The pane's own workspace already originated at this repo: pin it in
+        // place rather than conjuring a twin workspace and closing the
+        // original, which would silently discard its name, tab labels,
+        // sidebar position, worktree membership, and id.
+        let source_ws_is_repo = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .is_some_and(|ws| crate::workspace::path_claims(&repo, &ws.identity_cwd));
+        if source_ws_is_repo {
+            if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
+                ws.pinned_path = Some(repo);
+            }
+            self.schedule_session_save();
+            return;
+        }
+        self.create_declared_repo_workspace_for_pane(ws_idx, pane_id, &repo);
+    }
+
+    /// Move `pane_id` into a fresh workspace pinned to `repo`, the workspace a
+    /// declared repo should have had all along. Best effort, like the pinned
+    /// auto-move: a failure here never fails the directory change that
+    /// triggered it.
+    fn create_declared_repo_workspace_for_pane(
+        &mut self,
+        source_ws_idx: usize,
+        pane_id: PaneId,
+        repo: &std::path::Path,
+    ) {
+        let Some(public_pane_id) = self.public_pane_id(source_ws_idx, pane_id) else {
+            return;
+        };
+        let response = self.handle_pane_move(
+            "declared-repo".to_string(),
+            crate::api::schema::PaneMoveParams {
+                pane_id: public_pane_id,
+                destination: crate::api::schema::PaneMoveDestination::NewWorkspace {
+                    label: None,
+                    tab_label: None,
+                },
+                focus: true,
+            },
+        );
+        let move_result = serde_json::from_str::<crate::api::schema::SuccessResponse>(&response)
+            .ok()
+            .and_then(|success| match success.result {
+                crate::api::schema::ResponseResult::PaneMove { move_result } => Some(move_result),
+                _ => None,
+            });
+        let created = match move_result {
+            Some(move_result) if move_result.changed => move_result.created_workspace,
+            Some(move_result) => {
+                // Expected, not a fault: a zoomed source tab declines on
+                // purpose, and the pane stays where the user put it.
+                tracing::debug!(
+                    repo = %repo.display(),
+                    reason = ?move_result.reason,
+                    "declared repo workspace move declined"
+                );
+                None
+            }
+            None => {
+                tracing::warn!(repo = %repo.display(), "declared repo workspace creation failed");
+                None
+            }
+        };
+        let Some(workspace) = created else {
+            return;
+        };
+        // Both arms below are unreachable in practice: the id was generated
+        // and pushed into `self.state.workspaces` moments earlier. Warn
+        // rather than restructure, so a regression here is diagnosable
+        // instead of silently leaving the pane in an unpinned workspace that
+        // a later `cd` would try to reclaim all over again.
+        let Some(ws_idx) = self.parse_workspace_id(&workspace.workspace_id) else {
+            tracing::warn!(
+                repo = %repo.display(),
+                workspace_id = %workspace.workspace_id,
+                "declared repo workspace id did not parse after creation"
+            );
+            return;
+        };
+        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+            tracing::warn!(
+                repo = %repo.display(),
+                workspace_id = %workspace.workspace_id,
+                "declared repo workspace vanished before it could be pinned"
+            );
+            return;
+        };
+        ws.pinned_path = Some(repo.to_path_buf());
+        self.schedule_session_save();
     }
 }
 
