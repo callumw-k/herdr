@@ -321,13 +321,16 @@ impl AppState {
             return None;
         }
 
-        let (ws_area, _, _) = crate::ui::collapsed_sidebar_sections(self.view.sidebar_rect);
+        let (ws_area, _, _) =
+            crate::ui::collapsed_sidebar_sections(self.view.sidebar_rect, self.workspaces.len());
         if ws_area == Rect::default() || row < ws_area.y || row >= ws_area.y + ws_area.height {
             return None;
         }
 
         let idx = (row - ws_area.y) as usize;
-        (idx < self.workspaces.len()).then_some(idx)
+        let shown =
+            crate::ui::collapsed_visible_rows(ws_area.height as usize, self.workspaces.len());
+        (idx < shown).then_some(idx)
     }
 
     pub(super) fn collapsed_agent_detail_target_at(
@@ -338,7 +341,8 @@ impl AppState {
             return None;
         }
 
-        let (_, _, detail_area) = crate::ui::collapsed_sidebar_sections(self.view.sidebar_rect);
+        let (_, _, detail_area) =
+            crate::ui::collapsed_sidebar_sections(self.view.sidebar_rect, self.workspaces.len());
         let detail_content_area = Rect::new(
             detail_area.x,
             detail_area.y,
@@ -354,6 +358,11 @@ impl AppState {
 
         let detail_idx = (row - detail_content_area.y) as usize;
         let details = crate::ui::agent_panel_entries(self);
+        if detail_idx
+            >= crate::ui::collapsed_visible_rows(detail_content_area.height as usize, details.len())
+        {
+            return None;
+        }
         let detail = details.get(detail_idx)?;
         Some((detail.ws_idx, detail.tab_idx, detail.pane_id))
     }
@@ -1051,6 +1060,26 @@ mod tests {
     }
 
     #[test]
+    fn collapsed_overflow_marker_row_is_not_clickable() {
+        let mut state = crate::app::state::AppState::test_new();
+        state.workspaces = (1..=6)
+            .map(|idx| crate::workspace::Workspace::test_new(&format!("workspace-{idx}")))
+            .collect();
+        state.sidebar_collapsed = true;
+        state.view.sidebar_rect = Rect::new(0, 0, 4, 6);
+
+        let (ws_area, _, _) =
+            crate::ui::collapsed_sidebar_sections(state.view.sidebar_rect, state.workspaces.len());
+        assert_eq!(ws_area.height, 3);
+        assert_eq!(state.collapsed_workspace_at_row(ws_area.y + 1), Some(1));
+        assert_eq!(
+            state.collapsed_workspace_at_row(ws_area.y + 2),
+            None,
+            "the tail row shows the +N marker, so it must not select a hidden workspace"
+        );
+    }
+
+    #[test]
     fn clicking_collapsed_agent_row_switches_to_correct_tab_and_pane() {
         let mut app = app_for_mouse_test();
         let mut ws = Workspace::test_new("test");
@@ -1082,8 +1111,10 @@ mod tests {
         app.state.view.sidebar_rect = Rect::new(0, 0, 4, 20);
         app.state.view.terminal_area = Rect::new(4, 0, 80, 20);
 
-        let (_, _, detail_area) =
-            crate::ui::collapsed_sidebar_sections(app.state.view.sidebar_rect);
+        let (_, _, detail_area) = crate::ui::collapsed_sidebar_sections(
+            app.state.view.sidebar_rect,
+            app.state.workspaces.len(),
+        );
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             detail_area.x,
@@ -1127,8 +1158,10 @@ mod tests {
         set_state(&mut app, 0, first_pane, AgentState::Working);
         set_state(&mut app, 1, second_pane, AgentState::Blocked);
 
-        let (_, _, detail_area) =
-            crate::ui::collapsed_sidebar_sections(app.state.view.sidebar_rect);
+        let (_, _, detail_area) = crate::ui::collapsed_sidebar_sections(
+            app.state.view.sidebar_rect,
+            app.state.workspaces.len(),
+        );
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             detail_area.x,

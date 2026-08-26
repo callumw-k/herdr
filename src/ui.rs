@@ -80,12 +80,12 @@ pub(crate) use self::{
         agent_entry_block_heights, agent_entry_gap, agent_panel_body_rect, agent_panel_entries,
         agent_panel_scroll_for_target, agent_panel_scroll_metrics, agent_panel_scrollbar_rect,
         agent_panel_toggle_rect, all_agent_panel_entries, collapsed_sidebar_sections,
-        collapsed_sidebar_toggle_rect, compute_workspace_card_areas, expanded_sidebar_sections,
-        expanded_sidebar_toggle_rect, normalized_workspace_scroll, sidebar_section_divider_rect,
-        workspace_drop_slots, workspace_group_chevron_rect, workspace_list_entries,
-        workspace_list_entries_expanded, workspace_list_rect, workspace_list_scroll_metrics,
-        workspace_list_scrollbar_rect, workspace_parent_group_state, AgentPanelEntry,
-        WorkspaceListEntry,
+        collapsed_sidebar_toggle_rect, collapsed_visible_rows, compute_workspace_card_areas,
+        expanded_sidebar_sections, expanded_sidebar_toggle_rect, normalized_workspace_scroll,
+        sidebar_section_divider_rect, workspace_drop_slots, workspace_group_chevron_rect,
+        workspace_list_entries, workspace_list_entries_expanded, workspace_list_rect,
+        workspace_list_scroll_metrics, workspace_list_scrollbar_rect, workspace_parent_group_state,
+        AgentPanelEntry, WorkspaceListEntry,
     },
 };
 
@@ -1103,15 +1103,19 @@ mod tests {
         terminal.draw(|frame| render(&app, frame)).unwrap();
         let buffer = terminal.backend().buffer();
 
-        let (ws_area, _, _) = collapsed_sidebar_sections(app.view.sidebar_rect);
-        let active_row = ws_area.y + 1;
-        let active_style = buffer[(ws_area.x, active_row)].style();
+        let (ws_area, _, _) =
+            collapsed_sidebar_sections(app.view.sidebar_rect, app.workspaces.len());
 
-        assert_eq!(active_style.bg, Some(app.palette.active_row_bg));
+        assert_eq!(
+            buffer[(ws_area.x, ws_area.y + 1)].symbol(),
+            "\u{258e}",
+            "the active workspace keeps its ribbon outside navigate mode"
+        );
+        assert_eq!(buffer[(ws_area.x, ws_area.y)].symbol(), "\u{258f}");
     }
 
     #[test]
-    fn expanded_sidebar_workspace_rows_show_state_before_name_without_numbers() {
+    fn expanded_sidebar_workspace_rows_lead_with_the_status_ribbon_without_numbers() {
         let mut app = crate::app::state::AppState::test_new();
         let mut ws = Workspace::test_new("one");
         let repo = temp_git_repo("main");
@@ -1139,9 +1143,9 @@ mod tests {
         let line1 = buffer_row_text(buffer, card, card.y);
         let line2 = buffer_row_text(buffer, card, card.y + 1);
 
-        assert!(line1.starts_with(" · one"));
+        assert!(line1.starts_with("▌ one"));
         assert!(!line1.contains("1 one"));
-        assert_eq!(line2, "   main");
+        assert_eq!(line2, "▌ main");
 
         std::fs::remove_dir_all(repo).ok();
     }

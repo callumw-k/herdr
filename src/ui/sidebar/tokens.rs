@@ -344,10 +344,9 @@ mod tests {
                     suppress_git_details: true,
                 },
             ),
-            vec![vec![
-                ResolvedToken::unstyled(ResolvedTokenKind::StateIcon),
-                ResolvedToken::unstyled(ResolvedTokenKind::Workspace("feature".into())),
-            ]]
+            vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
+                "feature".into()
+            ))]]
         );
     }
 

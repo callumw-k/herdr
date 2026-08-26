@@ -764,36 +764,108 @@ pub(crate) fn workspace_group_chevron_rect(card: &crate::app::state::WorkspaceCa
     )
 }
 
-/// Auto-scale sidebar width based on workspace identity + agent summary.
-pub(crate) fn collapsed_sidebar_sections(area: Rect) -> (Rect, Option<u16>, Rect) {
+/// Collapsed sidebar geometry: workspace rows, divider, agent rows. The workspace
+/// section is sized to its contents so a short list does not strand the divider
+/// halfway down the column. `detail_area` still includes the bottom toggle row.
+pub(crate) fn collapsed_sidebar_sections(area: Rect, ws_rows: usize) -> (Rect, Option<u16>, Rect) {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.width == 0 || content.height == 0 {
         return (Rect::default(), None, Rect::default());
     }
 
-    if content.height < 7 {
-        return (content, None, Rect::default());
-    }
-
+    // A split needs a divider, at least one agent row, and the toggle row.
     let total_h = content.height as usize;
-    let ws_h = total_h.div_ceil(2);
-    let detail_h = total_h.saturating_sub(ws_h + 1);
-    if ws_h == 0 || detail_h == 0 {
+    let Some(max_ws) = total_h.checked_sub(3).filter(|max_ws| *max_ws > 0) else {
         return (content, None, Rect::default());
-    }
+    };
 
+    let ws_h = ws_rows.clamp(1, max_ws);
+    let detail_h = total_h - ws_h - 1;
     let divider_y = content.y + ws_h as u16;
     let ws_area = Rect::new(content.x, content.y, content.width, ws_h as u16);
     let detail_area = Rect::new(content.x, divider_y + 1, content.width, detail_h as u16);
     (ws_area, Some(divider_y), detail_area)
 }
 
-fn workspace_selection_background(p: &Palette, is_active: bool) -> Color {
-    if is_active && p.selection_bg == Color::Reset {
-        p.active_row_bg
+/// Rows a collapsed section fills with real entries. An overflowing list gives up
+/// its tail row to a `+N` marker, so that row must not stay clickable either.
+pub(crate) fn collapsed_visible_rows(capacity: usize, total: usize) -> usize {
+    if total > capacity {
+        capacity.saturating_sub(1)
     } else {
-        p.selection_bg
+        total
     }
+}
+
+/// Weight of the left status ribbon. Color carries agent state, weight carries emphasis.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RibbonWeight {
+    Faint,
+    Medium,
+    Full,
+}
+
+fn render_status_ribbon(
+    frame: &mut Frame,
+    x: u16,
+    y: u16,
+    height: u16,
+    color: Color,
+    weight: RibbonWeight,
+) {
+    let (symbol, style) = match weight {
+        RibbonWeight::Faint => ("▏", Style::default().fg(color).add_modifier(Modifier::DIM)),
+        RibbonWeight::Medium => ("▎", Style::default().fg(color)),
+        RibbonWeight::Full => ("▌", Style::default().fg(color)),
+    };
+    let buf = frame.buffer_mut();
+    for row in y..y.saturating_add(height) {
+        buf[(x, row)].set_symbol(symbol).set_style(style);
+    }
+}
+
+/// Ribbon color and weight for a workspace row. Weight alone cannot separate the
+/// Navigate cursor from the active workspace, so the cursor takes the accent color
+/// instead: state has the color channel everywhere else, and accent already means
+/// "navigation is engaged" for the sidebar separator and the section divider.
+fn workspace_ribbon(
+    p: &Palette,
+    state_color: Color,
+    is_cursor: bool,
+    is_active: bool,
+) -> (Color, RibbonWeight) {
+    if is_cursor {
+        (p.accent, RibbonWeight::Full)
+    } else if is_active {
+        (state_color, RibbonWeight::Medium)
+    } else {
+        (state_color, RibbonWeight::Faint)
+    }
+}
+
+/// Collapsed rows truncate silently otherwise, so the tail row counts what is hidden.
+/// Two content columns only fit one digit, so the count saturates at 9.
+fn render_collapsed_overflow(
+    frame: &mut Frame,
+    section: Rect,
+    shown: usize,
+    hidden: usize,
+    p: &Palette,
+) {
+    if hidden == 0 || section.width < 2 {
+        return;
+    }
+    let y = section.y + shown as u16;
+    if y >= section.y + section.height {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("+{}", hidden.min(9)),
+            Style::default().fg(p.overlay0),
+        ))),
+        Rect::new(section.x + 1, y, section.width - 1, 1),
+    );
 }
 
 /// Collapsed sidebar: workspace glance on top, compact agent list below.
@@ -820,52 +892,50 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
         buf[(sep_x, y)].set_style(sep_style);
     }
 
-    let (ws_area, divider_y, detail_area) = collapsed_sidebar_sections(area);
+    let (ws_area, divider_y, detail_area) = collapsed_sidebar_sections(area, app.workspaces.len());
     if ws_area == Rect::default() {
         render_sidebar_toggle(app, frame, area, true, p);
         return;
     }
 
-    for (visible_idx, ws) in app.workspaces.iter().enumerate() {
+    let ws_shown = collapsed_visible_rows(ws_area.height as usize, app.workspaces.len());
+    for (visible_idx, ws) in app.workspaces.iter().take(ws_shown).enumerate() {
         let y = ws_area.y + visible_idx as u16;
-        if y >= ws_area.y + ws_area.height {
-            break;
-        }
         let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
         let (icon, icon_style) = state_icon(agg_state, agg_seen, app.status_indicators, p);
         let is_selected = visible_idx == app.selected && is_navigating;
         let is_active = Some(visible_idx) == app.active;
-        let selection_bg = workspace_selection_background(p, is_active);
-        let row_style = if is_selected {
-            Style::default().bg(selection_bg)
-        } else if is_active {
-            Style::default().bg(p.active_row_bg)
-        } else {
-            Style::default()
-        };
-        let num_style = if is_selected {
-            Style::default().fg(p.overlay1).bg(selection_bg)
-        } else if is_active {
-            Style::default().fg(p.text).bg(p.active_row_bg)
-        } else {
-            Style::default().fg(p.overlay0)
-        };
 
-        if is_selected || is_active {
-            let buf = frame.buffer_mut();
-            for x in ws_area.x..ws_area.x + ws_area.width {
-                buf[(x, y)].set_style(row_style);
-            }
-        }
+        let (ribbon_color, weight) = workspace_ribbon(
+            p,
+            state_label_color(agg_state, agg_seen, p),
+            is_selected,
+            is_active,
+        );
+        render_status_ribbon(frame, ws_area.x, y, 1, ribbon_color, weight);
 
+        // Digits 1-9 switch workspaces in navigate mode. Outside it, and past the
+        // ninth row, the number is noise in a three-column strip.
+        let glyph = if is_navigating && visible_idx < 9 {
+            Span::styled(
+                format!("{}", visible_idx + 1),
+                Style::default().fg(if is_selected { p.text } else { p.overlay0 }),
+            )
+        } else {
+            Span::styled(icon, icon_style)
+        };
         frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(format!("{:<2}", visible_idx + 1), num_style),
-                Span::styled(icon, icon_style),
-            ])),
-            Rect::new(ws_area.x, y, ws_area.width, 1),
+            Paragraph::new(Line::from(glyph)),
+            Rect::new(ws_area.x + 1, y, ws_area.width.saturating_sub(1), 1),
         );
     }
+    render_collapsed_overflow(
+        frame,
+        ws_area,
+        ws_shown,
+        app.workspaces.len().saturating_sub(ws_shown),
+        p,
+    );
 
     if let Some(divider_y) = divider_y {
         let buf = frame.buffer_mut();
@@ -887,36 +957,44 @@ pub(super) fn render_sidebar_collapsed(app: &AppState, frame: &mut Frame, area: 
         detail_area.height.saturating_sub(1),
     );
     if detail_content_area != Rect::default() {
-        for (detail_idx, detail) in agent_panel_entries(app).iter().enumerate() {
+        // Agent positions are not keyboard-addressable, so the strip shows state only.
+        let entries = agent_panel_entries(app);
+        let shown = collapsed_visible_rows(detail_content_area.height as usize, entries.len());
+        for (detail_idx, detail) in entries.iter().take(shown).enumerate() {
             let y = detail_content_area.y + detail_idx as u16;
-            if y >= detail_content_area.y + detail_content_area.height {
-                break;
-            }
-            let position = detail_idx + 1;
             let is_active = app.is_active_pane(detail.ws_idx, detail.tab_idx, detail.pane_id);
-            let position_style = if is_active {
-                Style::default().fg(p.text).bg(p.active_row_bg)
-            } else {
-                Style::default().fg(p.overlay0)
-            };
             let (icon, icon_style) =
                 state_icon(detail.state, detail.seen, app.status_indicators, p);
 
-            if is_active {
-                let buf = frame.buffer_mut();
-                for x in detail_content_area.x..detail_content_area.x + detail_content_area.width {
-                    buf[(x, y)].set_style(Style::default().bg(p.active_row_bg));
-                }
-            }
-
+            render_status_ribbon(
+                frame,
+                detail_content_area.x,
+                y,
+                1,
+                state_label_color(detail.state, detail.seen, p),
+                if is_active {
+                    RibbonWeight::Full
+                } else {
+                    RibbonWeight::Faint
+                },
+            );
             frame.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(format!("{position:<2}"), position_style),
-                    Span::styled(icon, icon_style),
-                ])),
-                Rect::new(detail_content_area.x, y, detail_content_area.width, 1),
+                Paragraph::new(Line::from(Span::styled(icon, icon_style))),
+                Rect::new(
+                    detail_content_area.x + 1,
+                    y,
+                    detail_content_area.width.saturating_sub(1),
+                    1,
+                ),
             );
         }
+        render_collapsed_overflow(
+            frame,
+            detail_content_area,
+            shown,
+            entries.len().saturating_sub(shown),
+            p,
+        );
     }
 
     render_sidebar_toggle(app, frame, area, true, p);
@@ -1296,9 +1374,7 @@ fn render_workspace_list(
         let (agg_state, agg_seen) = ws.aggregate_state(&app.terminals);
 
         if highlighted {
-            let bg = if selected {
-                workspace_selection_background(p, is_active)
-            } else if is_dragged {
+            let bg = if is_dragged {
                 p.surface1
             } else {
                 p.active_row_bg
@@ -1350,9 +1426,8 @@ fn render_workspace_list(
             .map(|(key, _)| space_aggregate_state(app, key))
             .unwrap_or((agg_state, agg_seen));
         let state_icon = state_icon(display_state, display_seen, app.status_indicators, p);
-        let state_text_style = Style::default()
-            .fg(state_label_color(display_state, display_seen, p))
-            .add_modifier(Modifier::DIM);
+        let state_color = state_label_color(display_state, display_seen, p);
+        let state_text_style = Style::default().fg(state_color).add_modifier(Modifier::DIM);
         let branch_style = Style::default().fg(if selected || is_active {
             p.mauve
         } else {
@@ -1377,27 +1452,22 @@ fn render_workspace_list(
             }
             let mut spans = Vec::new();
             let prefix_width = if card.indented {
-                spans.push(Span::raw("   "));
+                spans.push(Span::raw("  "));
                 if row_index == 0 {
                     spans.push(Span::styled(
                         if is_last_child { "└─ " } else { "├─ " },
                         Style::default().fg(p.overlay0),
                     ));
-                    6
                 } else if is_last_child {
-                    spans.push(Span::raw("     "));
-                    8
+                    spans.push(Span::raw("   "));
                 } else {
                     spans.push(Span::styled("│", Style::default().fg(p.overlay0)));
-                    spans.push(Span::raw("    "));
-                    8
+                    spans.push(Span::raw("  "));
                 }
-            } else if row_index == 0 {
-                spans.push(Span::raw(" "));
-                1
+                5
             } else {
-                spans.push(Span::raw("   "));
-                3
+                spans.push(Span::raw("  "));
+                2
             };
             let trailing_width = if row_index == 0 && parent_group.is_some() {
                 2
@@ -1419,6 +1489,20 @@ fn render_workspace_list(
             frame.render_widget(
                 Paragraph::new(Line::from(spans)),
                 Rect::new(card.rect.x, row_y + row_index as u16, card.rect.width, 1),
+            );
+        }
+
+        let ribbon_height = row_height.min(list_bottom.saturating_sub(row_y));
+        if ribbon_height > 0 {
+            let (ribbon_color, weight) =
+                workspace_ribbon(p, state_color, selected || is_dragged, is_active);
+            render_status_ribbon(
+                frame,
+                card.rect.x,
+                row_y,
+                ribbon_height,
+                ribbon_color,
+                weight,
             );
         }
 
@@ -1576,7 +1660,7 @@ fn render_agent_detail(
         let state_icon = state_icon(detail.state, detail.seen, app.status_indicators, p);
 
         for (row_index, resolved) in rows.iter().take(height as usize).enumerate() {
-            let mut spans = vec![Span::raw(if row_index == 0 { " " } else { "   " })];
+            let mut spans = vec![Span::raw(if row_index == 0 { "  " } else { "   " })];
             spans.extend(resolved_token_spans(
                 resolved,
                 state_icon,
@@ -1586,13 +1670,29 @@ fn render_agent_detail(
                 agent_style,
                 p,
                 body.width
-                    .saturating_sub(if row_index == 0 { 1 } else { 3 }) as usize,
+                    .saturating_sub(if row_index == 0 { 2 } else { 3 }) as usize,
             ));
             frame.render_widget(
                 Paragraph::new(Line::from(spans)).style(row_style),
                 Rect::new(body.x, row_y + row_index as u16, body.width, 1),
             );
         }
+        let ribbon_height = height.min(body_bottom.saturating_sub(row_y));
+        if ribbon_height > 0 {
+            render_status_ribbon(
+                frame,
+                body.x,
+                row_y,
+                ribbon_height,
+                label_color,
+                if is_active {
+                    RibbonWeight::Full
+                } else {
+                    RibbonWeight::Faint
+                },
+            );
+        }
+
         row_y = row_y
             .saturating_add(height)
             .saturating_add(agent_entry_gap(app, index, details.len()))
@@ -1821,7 +1921,74 @@ rows = [[{ token = "workspace", bold = false }, { token = "agent", dim = false }
     }
 
     #[test]
-    fn navigate_selection_keeps_its_existing_background_beside_active_workspace() {
+    fn workspace_ribbon_color_follows_the_rolled_up_agent_state() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("one");
+        let pane_id = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        app.mode = Mode::Terminal;
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let area = Rect::new(0, 0, 26, 20);
+        app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
+        let row = app.view.workspace_card_areas[0].rect.y;
+        let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
+
+        for (state, expected) in [
+            (AgentState::Working, app.palette.yellow),
+            (AgentState::Blocked, app.palette.red),
+            (AgentState::Idle, app.palette.green),
+        ] {
+            app.terminals.get_mut(&terminal_id).unwrap().state = state;
+            terminal
+                .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+                .unwrap();
+            assert_eq!(terminal.backend().buffer()[(0, row)].fg, expected);
+        }
+    }
+
+    #[test]
+    fn navigate_cursor_ribbon_takes_the_accent_color_over_agent_state() {
+        let mut app = crate::app::state::AppState::test_new();
+        let workspace = Workspace::test_new("one");
+        let pane_id = workspace.tabs[0].root_pane;
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+        let terminal_id = app.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.terminals.get_mut(&terminal_id).unwrap().state = AgentState::Blocked;
+        app.active = Some(0);
+        app.selected = 0;
+        app.mode = Mode::Navigate;
+        let area = Rect::new(0, 0, 26, 20);
+        app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
+        let row = app.view.workspace_card_areas[0].rect.y;
+        let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
+        terminal
+            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .unwrap();
+
+        // Selected and active land on the same row and the same background, so the
+        // cursor has to be readable from the ribbon alone.
+        assert_eq!(terminal.backend().buffer()[(0, row)].fg, app.palette.accent);
+        assert_ne!(terminal.backend().buffer()[(0, row)].fg, app.palette.red);
+
+        app.mode = Mode::Terminal;
+        terminal
+            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(0, row)].fg,
+            app.palette.red,
+            "leaving navigate mode hands the ribbon back to agent state"
+        );
+    }
+
+    #[test]
+    fn navigate_selection_separates_from_the_active_workspace_by_ribbon_weight() {
         let mut app = crate::app::state::AppState::test_new();
         app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
         app.active = Some(0);
@@ -1838,70 +2005,99 @@ rows = [[{ token = "workspace", bold = false }, { token = "agent", dim = false }
         let buffer = terminal.backend().buffer();
 
         assert_eq!(
-            buffer[(0, active_row)].bg,
-            app.palette.active_row_bg,
-            "active workspace should keep its dedicated background"
+            buffer[(0, active_row)].symbol(),
+            "▎",
+            "active workspace should keep the medium ribbon"
         );
         assert_eq!(
-            buffer[(0, selected_row)].bg,
-            app.palette.selection_bg,
-            "navigate selection should use its dedicated cursor background"
+            buffer[(0, selected_row)].symbol(),
+            "▌",
+            "navigate selection should take the full ribbon"
         );
+        assert_eq!(buffer[(0, active_row)].bg, app.palette.active_row_bg);
+        assert_eq!(buffer[(0, selected_row)].bg, app.palette.active_row_bg);
     }
 
     #[test]
-    fn selected_active_workspace_resolves_expanded_background() {
+    fn expanded_selection_stays_on_the_quiet_row_background_across_palettes() {
         let mut app = crate::app::state::AppState::test_new();
         app.palette = crate::app::state::Palette::terminal();
         app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
         app.active = Some(0);
-        app.selected = 0;
+        app.selected = 1;
         app.mode = Mode::Navigate;
         let area = Rect::new(0, 0, 26, 20);
         app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
-        let active_row = app.view.workspace_card_areas[0].rect.y;
-        let inactive_row = app.view.workspace_card_areas[1].rect.y;
+        let selected_row = app.view.workspace_card_areas[1].rect.y;
         let mut terminal = Terminal::new(TestBackend::new(26, 20)).unwrap();
-        terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
-            .unwrap();
 
-        assert_eq!(
-            terminal.backend().buffer()[(0, active_row)].bg,
-            app.palette.active_row_bg
-        );
-
-        app.selected = 1;
-        terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
-            .unwrap();
-        assert_eq!(
-            terminal.backend().buffer()[(0, active_row)].bg,
-            app.palette.active_row_bg
-        );
-        assert_eq!(
-            terminal.backend().buffer()[(0, inactive_row)].bg,
-            app.palette.selection_bg
-        );
-
-        app.palette = crate::app::state::Palette::catppuccin();
-        app.selected = 0;
-        terminal
-            .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
-            .unwrap();
-        assert_eq!(
-            terminal.backend().buffer()[(0, active_row)].bg,
-            app.palette.selection_bg
-        );
+        for palette in [
+            crate::app::state::Palette::terminal(),
+            crate::app::state::Palette::catppuccin(),
+        ] {
+            app.palette = palette;
+            terminal
+                .draw(|frame| render_sidebar(&app, &TerminalRuntimeRegistry::new(), frame, area))
+                .unwrap();
+            assert_eq!(
+                terminal.backend().buffer()[(0, selected_row)].bg,
+                app.palette.active_row_bg,
+                "expanded selection should never fall back to the heavier cursor background"
+            );
+        }
     }
 
     #[test]
-    fn selected_active_workspace_resolves_collapsed_background() {
+    fn collapsed_sidebar_divider_follows_the_workspace_count() {
+        let area = Rect::new(0, 0, 4, 40);
+
+        let (ws_area, divider_y, detail_area) = collapsed_sidebar_sections(area, 2);
+        assert_eq!(ws_area.height, 2, "two workspaces should claim two rows");
+        assert_eq!(divider_y, Some(area.y + 2));
+        assert_eq!(detail_area.y, area.y + 3);
+        assert_eq!(detail_area.height, 37);
+
+        // A list longer than the column still has to leave room for the divider,
+        // one agent row, and the toggle.
+        let (ws_area, divider_y, detail_area) = collapsed_sidebar_sections(area, 100);
+        assert_eq!(ws_area.height, 37);
+        assert_eq!(divider_y, Some(area.y + 37));
+        assert_eq!(detail_area.height, 2);
+    }
+
+    #[test]
+    fn collapsed_sidebar_marks_hidden_rows_instead_of_truncating_silently() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = (1..=6)
+            .map(|idx| Workspace::test_new(&format!("workspace-{idx}")))
+            .collect();
+        app.ensure_test_terminals();
+
+        // Room for three workspace rows, so three entries are hidden and the
+        // third row gives itself up to the marker.
+        let area = Rect::new(0, 0, 4, 6);
+        let (ws_area, _, _) = collapsed_sidebar_sections(area, app.workspaces.len());
+        assert_eq!(ws_area.height, 3);
+        assert_eq!(collapsed_visible_rows(3, 6), 2);
+
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
+            .expect("test terminal should initialize");
+        terminal
+            .draw(|frame| render_sidebar_collapsed(&app, frame, area))
+            .expect("collapsed sidebar should render");
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(ws_area.x + 1, ws_area.y + 2)].symbol(), "+");
+        assert_eq!(buffer[(ws_area.x + 2, ws_area.y + 2)].symbol(), "4");
+    }
+
+    #[test]
+    fn collapsed_workspace_ribbon_separates_navigate_selection_from_active() {
         let mut app = crate::app::state::AppState::test_new();
         app.palette = crate::app::state::Palette::terminal();
         app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
         app.active = Some(0);
-        app.selected = 0;
+        app.selected = 1;
         app.mode = Mode::Navigate;
         let area = Rect::new(0, 0, 5, 8);
         let mut terminal = Terminal::new(TestBackend::new(5, 8)).unwrap();
@@ -1909,33 +2105,28 @@ rows = [[{ token = "workspace", bold = false }, { token = "agent", dim = false }
             .draw(|frame| render_sidebar_collapsed(&app, frame, area))
             .unwrap();
 
-        let (workspace_area, _, _) = collapsed_sidebar_sections(area);
+        let (workspace_area, _, _) = collapsed_sidebar_sections(area, app.workspaces.len());
+        let buffer = terminal.backend().buffer();
         assert_eq!(
-            terminal.backend().buffer()[(workspace_area.x, workspace_area.y)].bg,
-            app.palette.active_row_bg
+            buffer[(workspace_area.x, workspace_area.y)].symbol(),
+            "\u{258e}",
+            "active workspace should keep the medium ribbon"
+        );
+        assert_eq!(
+            buffer[(workspace_area.x, workspace_area.y + 1)].symbol(),
+            "\u{258c}",
+            "navigate selection should take the full ribbon"
         );
 
-        app.selected = 1;
+        app.mode = Mode::Terminal;
         terminal
             .draw(|frame| render_sidebar_collapsed(&app, frame, area))
             .unwrap();
+        let buffer = terminal.backend().buffer();
         assert_eq!(
-            terminal.backend().buffer()[(workspace_area.x, workspace_area.y)].bg,
-            app.palette.active_row_bg
-        );
-        assert_eq!(
-            terminal.backend().buffer()[(workspace_area.x, workspace_area.y + 1)].bg,
-            app.palette.selection_bg
-        );
-
-        app.palette = crate::app::state::Palette::catppuccin();
-        app.selected = 0;
-        terminal
-            .draw(|frame| render_sidebar_collapsed(&app, frame, area))
-            .unwrap();
-        assert_eq!(
-            terminal.backend().buffer()[(workspace_area.x, workspace_area.y)].bg,
-            app.palette.selection_bg
+            buffer[(workspace_area.x, workspace_area.y + 1)].symbol(),
+            "\u{258f}",
+            "leaving navigate mode drops the selection ribbon back to faint"
         );
     }
 
@@ -2047,9 +2238,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(metrics.viewport_rows, 2);
         assert_eq!(metrics.max_offset_from_bottom, 0);
         assert_eq!(row_text(buffer, body.y, body.width), " one");
-        assert_eq!(row_text(buffer, body.y + 1, body.width), " pi");
+        assert_eq!(row_text(buffer, body.y + 1, body.width), "▏ pi");
         assert_eq!(row_text(buffer, body.y + 2, body.width), " two");
-        assert_eq!(row_text(buffer, body.y + 3, body.width), " claude");
+        assert_eq!(row_text(buffer, body.y + 3, body.width), "▏ claude");
     }
 
     #[test]
@@ -2089,12 +2280,15 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
                 .collect::<Vec<_>>()
         };
 
-        assert_eq!(rendered(&app, 5), [" one", " pi", " pi", " two", " claude"]);
+        assert_eq!(
+            rendered(&app, 5),
+            [" one", "▏ pi", "▏ pi", " two", "▏ claude"]
+        );
 
         app.agent_panel_sort = AgentPanelSort::Priority;
         assert_eq!(
             rendered(&app, 6),
-            [" one", "   pi", " one", "   pi", " two", "   claude"]
+            ["▏ one", "▏  pi", "▏ one", "▏  pi", "▏ two", "▏  claude"]
         );
     }
 
@@ -2380,34 +2574,6 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(labels, ["four", "two", "one", "three"]);
     }
 
-    #[test]
-    fn collapsed_sidebar_numbers_grouped_agents_by_list_position() {
-        let mut app = crate::app::state::AppState::test_new();
-        app.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
-        app.ensure_test_terminals();
-
-        for ws_idx in 0..app.workspaces.len() {
-            let pane = app.workspaces[ws_idx].tabs[0].root_pane;
-            let terminal_id = app.workspaces[ws_idx].tabs[0].panes[&pane]
-                .attached_terminal_id
-                .clone();
-            app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
-        }
-
-        let area = Rect::new(0, 0, 4, 12);
-        let (_, _, detail_area) = collapsed_sidebar_sections(area);
-        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
-            .expect("test terminal should initialize");
-
-        terminal
-            .draw(|frame| render_sidebar_collapsed(&app, frame, area))
-            .expect("collapsed sidebar should render");
-
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(detail_area.x, detail_area.y)].symbol(), "1");
-        assert_eq!(buffer[(detail_area.x, detail_area.y + 1)].symbol(), "2");
-    }
-
     /// Two agent panes in one workspace plus a second workspace, so the
     /// assertions can tell pane-level highlighting apart from workspace-level.
     fn collapsed_agent_app() -> (crate::app::state::AppState, PaneId, PaneId) {
@@ -2432,12 +2598,12 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         (app, first_pane, second_pane)
     }
 
-    fn collapsed_agent_row_styles(
+    fn collapsed_agent_ribbons(
         app: &crate::app::state::AppState,
         area: Rect,
         detail_area: Rect,
         rows: u16,
-    ) -> Vec<Vec<ratatui::style::Style>> {
+    ) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
             .expect("test terminal should initialize");
         terminal
@@ -2446,9 +2612,9 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let buffer = terminal.backend().buffer();
         (0..rows)
             .map(|row| {
-                (detail_area.x..detail_area.x + detail_area.width)
-                    .map(|x| buffer[(x, detail_area.y + row)].style())
-                    .collect()
+                buffer[(detail_area.x, detail_area.y + row)]
+                    .symbol()
+                    .to_string()
             })
             .collect()
     }
@@ -2462,31 +2628,24 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert!(!app.is_active_pane(0, 0, first_pane));
 
         let area = Rect::new(0, 0, 4, 14);
-        let (_, _, detail_area) = collapsed_sidebar_sections(area);
-        let rows = collapsed_agent_row_styles(&app, area, detail_area, 3);
+        let (_, _, detail_area) = collapsed_sidebar_sections(area, app.workspaces.len());
+        let ribbons = collapsed_agent_ribbons(&app, area, detail_area, 3);
 
-        let highlighted: Vec<_> = rows
-            .iter()
-            .filter(|cells| {
-                cells
-                    .iter()
-                    .all(|style| style.bg == Some(app.palette.active_row_bg))
-            })
-            .collect();
         assert_eq!(
-            highlighted.len(),
+            ribbons
+                .iter()
+                .filter(|symbol| *symbol == "\u{258c}")
+                .count(),
             1,
-            "only the focused agent pane should be highlighted, across the whole row"
+            "only the focused agent pane should take the full ribbon"
         );
-        assert_eq!(highlighted[0][0].fg, Some(app.palette.text));
-
-        let muted = rows
-            .iter()
-            .filter(|cells| cells[0].fg == Some(app.palette.overlay0))
-            .count();
         assert_eq!(
-            muted, 2,
-            "the sibling pane in the active workspace and the other workspace stay muted"
+            ribbons
+                .iter()
+                .filter(|symbol| *symbol == "\u{258f}")
+                .count(),
+            2,
+            "the sibling pane in the active workspace and the other workspace stay faint"
         );
     }
 
@@ -2496,19 +2655,17 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         app.active = None;
 
         let area = Rect::new(0, 0, 4, 14);
-        let (_, _, detail_area) = collapsed_sidebar_sections(area);
-        let rows = collapsed_agent_row_styles(&app, area, detail_area, 3);
+        let (_, _, detail_area) = collapsed_sidebar_sections(area, app.workspaces.len());
+        let ribbons = collapsed_agent_ribbons(&app, area, detail_area, 3);
 
-        for cells in rows {
-            assert_eq!(cells[0].fg, Some(app.palette.overlay0));
-            for style in cells {
-                assert_ne!(style.bg, Some(app.palette.active_row_bg));
-            }
-        }
+        assert!(
+            ribbons.iter().all(|symbol| symbol == "\u{258f}"),
+            "no workspace is active, so no agent row should claim the full ribbon: {ribbons:?}"
+        );
     }
 
     #[test]
-    fn collapsed_sidebar_keeps_workspace_status_visible_for_two_digit_positions() {
+    fn collapsed_sidebar_keeps_workspace_status_visible_past_the_ninth_row() {
         let mut app = crate::app::state::AppState::test_new();
         app.workspaces = (1..=10)
             .map(|idx| Workspace::test_new(&format!("workspace-{idx}")))
@@ -2523,33 +2680,38 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             app.terminals.get_mut(&terminal_id).unwrap().detected_agent = Some(Agent::Claude);
         }
 
+        app.mode = Mode::Terminal;
         let area = Rect::new(0, 0, 4, 25);
-        let (workspace_area, _, _) = collapsed_sidebar_sections(area);
+        let (workspace_area, _, _) = collapsed_sidebar_sections(area, app.workspaces.len());
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
             .expect("test terminal should initialize");
-
         terminal
             .draw(|frame| render_sidebar_collapsed(&app, frame, area))
             .expect("collapsed sidebar should render");
 
         let tenth_row = workspace_area.y + 9;
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(workspace_area.x, workspace_area.y)].symbol(), "1");
         assert_eq!(
             buffer[(workspace_area.x + 1, workspace_area.y)].symbol(),
-            " "
-        );
-        assert_eq!(
-            buffer[(workspace_area.x + 2, workspace_area.y)].symbol(),
             "·"
         );
-        assert_eq!(buffer[(workspace_area.x, tenth_row)].symbol(), "1");
-        assert_eq!(buffer[(workspace_area.x + 1, tenth_row)].symbol(), "0");
-        assert_eq!(buffer[(workspace_area.x + 2, tenth_row)].symbol(), "·");
+        assert_eq!(buffer[(workspace_area.x + 1, tenth_row)].symbol(), "·");
+
+        // Only digits 1-9 switch workspaces, so the tenth row keeps its status glyph.
+        app.mode = Mode::Navigate;
+        terminal
+            .draw(|frame| render_sidebar_collapsed(&app, frame, area))
+            .expect("collapsed sidebar should render");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(workspace_area.x + 1, workspace_area.y)].symbol(),
+            "1"
+        );
+        assert_eq!(buffer[(workspace_area.x + 1, tenth_row)].symbol(), "·");
     }
 
     #[test]
-    fn collapsed_sidebar_keeps_status_visible_for_two_digit_positions() {
+    fn collapsed_sidebar_keeps_agent_status_visible_past_the_ninth_row() {
         let mut app = crate::app::state::AppState::test_new();
         app.workspaces = (1..=10)
             .map(|idx| Workspace::test_new(&format!("workspace-{idx}")))
@@ -2565,23 +2727,19 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         }
 
         let area = Rect::new(0, 0, 4, 25);
-        let (_, _, detail_area) = collapsed_sidebar_sections(area);
+        let (_, _, detail_area) = collapsed_sidebar_sections(area, app.workspaces.len());
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
             .expect("test terminal should initialize");
-
         terminal
             .draw(|frame| render_sidebar_collapsed(&app, frame, area))
             .expect("collapsed sidebar should render");
 
-        let tenth_row = detail_area.y + 9;
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(detail_area.x, tenth_row)].symbol(), "1");
-        assert_eq!(buffer[(detail_area.x + 1, tenth_row)].symbol(), "0");
-        assert_eq!(buffer[(detail_area.x + 2, tenth_row)].symbol(), "·");
+        assert_eq!(buffer[(detail_area.x + 1, detail_area.y + 9)].symbol(), "·");
     }
 
     #[test]
-    fn collapsed_sidebar_numbers_priority_agents_by_list_position() {
+    fn collapsed_sidebar_orders_priority_agents_by_state() {
         let first = Workspace::test_new("one");
         let first_pane = first.tabs[0].root_pane;
         let mut second = Workspace::test_new("two");
@@ -2615,7 +2773,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(agent_panel_entries(&app)[0].pane_id, urgent_pane);
 
         let area = Rect::new(0, 0, 4, 16);
-        let (_, _, detail_area) = collapsed_sidebar_sections(area);
+        let (_, _, detail_area) = collapsed_sidebar_sections(area, app.workspaces.len());
         let mut terminal = Terminal::new(TestBackend::new(area.width, area.height))
             .expect("test terminal should initialize");
 
@@ -2624,17 +2782,20 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             .expect("collapsed sidebar should render");
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(detail_area.x, detail_area.y)].symbol(), "1");
-        assert_eq!(buffer[(detail_area.x, detail_area.y + 1)].symbol(), "2");
-        assert_eq!(buffer[(detail_area.x, detail_area.y + 2)].symbol(), "3");
-        assert_eq!(buffer[(detail_area.x + 2, detail_area.y)].symbol(), "×");
         assert_eq!(
-            buffer[(detail_area.x + 2, detail_area.y)].style().fg,
+            buffer[(detail_area.x + 1, detail_area.y)].symbol(),
+            "\u{00d7}"
+        );
+        assert_eq!(
+            buffer[(detail_area.x + 1, detail_area.y)].style().fg,
             Some(app.palette.red)
         );
-        assert_eq!(buffer[(detail_area.x + 2, detail_area.y + 1)].symbol(), "✓");
         assert_eq!(
-            buffer[(detail_area.x + 2, detail_area.y + 1)].style().fg,
+            buffer[(detail_area.x + 1, detail_area.y + 1)].symbol(),
+            "\u{2713}"
+        );
+        assert_eq!(
+            buffer[(detail_area.x + 1, detail_area.y + 1)].style().fg,
             Some(app.palette.teal)
         );
     }
@@ -2857,8 +3018,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let parent_name_x = find_symbol_x(buffer, cards[0].rect.y, cards[0].rect.width, "m");
         let plain_name_x = find_symbol_x(buffer, cards[3].rect.y, cards[3].rect.width, "n");
         assert_eq!(parent_name_x, plain_name_x);
-        assert_eq!(buffer[(cards[1].rect.x + 3, cards[1].rect.y)].symbol(), "├");
-        assert_eq!(buffer[(cards[2].rect.x + 3, cards[2].rect.y)].symbol(), "└");
+        assert_eq!(buffer[(cards[1].rect.x + 2, cards[1].rect.y)].symbol(), "├");
+        assert_eq!(buffer[(cards[2].rect.x + 2, cards[2].rect.y)].symbol(), "└");
         assert_eq!(
             buffer[(cards[0].rect.x + cards[0].rect.width - 1, cards[0].rect.y)].symbol(),
             "▾"
@@ -2895,7 +3056,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         let child = app.view.workspace_card_areas[1];
         assert_eq!(
-            terminal.backend().buffer()[(child.rect.x + 3, child.rect.y)].symbol(),
+            terminal.backend().buffer()[(child.rect.x + 2, child.rect.y)].symbol(),
             "├"
         );
     }

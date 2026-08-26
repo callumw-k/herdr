@@ -395,7 +395,7 @@ impl Default for AgentsSidebarConfig {
         Self {
             rows: vec![
                 vec![AgentSidebarToken::Workspace, AgentSidebarToken::Tab],
-                vec![AgentSidebarToken::StateIcon, AgentSidebarToken::Activity],
+                vec![AgentSidebarToken::Activity],
             ],
             rows_by_agent: BTreeMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
@@ -415,7 +415,7 @@ impl Default for SpacesSidebarConfig {
     fn default() -> Self {
         Self {
             rows: vec![
-                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
+                vec![SpaceSidebarToken::Workspace],
                 vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
             ],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
@@ -441,7 +441,7 @@ mod tests {
             config.agents.rows,
             vec![
                 vec![AgentSidebarToken::Workspace, AgentSidebarToken::Tab],
-                vec![AgentSidebarToken::StateIcon, AgentSidebarToken::Activity],
+                vec![AgentSidebarToken::Activity],
             ]
         );
         assert!(config.agents.rows_by_agent.is_empty());
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(
             config.spaces.rows,
             vec![
-                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
+                vec![SpaceSidebarToken::Workspace],
                 vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
             ]
         );

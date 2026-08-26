@@ -384,7 +384,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # [ui.sidebar.agents]
 # Blank rows between agent entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
-# rows = [["workspace", "tab"], ["state_icon", "activity"]]
+# rows = [["workspace", "tab"], ["activity"]]
 # The Agent panel prints a space name header above each run of agents from the
 # same space and drops the workspace token from those rows, so a row left with
 # no values disappears. Custom view sorts and priority ordering keep the token
@@ -399,7 +399,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # [ui.sidebar.spaces]
 # Blank rows between space entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
-# rows = [["state_icon", "workspace"], ["branch", "git_status"]]
+# rows = [["workspace"], ["branch", "git_status"]]
 
 # Accent color for highlights, borders, and navigation UI.
 # Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)
