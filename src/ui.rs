@@ -1108,7 +1108,7 @@ mod tests {
 
         assert_eq!(
             buffer[(ws_area.x, ws_area.y + 1)].symbol(),
-            "\u{258e}",
+            "\u{258c}",
             "the active workspace keeps its ribbon outside navigate mode"
         );
         assert_eq!(buffer[(ws_area.x, ws_area.y)].symbol(), "\u{258f}");
@@ -1143,9 +1143,9 @@ mod tests {
         let line1 = buffer_row_text(buffer, card, card.y);
         let line2 = buffer_row_text(buffer, card, card.y + 1);
 
-        assert!(line1.starts_with("▌ one"));
+        assert!(line1.starts_with("█ one"));
         assert!(!line1.contains("1 one"));
-        assert_eq!(line2, "▌ main");
+        assert_eq!(line2, "█ main");
 
         std::fs::remove_dir_all(repo).ok();
     }

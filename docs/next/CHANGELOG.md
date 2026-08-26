@@ -9,7 +9,7 @@
 
 ### Changed
 - The Agent panel's second row now shows the pane's own context instead of repeating the agent name. A new `activity` sidebar token resolves to the first of `terminal_title_stripped`, `pane`, or `agent` that is set, and it replaces `agent` in the default agent rows.
-- The Agent panel now prints a space name header above each run of agents from the same space when it is sorted by space, and drops the repeated workspace name from those agents' rows. The default layout is now one header per space and one line per agent.
+- The Agent panel now prints a space name header above each run of agents from the same space when it is sorted by space, and drops the repeated workspace name from those agents' rows. A blank row separates each header from its agents, so a short panel fits one fewer agent per space. The default layout is now one header per space and one line per agent.
 
 - The expanded sidebar now marks agent state with a colored ribbon down the left of every space and agent entry, and both the active workspace and the Navigate cursor sit on the same row background. The cursor's ribbon takes the accent color, so it stays readable next to an active row. The default rows drop `state_icon` because the ribbon carries the same state; add the token back to a row in `ui.sidebar.spaces` or `ui.sidebar.agents` to restore the inline icon.
 - The collapsed sidebar sizes its workspace and agent sections to their contents, so the divider follows the workspace list instead of splitting the column in half. Rows use the same status ribbon as the expanded sidebar, workspace numbers appear only in Navigate mode where digits switch workspaces, and a section with more entries than rows ends in a `+N` count instead of cutting off.

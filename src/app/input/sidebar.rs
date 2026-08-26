@@ -740,7 +740,7 @@ mod tests {
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
 
-        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 16));
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 2, 17));
 
         assert_eq!(app.state.workspaces[0].active_tab, 1);
         assert_eq!(
@@ -786,6 +786,9 @@ mod tests {
             ],
         );
         app.state.sidebar_agents.row_gap = 1;
+        // A blank row under each space header costs the panel two rows here, so
+        // give it the height this test's six content rows need.
+        app.state.view.sidebar_rect = Rect::new(0, 0, 26, 23);
         let detail_area = app.state.agent_panel_rect();
         let metrics = crate::ui::agent_panel_scroll_metrics(&app.state, detail_area);
         let body = crate::ui::agent_panel_body_rect(
@@ -793,22 +796,24 @@ mod tests {
             crate::ui::should_show_scrollbar(metrics),
         );
 
-        // Rows are header, agent, gap, header, agent, agent.
+        // Rows are header, blank, agent, gap, header, blank, agent, agent.
         assert_eq!(app.state.agent_detail_target_at(body.y), None);
+        assert_eq!(app.state.agent_detail_target_at(body.y + 1), None);
         assert_eq!(
-            app.state.agent_detail_target_at(body.y + 1),
+            app.state.agent_detail_target_at(body.y + 2),
             Some((0, 0, first_pane))
         );
-        assert_eq!(app.state.agent_detail_target_at(body.y + 2), None);
         assert_eq!(app.state.agent_detail_target_at(body.y + 3), None);
+        assert_eq!(app.state.agent_detail_target_at(body.y + 4), None);
+        assert_eq!(app.state.agent_detail_target_at(body.y + 5), None);
         assert_eq!(
-            app.state.agent_detail_target_at(body.y + 4),
+            app.state.agent_detail_target_at(body.y + 6),
             Some((1, 0, second_pane))
         );
 
         app.state.sidebar_agents.row_gap = 0;
         assert_eq!(
-            app.state.agent_detail_target_at(body.y + 3),
+            app.state.agent_detail_target_at(body.y + 5),
             Some((1, 0, second_pane))
         );
     }
@@ -852,7 +857,7 @@ mod tests {
         let body = crate::ui::agent_panel_body_rect(detail_area, false);
 
         assert_eq!(
-            app.state.agent_detail_target_at(body.y + 1),
+            app.state.agent_detail_target_at(body.y + 2),
             Some((0, 0, first_pane))
         );
     }
@@ -919,7 +924,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             detail_area.x + 2,
-            detail_area.y + 6,
+            detail_area.y + 8,
         ));
 
         assert_eq!(app.state.active, Some(1));
@@ -1044,11 +1049,11 @@ mod tests {
 
         let detail_area = app.state.agent_panel_rect();
         let body = crate::ui::agent_panel_body_rect(detail_area, true);
-        // Rows are header, agent, then the two-row claude entry.
+        // Rows are header, blank, agent, then the two-row claude entry.
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             body.x + 1,
-            body.y + 2,
+            body.y + 3,
         ));
 
         assert_eq!(app.state.workspaces[0].active_tab, second_tab);

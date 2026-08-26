@@ -590,7 +590,13 @@ pub(crate) fn agent_group_header_rows(
             .get(previous)
             .is_some_and(|previous| previous.ws_idx != entries[index].ws_idx),
     };
-    u16::from(starts_group && agent_panel_groups_by_space(app))
+    // The header plus a blank row, so the group name does not sit flush against
+    // the first agent row's highlight.
+    if starts_group && agent_panel_groups_by_space(app) {
+        2
+    } else {
+        0
+    }
 }
 
 fn agent_entry_height_in_body(app: &AppState, entry: &AgentPanelEntry, body_height: u16) -> u16 {
@@ -814,9 +820,9 @@ fn render_status_ribbon(
     weight: RibbonWeight,
 ) {
     let (symbol, style) = match weight {
-        RibbonWeight::Faint => ("▏", Style::default().fg(color).add_modifier(Modifier::DIM)),
-        RibbonWeight::Medium => ("▎", Style::default().fg(color)),
-        RibbonWeight::Full => ("▌", Style::default().fg(color)),
+        RibbonWeight::Faint => ("▏", Style::default().fg(color)),
+        RibbonWeight::Medium => ("▌", Style::default().fg(color)),
+        RibbonWeight::Full => ("█", Style::default().fg(color)),
     };
     let buf = frame.buffer_mut();
     for row in y..y.saturating_add(height) {
@@ -1831,7 +1837,7 @@ mod tests {
         let body = agent_panel_body_rect(agent_area, false);
 
         let first = row_text(buffer, body.y, 25);
-        let second = row_text(buffer, body.y + 1, 25);
+        let second = row_text(buffer, body.y + 2, 25);
         assert_eq!(first, " one");
         assert!(second.ends_with(" pi"));
         assert!(!first.contains("working"));
@@ -1843,8 +1849,8 @@ mod tests {
         assert!(workspace_style.add_modifier.contains(Modifier::BOLD));
         assert!(!workspace_style.add_modifier.contains(Modifier::DIM));
 
-        let agent_x = find_symbol_x(buffer, body.y + 1, body.width, "p");
-        let agent_style = buffer[(agent_x, body.y + 1)].style();
+        let agent_x = find_symbol_x(buffer, body.y + 2, body.width, "p");
+        let agent_style = buffer[(agent_x, body.y + 2)].style();
         assert_eq!(agent_style.fg, Some(app.palette.overlay0));
         assert!(agent_style.add_modifier.contains(Modifier::DIM));
         assert!(!agent_style.add_modifier.contains(Modifier::BOLD));
@@ -2006,12 +2012,12 @@ rows = [[{ token = "workspace", bold = false }, { token = "agent", dim = false }
 
         assert_eq!(
             buffer[(0, active_row)].symbol(),
-            "▎",
+            "▌",
             "active workspace should keep the medium ribbon"
         );
         assert_eq!(
             buffer[(0, selected_row)].symbol(),
-            "▌",
+            "█",
             "navigate selection should take the full ribbon"
         );
         assert_eq!(buffer[(0, active_row)].bg, app.palette.active_row_bg);
@@ -2109,12 +2115,12 @@ rows = [[{ token = "workspace", bold = false }, { token = "agent", dim = false }
         let buffer = terminal.backend().buffer();
         assert_eq!(
             buffer[(workspace_area.x, workspace_area.y)].symbol(),
-            "\u{258e}",
+            "\u{258c}",
             "active workspace should keep the medium ribbon"
         );
         assert_eq!(
             buffer[(workspace_area.x, workspace_area.y + 1)].symbol(),
-            "\u{258c}",
+            "\u{2588}",
             "navigate selection should take the full ribbon"
         );
 
@@ -2228,19 +2234,18 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         let area = Rect::new(0, 0, 20, 7);
         let metrics = agent_panel_scroll_metrics(&app, area);
-        let body = agent_panel_body_rect(area, false);
+        let body = agent_panel_body_rect(area, should_show_scrollbar(metrics));
         let mut terminal = Terminal::new(TestBackend::new(20, 7)).unwrap();
         terminal
             .draw(|frame| render_agent_detail(&app, &TerminalRuntimeRegistry::new(), frame, area))
             .unwrap();
         let buffer = terminal.backend().buffer();
 
-        assert_eq!(metrics.viewport_rows, 2);
-        assert_eq!(metrics.max_offset_from_bottom, 0);
+        assert_eq!(metrics.viewport_rows, 1);
+        assert_eq!(metrics.max_offset_from_bottom, 1);
         assert_eq!(row_text(buffer, body.y, body.width), " one");
-        assert_eq!(row_text(buffer, body.y + 1, body.width), "▏ pi");
-        assert_eq!(row_text(buffer, body.y + 2, body.width), " two");
-        assert_eq!(row_text(buffer, body.y + 3, body.width), "▏ claude");
+        assert_eq!(row_text(buffer, body.y + 1, body.width), "");
+        assert_eq!(row_text(buffer, body.y + 2, body.width), "▏ pi");
     }
 
     #[test]
@@ -2281,8 +2286,8 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         };
 
         assert_eq!(
-            rendered(&app, 5),
-            [" one", "▏ pi", "▏ pi", " two", "▏ claude"]
+            rendered(&app, 7),
+            [" one", "", "▏ pi", "▏ pi", " two", "", "▏ claude"]
         );
 
         app.agent_panel_sort = AgentPanelSort::Priority;
@@ -2344,7 +2349,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
             .unwrap();
         let (_, agent_area) = expanded_sidebar_sections(area, app.sidebar_section_split);
         let body = agent_panel_body_rect(agent_area, false);
-        let rendered = row_text(renderer.backend().buffer(), body.y + 1, 9);
+        let rendered = row_text(renderer.backend().buffer(), body.y + 2, 9);
 
         assert!(!rendered.contains('⠋'));
         assert!(rendered.contains('修') && rendered.contains('复'));
@@ -2634,7 +2639,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         assert_eq!(
             ribbons
                 .iter()
-                .filter(|symbol| *symbol == "\u{258c}")
+                .filter(|symbol| *symbol == "\u{2588}")
                 .count(),
             1,
             "only the focused agent pane should take the full ribbon"

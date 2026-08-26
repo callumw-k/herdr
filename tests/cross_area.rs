@@ -559,7 +559,7 @@ fn frame_contains_colored_symbol(frame: &FrameWire, symbol: &str, rgb: (u8, u8, 
 
 /// The sidebar marks agent state with a left ribbon whose weight varies with emphasis.
 fn frame_contains_status_ribbon(frame: &FrameWire, rgb: (u8, u8, u8)) -> bool {
-    ["▏", "▎", "▌"]
+    ["▏", "▌", "█"]
         .iter()
         .any(|symbol| frame_contains_colored_symbol(frame, symbol, rgb))
 }

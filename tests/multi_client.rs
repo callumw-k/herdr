@@ -877,7 +877,7 @@ fn non_foreground_client_render_preserves_agent_panel_scroll() {
     let (reached_bottom, setup_frames) = wait_for_frame_matching_with_snapshots(
         &mut setup_client,
         Duration::from_secs(3),
-        |frame| agent_panel_starts_with(frame, "agent-16"),
+        |frame| agent_panel_starts_with(frame, "agent-19"),
     )
     .expect("setup frame decoding should succeed");
     assert!(
@@ -893,7 +893,7 @@ fn non_foreground_client_render_preserves_agent_panel_scroll() {
     let mut probe = connect_raw_client(&client_socket, 106, 40);
     let (started_at_tall_limit, initial_frames) =
         wait_for_frame_matching_with_snapshots(&mut probe, Duration::from_secs(3), |frame| {
-            agent_panel_starts_with(frame, "agent-10")
+            agent_panel_starts_with(frame, "agent-15")
         })
         .expect("initial probe frame decoding should succeed");
     assert!(
@@ -906,7 +906,7 @@ fn non_foreground_client_render_preserves_agent_panel_scroll() {
     send_client_input(&mut probe, wheel_down);
     let (scrolled, probe_frames) =
         wait_for_frame_matching_with_snapshots(&mut probe, Duration::from_secs(3), |frame| {
-            agent_panel_starts_with(frame, "agent-11")
+            agent_panel_starts_with(frame, "agent-16")
         })
         .expect("probe frame decoding should succeed");
     assert!(
