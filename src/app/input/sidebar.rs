@@ -924,7 +924,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             detail_area.x + 2,
-            detail_area.y + 8,
+            detail_area.y + 7,
         ));
 
         assert_eq!(app.state.active, Some(1));

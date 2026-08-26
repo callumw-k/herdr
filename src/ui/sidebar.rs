@@ -18,7 +18,7 @@ use crate::detect::AgentState;
 use crate::terminal::TerminalRuntimeRegistry;
 
 const WORKSPACE_SECTION_HEADER_ROWS: u16 = 2;
-const AGENT_PANEL_HEADER_ROWS: u16 = 3;
+const AGENT_PANEL_HEADER_ROWS: u16 = 2;
 
 pub(crate) struct AgentPanelEntry {
     pub ws_idx: usize,
