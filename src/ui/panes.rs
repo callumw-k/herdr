@@ -263,7 +263,7 @@ pub(super) fn resize_tab_panes(
 
         if let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, info.id) {
             let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
-            if !app.direct_attach_resize_locks.contains(terminal_id) {
+            if info.rect.height > 1 && !app.direct_attach_resize_locks.contains(terminal_id) {
                 rt.resize(
                     inner_rect.height,
                     inner_rect.width,
@@ -345,7 +345,13 @@ pub(super) fn compute_pane_infos(
             {
                 (inner_rect, scrollbar_rect) =
                     stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
+                // A collapsed or folded stack member has no content on screen,
+                // and reflowing its PTY down to the clamped minimum destroys an
+                // alternate screen's rows for nothing: they have no scrollback
+                // to come back from, and the child only repaints if the winsize
+                // it sees actually changed. Leave it at its last real size.
                 if resize_panes
+                    && info.rect.height > 1
                     && ws.terminal_id(info.id).is_some_and(|terminal_id| {
                         !app.direct_attach_resize_locks.contains(terminal_id)
                     })
@@ -2605,6 +2611,63 @@ mod tests {
         let expanded: Vec<_> = infos.iter().filter(|p| p.rect.height > 1).collect();
         assert_eq!(expanded.len(), 1);
         assert_eq!(expanded[0].id, second);
+    }
+
+    #[tokio::test]
+    async fn a_collapsed_stack_member_keeps_its_runtime_size() {
+        let area = Rect::new(0, 0, 40, 12);
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("stack");
+        let collapsed_id = ws.tabs[0].root_pane;
+        let active_id = ws.tabs[0]
+            .layout
+            .split_focused(ratatui::layout::Direction::Horizontal);
+        ws.tabs[0].panes.insert(
+            active_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].arrangement = crate::layout::Arrangement::Stacked;
+        ws.tabs[0].needs_reflow = true;
+        ws.tabs[0].reflow(area, None);
+        ws.tabs[0].runtimes.insert(
+            collapsed_id,
+            TerminalRuntime::test_with_scrollback_bytes(40, 10, 1024, b"vim\n"),
+        );
+        ws.tabs[0].runtimes.insert(
+            active_id,
+            TerminalRuntime::test_with_scrollback_bytes(40, 10, 1024, b"shell\n"),
+        );
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        let collapsed = infos
+            .iter()
+            .find(|info| info.id == collapsed_id)
+            .expect("collapsed member");
+        assert_eq!(collapsed.rect.height, 1);
+        // Reflowing the collapsed member down to the clamped minimum destroys
+        // an alternate screen that has no scrollback to come back from.
+        assert_eq!(
+            app.workspaces[0].tabs[0].runtimes[&collapsed_id].current_size(),
+            (10, 40)
+        );
+
+        let active = infos
+            .iter()
+            .find(|info| info.id == active_id)
+            .expect("active member");
+        assert_eq!(
+            app.workspaces[0].tabs[0].runtimes[&active_id].current_size(),
+            (active.inner_rect.height, active.inner_rect.width)
+        );
     }
 
     #[test]
