@@ -404,6 +404,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # [ui.sidebar.spaces]
 # Blank rows between space entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
+# Draw a rule between top-level spaces. It sits in the row_gap and takes one row
+# when row_gap is 0. Worktree children stay packed under their parent either way.
+# divider = false
 # rows = [["workspace"], ["branch", "git_status"]]
 
 # Accent color for highlights, borders, and navigation UI.

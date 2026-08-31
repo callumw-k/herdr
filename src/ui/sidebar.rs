@@ -232,10 +232,38 @@ fn workspace_row_height_in_body(
 
 fn workspace_entry_gap(app: &AppState, entries: &[WorkspaceListEntry], entry_idx: usize) -> u16 {
     if entry_idx + 1 < entries.len() && !next_entry_is_indented_workspace(entries, entry_idx) {
-        app.sidebar_spaces.row_gap
+        // The divider is drawn inside the gap, so it needs one row to live in.
+        if app.sidebar_spaces.divider {
+            app.sidebar_spaces.row_gap.max(1)
+        } else {
+            app.sidebar_spaces.row_gap
+        }
     } else {
         0
     }
+}
+
+/// The rule row separating a space from the next top-level one, centred in the
+/// gap that `workspace_entry_gap` reserved. Worktree children stay packed under
+/// their parent, so they get no rule.
+fn space_divider_rect(
+    app: &AppState,
+    cards: &[crate::app::state::WorkspaceCardArea],
+    card_idx: usize,
+    list_bottom: u16,
+) -> Option<Rect> {
+    if !app.sidebar_spaces.divider {
+        return None;
+    }
+    let card = cards.get(card_idx)?;
+    let next = cards.get(card_idx + 1).filter(|next| !next.indented)?;
+    let gap_top = card.rect.y.saturating_add(card.rect.height);
+    let gap = next.rect.y.checked_sub(gap_top).filter(|gap| *gap > 0)?;
+    let y = gap_top + (gap - 1) / 2;
+    // The rule starts past the status ribbon so it lines up with the labels.
+    let x = card.rect.x.saturating_add(1);
+    let width = card.rect.width.saturating_sub(1);
+    (y < list_bottom && width > 0).then(|| Rect::new(x, y, width, 1))
 }
 
 fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
@@ -1368,7 +1396,7 @@ fn render_workspace_list(
     let cards = &app.view.workspace_card_areas;
     let entries = workspace_list_entries(app);
 
-    for card in cards {
+    for (card_idx, card) in cards.iter().enumerate() {
         let i = card.ws_idx;
         let ws = &app.workspaces[i];
         let row_y = card.rect.y;
@@ -1519,6 +1547,16 @@ fn render_workspace_list(
                     Style::default().fg(p.accent),
                 )),
                 workspace_group_chevron_rect(card),
+            );
+        }
+
+        if let Some(divider) = space_divider_rect(app, cards, card_idx, list_bottom) {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "─".repeat(divider.width as usize),
+                    Style::default().fg(p.surface_dim),
+                )),
+                divider,
             );
         }
     }
@@ -3127,6 +3165,51 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
         let packed_metrics = workspace_list_scroll_metrics(&app, Rect::new(0, 0, 30, 7));
         assert_eq!(packed_metrics.viewport_rows, 4);
         assert_eq!(packed_metrics.max_offset_from_bottom, 0);
+    }
+
+    #[test]
+    fn space_divider_rules_top_level_spaces_and_skips_worktree_children() {
+        let mut app = AppState::test_new();
+        app.workspaces = vec![
+            workspace_with_worktree_space("main", Some("repo-key"), "/repo/herdr"),
+            workspace_with_worktree_space("issue", Some("repo-key"), "/repo/herdr-issue"),
+            Workspace::test_new("notes"),
+        ];
+        app.sidebar_spaces.rows = vec![vec![crate::config::SpaceSidebarToken::Workspace]];
+        app.sidebar_spaces.row_gap = 0;
+        app.sidebar_spaces.divider = true;
+
+        let area = Rect::new(0, 0, 30, 20);
+        app.view.workspace_card_areas = compute_workspace_card_areas(&app, area);
+        let cards = &app.view.workspace_card_areas;
+        // The parent keeps its child packed underneath, and only the boundary
+        // between the worktree group and the next space gains a row.
+        assert_eq!(cards[1].rect.y, cards[0].rect.y + cards[0].rect.height);
+        assert_eq!(cards[2].rect.y, cards[1].rect.y + cards[1].rect.height + 1);
+
+        let list_area = workspace_list_rect(area, app.sidebar_section_split);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| {
+                render_workspace_list(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    list_area,
+                    false,
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let rule_y = cards[1].rect.y + cards[1].rect.height;
+        assert_eq!(buffer[(cards[1].rect.x, rule_y)].symbol(), " ");
+        assert_eq!(buffer[(cards[1].rect.x + 1, rule_y)].symbol(), "─");
+        assert_eq!(
+            buffer[(cards[1].rect.x + cards[1].rect.width - 1, rule_y)].symbol(),
+            "─"
+        );
+        assert!(space_divider_rect(&app, cards, 0, list_area.y + list_area.height).is_none());
     }
 
     #[test]

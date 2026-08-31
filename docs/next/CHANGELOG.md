@@ -7,6 +7,7 @@
 - Added floating panes: `prefix+f` opens one, `prefix+ctrl+f` moves focus into the floating layer or back out, and `prefix+shift+f` shows or hides the layer. A tab's floats share one region and are arranged inside it, so more than one can be visible at once, and they are navigated with the same keys as tiled panes. Configure the region's default size with `ui.floating_pane_width` and `ui.floating_pane_height`.
 - Devin CLI, Cursor Agent CLI, MastraCode, Hermes Agent, and Grok CLI integrations now install and run natively on Windows.
 - Custom themes can now define separate light and dark color overrides when automatic theme switching is enabled. (#837, thanks @aneym)
+- `ui.sidebar.spaces.divider` draws a rule between top-level spaces in the expanded sidebar. It sits inside `ui.sidebar.spaces.row_gap` and claims one row when the gap is 0, and worktree children stay packed under their parent.
 
 ### Changed
 - The Agent panel's second row now shows the pane's own context instead of repeating the agent name. A new `activity` sidebar token resolves to the first of `terminal_title_stripped`, `pane`, or `agent` that is set, and it replaces `agent` in the default agent rows.
@@ -16,6 +17,7 @@
 - The collapsed sidebar sizes its workspace and agent sections to their contents, so the divider follows the workspace list instead of splitting the column in half. Rows use the same status ribbon as the expanded sidebar, workspace numbers appear only in Navigate mode where digits switch workspaces, and a section with more entries than rows ends in a `+N` count instead of cutting off.
 
 ### Fixed
+- Panes collapsed to a bar in a stacked layout now keep their terminal size instead of being reflowed to two rows, so a full-screen program such as an editor no longer comes back compressed when the pane is expanded again.
 - New lifecycle event subscriptions now stream only events emitted after subscription begins instead of replaying retained history. (#1270)
 - Windows users whose endpoint security blocks the fileless PowerShell install command can now use a local `install.cmd` bootstrap; installer downloads use `curl.exe` while preserving package checksum verification. (#2751)
 - Oh My Pi panes now stay working when a turn ends with an automatic continuation already scheduled, instead of briefly reporting idle and completing `agent wait` early. (#2851, thanks @taoeffect)

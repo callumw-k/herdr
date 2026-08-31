@@ -1110,6 +1110,12 @@
           "description": "Complete Agent-row overrides keyed by strict canonical agent id. Agents without an override use ui.sidebar.agents.rows."
         },
         {
+          "key": "ui.sidebar.spaces.divider",
+          "type": "boolean",
+          "default": "false",
+          "description": "Draw a rule between top-level Spaces. The rule sits in the row_gap and raises a zero gap to one row. Worktree parents and their indented children stay packed."
+        },
+        {
           "key": "ui.sidebar.spaces.row_gap",
           "type": "integer",
           "default": "0",
