@@ -260,10 +260,8 @@ fn space_divider_rect(
     let gap_top = card.rect.y.saturating_add(card.rect.height);
     let gap = next.rect.y.checked_sub(gap_top).filter(|gap| *gap > 0)?;
     let y = gap_top + (gap - 1) / 2;
-    // The rule starts past the status ribbon so it lines up with the labels.
-    let x = card.rect.x.saturating_add(1);
-    let width = card.rect.width.saturating_sub(1);
-    (y < list_bottom && width > 0).then(|| Rect::new(x, y, width, 1))
+    (y < list_bottom && card.rect.width > 0)
+        .then(|| Rect::new(card.rect.x, y, card.rect.width, 1))
 }
 
 fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {
@@ -3203,8 +3201,7 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         let buffer = terminal.backend().buffer();
         let rule_y = cards[1].rect.y + cards[1].rect.height;
-        assert_eq!(buffer[(cards[1].rect.x, rule_y)].symbol(), " ");
-        assert_eq!(buffer[(cards[1].rect.x + 1, rule_y)].symbol(), "─");
+        assert_eq!(buffer[(cards[1].rect.x, rule_y)].symbol(), "─");
         assert_eq!(
             buffer[(cards[1].rect.x + cards[1].rect.width - 1, rule_y)].symbol(),
             "─"
