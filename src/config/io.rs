@@ -618,6 +618,71 @@ pub fn remove_section_key(content: &str, section: &str, key: &str) -> String {
     result.join("\n") + "\n"
 }
 
+/// Add a `[[repos]]` entry for `path`, or drop every entry that already
+/// declares it. Paths are compared after expansion so a `~` entry matches the
+/// absolute directory it names. Returns the new content and whether the path
+/// ended up declared.
+pub fn toggle_repo_path(content: &str, path: &Path) -> (String, bool) {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result: Vec<String> = Vec::new();
+    let mut removed = false;
+    let mut i = 0;
+
+    while i < lines.len() {
+        if lines[i].trim() != "[[repos]]" {
+            result.push(lines[i].to_string());
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        i += 1;
+        let mut declares_path = false;
+        while i < lines.len() && toml_table_header_name(lines[i].trim()).is_none() {
+            if let Some(value) = repo_path_value(lines[i].trim()) {
+                declares_path = crate::workspace::expand_pinned_path(value) == path;
+            }
+            i += 1;
+        }
+
+        if declares_path {
+            removed = true;
+        } else {
+            result.extend(lines[start..i].iter().map(|line| line.to_string()));
+        }
+    }
+
+    if !removed {
+        if !result.is_empty() && !result.last().is_some_and(|line| line.trim().is_empty()) {
+            result.push(String::new());
+        }
+        result.push("[[repos]]".to_string());
+        result.push(format!(
+            "path = {}",
+            toml::Value::String(path.display().to_string())
+        ));
+    }
+
+    (result.join("\n") + "\n", !removed)
+}
+
+/// The string value of a `path = "..."` assignment, basic or literal.
+fn repo_path_value(trimmed: &str) -> Option<&str> {
+    let value = trimmed
+        .strip_prefix("path")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim();
+    value
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|rest| rest.strip_suffix('\''))
+        })
+}
+
 pub fn remove_keybinding_config_sections(content: &str) -> (String, bool) {
     let mut result = Vec::new();
     let mut removed = false;
@@ -747,6 +812,34 @@ mod tests {
         let updated = upsert_section_bool("", "ui.toast", "enabled", true);
         assert!(updated.contains("[ui.toast]"));
         assert!(updated.contains("enabled = true"));
+    }
+
+    #[test]
+    fn toggle_repo_path_appends_an_undeclared_path() {
+        let (updated, declared) =
+            toggle_repo_path("[ui]\nsidebar_width = 30\n", Path::new("/repos/herdr"));
+        assert!(declared);
+        assert!(updated.ends_with("[[repos]]\npath = \"/repos/herdr\"\n"));
+        assert!(updated.contains("sidebar_width = 30"));
+    }
+
+    #[test]
+    fn toggle_repo_path_drops_only_the_matching_block() {
+        let content = concat!(
+            "[[repos]]\n",
+            "path = \"/repos/api\"\n",
+            "\n",
+            "[[repos]]\n",
+            "path = '/repos/herdr'\n",
+            "\n",
+            "[ui]\n",
+            "sidebar_width = 30\n",
+        );
+        let (updated, declared) = toggle_repo_path(content, Path::new("/repos/herdr"));
+        assert!(!declared);
+        assert!(updated.contains("path = \"/repos/api\""));
+        assert!(!updated.contains("/repos/herdr"));
+        assert!(updated.contains("[ui]\nsidebar_width = 30"));
     }
 
     #[test]

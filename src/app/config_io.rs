@@ -35,6 +35,46 @@ impl App {
         true
     }
 
+    /// Declare or undeclare the workspace's directory in `[[repos]]`. The
+    /// pinned path is the workspace's own directory; the focused pane's cwd
+    /// stands in for an unpinned workspace, matching the pin action.
+    pub(super) fn toggle_declared_repo(&mut self, ws_idx: usize) {
+        let path = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pinned_path.clone())
+            .or_else(|| self.focused_pane_cwd_in_workspace(ws_idx));
+        let Some(path) = path else {
+            return;
+        };
+
+        let mut declared = false;
+        if !self.update_config_file("declared repos", |content| {
+            let (updated, now_declared) = crate::config::toggle_repo_path(content, &path);
+            declared = now_declared;
+            updated
+        }) {
+            return;
+        }
+        self.apply_config_from_disk(false);
+
+        let previous_toast = self.state.toast.clone();
+        self.state.toast = Some(crate::app::state::ToastNotification {
+            // The same neutral informational toast the pin action uses.
+            kind: crate::app::state::ToastKind::UpdateInstalled,
+            title: if declared {
+                "declared repo".to_string()
+            } else {
+                "undeclared repo".to_string()
+            },
+            context: path.display().to_string(),
+            position: None,
+            target: None,
+        });
+        self.sync_toast_deadline(previous_toast);
+    }
+
     pub(super) fn mark_onboarding_complete(&mut self) {
         self.update_config_file("onboarding setting", |content| {
             crate::config::upsert_top_level_bool(content, "onboarding", false)

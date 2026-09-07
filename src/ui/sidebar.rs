@@ -260,8 +260,7 @@ fn space_divider_rect(
     let gap_top = card.rect.y.saturating_add(card.rect.height);
     let gap = next.rect.y.checked_sub(gap_top).filter(|gap| *gap > 0)?;
     let y = gap_top + (gap - 1) / 2;
-    (y < list_bottom && card.rect.width > 0)
-        .then(|| Rect::new(card.rect.x, y, card.rect.width, 1))
+    (y < list_bottom && card.rect.width > 0).then(|| Rect::new(card.rect.x, y, card.rect.width, 1))
 }
 
 fn workspace_attention_priority(state: AgentState, seen: bool) -> u8 {

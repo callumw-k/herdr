@@ -317,6 +317,7 @@ pub struct Keybinds {
     pub workspace_picker: ActionKeybinds,
     pub goto: ActionKeybinds,
     pub pin_workspace_path: ActionKeybinds,
+    pub toggle_declared_repo: ActionKeybinds,
     pub detach: ActionKeybinds,
     pub reload_config: ActionKeybinds,
     pub open_notification_target: ActionKeybinds,
@@ -492,6 +493,7 @@ impl Config {
             workspace_picker: empty_action!(),
             goto: empty_action!(),
             pin_workspace_path: empty_action!(),
+            toggle_declared_repo: empty_action!(),
             detach: empty_action!(),
             reload_config: empty_action!(),
             open_notification_target: empty_action!(),
@@ -627,6 +629,7 @@ impl Config {
             apply_action!(keybinds.workspace_picker, workspace_picker, source);
             apply_action!(keybinds.goto, goto, source);
             apply_action!(keybinds.pin_workspace_path, pin_workspace_path, source);
+            apply_action!(keybinds.toggle_declared_repo, toggle_declared_repo, source);
             apply_action!(keybinds.detach, detach, source);
             apply_action!(keybinds.reload_config, reload_config, source);
             apply_action!(
@@ -1609,6 +1612,28 @@ next_tab = "prefix+n"
                 KeyModifiers::empty()
             ))]
         );
+    }
+
+    #[test]
+    fn toggle_declared_repo_defaults_to_the_shifted_period_glyph() {
+        let kb = Config::default().keybinds();
+        assert_eq!(
+            binding_triggers(&kb.toggle_declared_repo),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('>'),
+                KeyModifiers::empty()
+            ))]
+        );
+        assert!(kb.toggle_declared_repo.matches_prefix_key(
+            &TerminalKey::new(KeyCode::Char('.'), KeyModifiers::SHIFT)
+                .with_shifted_codepoint('>' as u32)
+        ));
+        assert!(kb
+            .toggle_declared_repo
+            .matches_prefix_key(&TerminalKey::new(KeyCode::Char('>'), KeyModifiers::SHIFT)));
+        assert!(!kb
+            .pin_workspace_path
+            .matches_prefix_key(&TerminalKey::new(KeyCode::Char('>'), KeyModifiers::SHIFT)));
     }
 
     #[test]

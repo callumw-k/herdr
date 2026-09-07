@@ -366,6 +366,9 @@ pub struct KeysConfig {
     /// Pin the active workspace to the focused pane's directory, or unpin it
     /// when it is already pinned there. Default: "prefix+."
     pub pin_workspace_path: BindingConfig,
+    /// Add the active workspace's directory to the `[[repos]]` list in
+    /// config.toml, or remove it when it is already declared. Default: "prefix+>"
+    pub toggle_declared_repo: BindingConfig,
     /// Move workspace selection up in navigate mode. Default: "up".
     pub navigate_workspace_up: BindingConfig,
     /// Move workspace selection down in navigate mode. Default: "down".
@@ -513,6 +516,8 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     pin_workspace_path: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_declared_repo: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     navigate_workspace_up: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     navigate_workspace_down: Option<BindingConfig>,
@@ -655,6 +660,7 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(workspace_picker);
         apply_field!(goto);
         apply_field!(pin_workspace_path);
+        apply_field!(toggle_declared_repo);
         apply_field!(navigate_workspace_up);
         apply_field!(navigate_workspace_down);
         apply_field!(navigate_pane_left);
@@ -766,6 +772,7 @@ impl KeysConfig {
         copy_effective_action_field!(workspace_picker, keybinds.workspace_picker);
         copy_effective_action_field!(goto, keybinds.goto);
         copy_effective_action_field!(pin_workspace_path, keybinds.pin_workspace_path);
+        copy_effective_action_field!(toggle_declared_repo, keybinds.toggle_declared_repo);
         copy_effective_action_field!(navigate_workspace_up, keybinds.navigate.workspace_up);
         copy_effective_action_field!(navigate_workspace_down, keybinds.navigate.workspace_down);
         copy_effective_action_field!(navigate_pane_left, keybinds.navigate.pane_left);
@@ -1096,6 +1103,7 @@ impl Default for KeysConfig {
             workspace_picker: BindingConfig::one("prefix+w"),
             goto: BindingConfig::one("prefix+g"),
             pin_workspace_path: BindingConfig::one("prefix+."),
+            toggle_declared_repo: BindingConfig::one("prefix+>"),
             navigate_workspace_up: BindingConfig::one("up"),
             navigate_workspace_down: BindingConfig::one("down"),
             navigate_pane_left: BindingConfig::one("h"),

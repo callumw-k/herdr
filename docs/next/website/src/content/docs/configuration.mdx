@@ -122,6 +122,8 @@ Entering a declared directory in the focused pane creates a workspace pinned to 
 
 A declared repo is skipped when a workspace already pins the directory, when the pane's own workspace is already pinned to a path that covers it, when the pane reporting the change is not the one you are focused on, and when the pane is busy with a foreground process or a detected agent. Once created, the workspace is an ordinary pinned workspace: rename it with `prefix+shift+w`, repin it with `prefix+.`, and close it with `prefix+shift+d`. Entering the directory again after closing it creates it again.
 
+`prefix+>` edits the list for you. It adds the active workspace's directory to `[[repos]]`, or removes every entry declaring that directory when it is already there, and it sits next to `prefix+.`, which pins the workspace to that same directory. The workspace's pinned path is used when it has one, otherwise the focused pane's directory. Herdr writes an absolute path and reloads the config, so the entry takes effect straight away. Rebind it as `toggle_declared_repo` under `[keys]`.
+
 Paths accept `~` and need not exist yet. When one declared path sits inside another, the deepest match wins. Declare the repos themselves rather than a parent directory: declaring `path = "~"`, for example, pins a workspace to your home directory, which then claims every idle pane's `cd` in every workspace.
 
 ## Remote attach

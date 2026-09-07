@@ -253,6 +253,12 @@ impl App {
                     leave_navigate_mode(&mut self.state);
                 }
             }
+            NavigateAction::ToggleDeclaredRepo => {
+                if let Some(ws_idx) = workspace_action_target(&self.state, context) {
+                    self.toggle_declared_repo(ws_idx);
+                    leave_navigate_mode(&mut self.state);
+                }
+            }
             NavigateAction::PreviousWorkspace => {
                 if let Some(ws_idx) = self.relative_visible_workspace(-1) {
                     self.focus_workspace_idx_via_api(ws_idx);
@@ -1594,6 +1600,7 @@ pub(crate) enum NavigateAction {
     FocusAgent(usize),
     WorkspacePicker,
     PinWorkspacePath,
+    ToggleDeclaredRepo,
     PreviousWorkspace,
     NextWorkspace,
     PreviousAgent,
@@ -1742,6 +1749,7 @@ fn non_indexed_action_for_key(
         (&kb.settings, NavigateAction::Settings),
         (&kb.workspace_picker, NavigateAction::WorkspacePicker),
         (&kb.pin_workspace_path, NavigateAction::PinWorkspacePath),
+        (&kb.toggle_declared_repo, NavigateAction::ToggleDeclaredRepo),
         (&kb.new_workspace, NavigateAction::NewWorkspace),
         (&kb.new_worktree, NavigateAction::NewWorktree),
         (&kb.open_worktree, NavigateAction::OpenWorktree),
@@ -2136,7 +2144,7 @@ pub(super) fn execute_navigate_action_in_context(
         NavigateAction::OpenNavigator => state.open_navigator_from(terminal_runtimes),
         // App-only: toggling the pin needs the runtime API and toast state this
         // test harness doesn't have, same as NewFloat above.
-        NavigateAction::PinWorkspacePath => {}
+        NavigateAction::PinWorkspacePath | NavigateAction::ToggleDeclaredRepo => {}
     }
 
     finish_action_context(state, context, previous_mode);

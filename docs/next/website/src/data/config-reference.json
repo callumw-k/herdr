@@ -542,6 +542,12 @@
           "description": "Pin the active workspace to the focused pane's directory, or unpin it when it is already pinned there."
         },
         {
+          "key": "keys.toggle_declared_repo",
+          "type": "keybinding",
+          "default": "\"prefix+>\"",
+          "description": "Add the active workspace's directory to the [[repos]] list in config.toml, or remove it when it is already declared."
+        },
+        {
           "key": "keys.navigate_workspace_up",
           "type": "keybinding",
           "default": "\"up\"",
