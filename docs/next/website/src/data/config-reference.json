@@ -700,7 +700,7 @@
         {
           "key": "keys.copy_mode",
           "type": "keybinding",
-          "default": "\"prefix+[\"",
+          "default": "\"prefix+u\"",
           "description": "Enter keyboard copy mode for the focused pane."
         },
         {

@@ -7,6 +7,9 @@
 - `ui.sidebar.spaces.divider` draws a rule between top-level spaces. The rule sits in `row_gap` and raises a zero gap to one row. Worktree children stay packed under their parent.
 - A new `activity` sidebar token resolves to the first of `terminal_title_stripped`, `pane`, or `agent` that is set, and replaces `agent` in the default agent rows, so the second row shows the pane's own context instead of repeating the agent name.
 
+### Fixed
+- The keyboard documentation listed `prefix+[` for copy mode, which now cycles the pane arrangement backwards. Copy mode is `prefix+u`.
+
 ### Changed
 - The collapsed sidebar sizes its workspace and agent sections to their contents, so the divider follows the workspace list instead of splitting the column in half. Workspace numbers appear only in Navigate mode where digits switch workspaces, and a section with more entries than rows ends in a `+N` count instead of cutting off.
 
