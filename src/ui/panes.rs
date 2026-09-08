@@ -251,7 +251,7 @@ pub(super) fn resize_tab_panes(
             runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, info.id)
         {
             let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
-            if !app.direct_attach_resize_locks.contains(terminal_id) {
+            if info.rect.height > 1 && !app.direct_attach_resize_locks.contains(terminal_id) {
                 rt.resize(
                     inner_rect.height,
                     inner_rect.width,
@@ -334,7 +334,9 @@ pub(super) fn compute_pane_infos_for_tab(
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
             (inner_rect, scrollbar_rect) =
                 stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
+            // Reflowing a collapsed member wrecks an alt screen for no visible gain.
             if resize_panes
+                && info.rect.height > 1
                 && tab.terminal_id(info.id).is_some_and(|terminal_id| {
                     !app.direct_attach_resize_locks.contains(terminal_id)
                 })
@@ -1233,6 +1235,64 @@ mod tests {
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
         assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
+    }
+
+    #[tokio::test]
+    async fn a_collapsed_stack_member_keeps_its_runtime_size() {
+        let area = Rect::new(0, 0, 40, 12);
+        let mut app = AppState::test_new();
+        let mut workspace = Workspace::test_new("stack");
+        let collapsed_id = workspace.tabs[0].root_pane;
+        let active_id = workspace.tabs[0]
+            .layout
+            .split_focused(ratatui::layout::Direction::Horizontal);
+        workspace.tabs[0].panes.insert(
+            active_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        workspace.tabs[0].arrangement = crate::layout::Arrangement::Stacked;
+        workspace.tabs[0].needs_reflow = true;
+        workspace.tabs[0].reflow(area, None);
+        workspace.tabs[0].runtimes.insert(
+            collapsed_id,
+            TerminalRuntime::test_with_scrollback_bytes(40, 10, 1024, b"vim\n"),
+        );
+        workspace.tabs[0].runtimes.insert(
+            active_id,
+            TerminalRuntime::test_with_scrollback_bytes(40, 10, 1024, b"shell\n"),
+        );
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+
+        let infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        let collapsed = infos
+            .iter()
+            .find(|info| info.id == collapsed_id)
+            .expect("collapsed member");
+        assert_eq!(collapsed.rect.height, 1);
+        assert_eq!(
+            app.workspaces[0].tabs[0].runtimes[&collapsed_id].current_size(),
+            (10, 40),
+            "reflowing a collapsed member destroys an alt screen with no scrollback"
+        );
+
+        let active = infos
+            .iter()
+            .find(|info| info.id == active_id)
+            .expect("active member");
+        assert!(active.rect.height > 1);
+        assert_ne!(
+            app.workspaces[0].tabs[0].runtimes[&active_id].current_size(),
+            (10, 40),
+            "the expanded member still tracks its box"
+        );
     }
 
     #[tokio::test]
