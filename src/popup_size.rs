@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 
-use crate::layout::PaneId;
 use ratatui::layout::Rect;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -88,24 +87,6 @@ pub(crate) fn resolve_popup_geometry(
         outer: Rect::new(outer_x, outer_y, outer_width, outer_height),
         inner,
     })
-}
-
-/// What a single stack preview row represents.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StackBarKind {
-    /// A hidden float; clicking this row's rect brings it to the front.
-    Pane(PaneId),
-    /// Folds `count` further hidden floats that didn't fit as individual rows.
-    Summary { count: usize },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct StackBar {
-    pub rect: Rect,
-    pub kind: StackBarKind,
-    /// The bar sits after the stack's expanded member, so its single row
-    /// reads as that pane's bottom edge rather than its top edge.
-    pub below_active: bool,
 }
 
 impl Serialize for PopupSize {

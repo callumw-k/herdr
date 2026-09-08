@@ -1109,6 +1109,19 @@ impl App {
             Method::TabFloatsToggle(params) => {
                 return self.handle_tab_floats_toggle(request.id, params)
             }
+            Method::TabFloatActivate(params) => {
+                return self.handle_tab_float_activate(request.id, params)
+            }
+            Method::TabArrangement(params) => {
+                return self.handle_tab_arrangement(request.id, params)
+            }
+            Method::TabPaneAdd(params) => return self.handle_tab_pane_add(request.id, params),
+            Method::WorkspacePathPinToggle(params) => {
+                return self.handle_workspace_path_pin_toggle(request.id, params)
+            }
+            Method::WorkspaceDeclaredRepoToggle(params) => {
+                return self.handle_workspace_declared_repo_toggle(request.id, params)
+            }
             Method::PaneLayout(params) => return self.handle_pane_layout(request.id, params),
             Method::PaneProcessInfo(params) => {
                 return self.handle_pane_process_info(request.id, params);

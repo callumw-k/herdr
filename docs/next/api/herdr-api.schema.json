@@ -1698,6 +1698,16 @@
           ],
           "type": "object"
         },
+        "ArrangementSchema": {
+          "description": "The whole-tab pane arrangement. A shared runtime fact: it determines the\nshape of the server-owned pane tree, so it is exposed on the API rather\nthan kept as TUI-only state.",
+          "enum": [
+            "vertical",
+            "horizontal",
+            "grid",
+            "stacked"
+          ],
+          "type": "string"
+        },
         "ClientShellSurfaceSetParams": {
           "description": "Updates whether the requesting client shell receives and controls pane presentation.",
           "properties": {
@@ -4439,6 +4449,32 @@
             }
           ]
         },
+        "TabArrangementParams": {
+          "properties": {
+            "arrangement": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/ArrangementSchema"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Set this arrangement outright. Unset cycles instead, in `forward`'s\ndirection."
+            },
+            "forward": {
+              "default": false,
+              "type": "boolean"
+            },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "TabCreateParams": {
           "properties": {
             "cwd": {
@@ -4463,6 +4499,17 @@
                 "null"
               ]
             },
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "TabFloatActivateParams": {
+          "properties": {
             "workspace_id": {
               "type": [
                 "string",
@@ -4513,6 +4560,17 @@
             "tab_id",
             "insert_index"
           ],
+          "type": "object"
+        },
+        "TabPaneAddParams": {
+          "properties": {
+            "workspace_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
           "type": "object"
         },
         "TabRenameParams": {
@@ -4598,6 +4656,17 @@
           },
           "type": "object"
         },
+        "WorkspaceDeclaredRepoToggleParams": {
+          "properties": {
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
+          ],
+          "type": "object"
+        },
         "WorkspaceMoveBlockParams": {
           "properties": {
             "before_workspace_id": {
@@ -4632,6 +4701,17 @@
           "required": [
             "workspace_id",
             "insert_index"
+          ],
+          "type": "object"
+        },
+        "WorkspacePathPinToggleParams": {
+          "properties": {
+            "workspace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "workspace_id"
           ],
           "type": "object"
         },
@@ -5190,7 +5270,7 @@
         {
           "properties": {
             "method": {
-              "const": "workspace.set-path",
+              "const": "workspace.set_path",
               "type": "string"
             },
             "params": {
@@ -5723,6 +5803,86 @@
             },
             "params": {
               "$ref": "#/schemas/request/$defs/TabFloatsToggleParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.float_activate",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabFloatActivateParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.arrangement",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabArrangementParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "tab.pane_add",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/TabPaneAddParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.path_pin_toggle",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspacePathPinToggleParams"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "method": {
+              "const": "workspace.declared_repo_toggle",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/schemas/request/$defs/WorkspaceDeclaredRepoToggleParams"
             }
           },
           "required": [

@@ -2,7 +2,8 @@ use std::path::PathBuf;
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, WorkspaceCloseParams,
-    WorkspaceCreateParams, WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
+    WorkspaceCreateParams, WorkspaceDeclaredRepoToggleParams, WorkspaceMoveBlockParams,
+    WorkspaceMoveParams, WorkspacePathPinToggleParams, WorkspaceRenameParams,
     WorkspaceReportMetadataParams, WorkspaceSetPathParams, WorkspaceTarget,
 };
 use crate::app::App;
@@ -129,6 +130,70 @@ impl App {
                 workspace: self.workspace_info(index),
             },
         )
+    }
+
+    pub(super) fn handle_workspace_path_pin_toggle(
+        &mut self,
+        id: String,
+        params: WorkspacePathPinToggleParams,
+    ) -> String {
+        let Some(ws_idx) = self.parse_workspace_id(&params.workspace_id) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        self.toggle_workspace_path_pin_via_api(ws_idx);
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    /// Declare or undeclare the workspace's directory in `[[repos]]`. The
+    /// pinned path is the workspace's own directory; the focused pane's cwd
+    /// stands in for an unpinned workspace, matching the pin action.
+    pub(super) fn handle_workspace_declared_repo_toggle(
+        &mut self,
+        id: String,
+        params: WorkspaceDeclaredRepoToggleParams,
+    ) -> String {
+        let Some(ws_idx) = self.parse_workspace_id(&params.workspace_id) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        let path = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pinned_path.clone())
+            .or_else(|| self.focused_pane_cwd_in_workspace(ws_idx));
+        let Some(path) = path else {
+            return encode_error(id, "workspace_path_unknown", "workspace has no directory");
+        };
+
+        let mut declared = false;
+        if let Err(error) = crate::config::update_file_at(
+            &crate::config::config_path(),
+            "declared repos",
+            |content| {
+                let (updated, now_declared) = crate::config::toggle_repo_path(content, &path);
+                declared = now_declared;
+                updated
+            },
+        ) {
+            return encode_error(id, "config_write_failed", error);
+        }
+        self.apply_config_from_disk(false);
+
+        let previous_toast = self.state.toast.clone();
+        self.state.toast = Some(crate::app::state::ToastNotification {
+            // The same neutral informational toast the pin action uses.
+            kind: crate::app::state::ToastKind::UpdateInstalled,
+            title: if declared {
+                "declared repo".to_string()
+            } else {
+                "undeclared repo".to_string()
+            },
+            context: path.display().to_string(),
+            position: None,
+            target: None,
+        });
+        self.sync_toast_deadline(previous_toast);
+        encode_success(id, ResponseResult::Ok {})
     }
 
     pub(crate) fn toggle_workspace_path_pin_via_api(&mut self, ws_idx: usize) {

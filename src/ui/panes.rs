@@ -315,7 +315,7 @@ pub(super) fn compute_pane_infos_for_tab(
             inner_rect,
             scrollbar_rect,
             borders,
-            is_focused: true,
+            is_focused: !tab.float_focused,
         }];
     }
 
@@ -350,6 +350,46 @@ pub(super) fn compute_pane_infos_for_tab(
 
         info.inner_rect = inner_rect;
         info.scrollbar_rect = scrollbar_rect;
+        info.is_focused = !tab.float_focused && info.is_focused;
+    }
+
+    // A hidden layer emits nothing at all. Drawing, PTY resizing, mouse
+    // hit-testing, hyperlink scanning and graphics all key off this list, so
+    // this one gate is what `floats_hidden` means everywhere downstream.
+    if let Some(layout) = tab.float_layout.as_ref().filter(|_| !tab.floats_hidden) {
+        if let Some(geometry) =
+            resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
+        {
+            let focused_float = tab.focused_float();
+            for mut info in layout.panes(geometry.outer) {
+                info.borders = Borders::ALL;
+                // Floats get no scrollbar lane, matching the old popup pane;
+                // `layout.panes` already leaves `scrollbar_rect: None`.
+                info.inner_rect = pane_inner_rect(info.rect, info.borders);
+                info.is_focused = tab.float_focused && Some(info.id) == focused_float;
+                // Only the expanded member has content to display; resizing a
+                // collapsed or folded float's PTY to its near-zero box would
+                // reflow it for nothing.
+                if resize_panes
+                    && info.rect.height > 1
+                    && tab.terminal_id(info.id).is_some_and(|terminal_id| {
+                        !app.direct_attach_resize_locks.contains(terminal_id)
+                    })
+                {
+                    if let Some(rt) =
+                        app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
+                    {
+                        rt.resize(
+                            info.inner_rect.height,
+                            info.inner_rect.width,
+                            cell_size.width_px,
+                            cell_size.height_px,
+                        );
+                    }
+                }
+                pane_infos.push(info);
+            }
+        }
     }
 
     pane_infos

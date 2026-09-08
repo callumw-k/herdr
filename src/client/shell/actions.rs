@@ -902,9 +902,11 @@ impl ClientShellState {
         action: crate::input::KeybindAction,
     ) -> Option<crate::api::schema::Method> {
         use crate::api::schema::{
-            Method, PaneDirection, PaneFocusDirectionParams, PaneResizeParams, PaneSplitParams,
-            PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, SplitDirection,
-            TabCreateParams, TabMoveParams, TabTarget, WorkspaceTarget,
+            Method, PaneDirection, PaneFloatParams, PaneFocusDirectionParams, PaneResizeParams,
+            PaneSplitParams, PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams,
+            SplitDirection, TabArrangementParams, TabCreateParams, TabFloatActivateParams,
+            TabFloatsToggleParams, TabMoveParams, TabPaneAddParams, TabTarget,
+            WorkspaceDeclaredRepoToggleParams, WorkspacePathPinToggleParams, WorkspaceTarget,
         };
         use crate::input::KeybindAction;
 
@@ -1141,6 +1143,38 @@ impl ClientShellState {
                     pane_id: pane_id.clone(),
                 }))
             }
+            KeybindAction::NewPane => Some(Method::TabPaneAdd(TabPaneAddParams {
+                workspace_id: Some(focused_workspace.clone()),
+            })),
+            KeybindAction::NewFloat => Some(Method::PaneFloat(PaneFloatParams {
+                workspace_id: Some(focused_workspace.clone()),
+                cwd: None,
+                focus: true,
+            })),
+            KeybindAction::ToggleFloat => Some(Method::TabFloatActivate(TabFloatActivateParams {
+                workspace_id: Some(focused_workspace.clone()),
+            })),
+            KeybindAction::ToggleFloats => Some(Method::TabFloatsToggle(TabFloatsToggleParams {
+                workspace_id: Some(focused_workspace.clone()),
+                mode: PaneZoomMode::Toggle,
+            })),
+            KeybindAction::ArrangementNext | KeybindAction::ArrangementPrevious => {
+                Some(Method::TabArrangement(TabArrangementParams {
+                    workspace_id: Some(focused_workspace.clone()),
+                    arrangement: None,
+                    forward: action == KeybindAction::ArrangementNext,
+                }))
+            }
+            KeybindAction::PinWorkspacePath => Some(Method::WorkspacePathPinToggle(
+                WorkspacePathPinToggleParams {
+                    workspace_id: self.workspace_action_id()?,
+                },
+            )),
+            KeybindAction::ToggleDeclaredRepo => Some(Method::WorkspaceDeclaredRepoToggle(
+                WorkspaceDeclaredRepoToggleParams {
+                    workspace_id: self.workspace_action_id()?,
+                },
+            )),
             KeybindAction::Zoom => Some(Method::PaneZoom(PaneZoomParams {
                 pane_id: focused_pane,
                 mode: PaneZoomMode::Toggle,

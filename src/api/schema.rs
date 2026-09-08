@@ -83,7 +83,7 @@ pub enum Method {
     WorkspaceFocus(WorkspaceTarget),
     #[serde(rename = "workspace.rename")]
     WorkspaceRename(WorkspaceRenameParams),
-    #[serde(rename = "workspace.set-path")]
+    #[serde(rename = "workspace.set_path")]
     WorkspaceSetPath(WorkspaceSetPathParams),
     #[serde(rename = "workspace.move")]
     WorkspaceMove(WorkspaceMoveParams),
@@ -151,6 +151,16 @@ pub enum Method {
     PaneFloat(PaneFloatParams),
     #[serde(rename = "tab.floats_toggle")]
     TabFloatsToggle(TabFloatsToggleParams),
+    #[serde(rename = "tab.float_activate")]
+    TabFloatActivate(TabFloatActivateParams),
+    #[serde(rename = "tab.arrangement")]
+    TabArrangement(TabArrangementParams),
+    #[serde(rename = "tab.pane_add")]
+    TabPaneAdd(TabPaneAddParams),
+    #[serde(rename = "workspace.path_pin_toggle")]
+    WorkspacePathPinToggle(WorkspacePathPinToggleParams),
+    #[serde(rename = "workspace.declared_repo_toggle")]
+    WorkspaceDeclaredRepoToggle(WorkspaceDeclaredRepoToggleParams),
     #[serde(rename = "pane.layout")]
     PaneLayout(PaneLayoutParams),
     #[serde(rename = "pane.process_info")]

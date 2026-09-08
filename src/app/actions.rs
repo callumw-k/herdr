@@ -335,17 +335,6 @@ impl AppState {
         false
     }
 
-    /// True when the floating layer has something visible. `prefix+c` opens
-    /// another float rather than a tab while this holds: it is a tab action
-    /// keyed on visibility, unlike the layer actions keyed on
-    /// `float_layer_has_focus`.
-    pub(crate) fn float_layer_is_open(&self) -> bool {
-        self.active
-            .and_then(|ws_idx| self.workspaces.get(ws_idx))
-            .and_then(|ws| ws.active_tab())
-            .is_some_and(|tab| tab.focused_float().is_some())
-    }
-
     /// Arrangement actions target whichever layer holds focus. Five actions share
     /// this predicate so the rule is "creation and arrangement follow focus".
     pub(crate) fn float_layer_has_focus(&self) -> bool {
@@ -2408,19 +2397,6 @@ mod tests {
             ids.push(id);
         }
         (state, ids)
-    }
-
-    #[test]
-    fn new_pane_targets_the_float_layer_while_it_is_open() {
-        let (mut state, _) = app_with_float_stack(2);
-        assert!(state.float_layer_is_open());
-
-        // Hiding the layer hands creation back to the tiled panes.
-        state.workspaces[0]
-            .active_tab_mut()
-            .expect("a tab")
-            .set_floats_hidden(true);
-        assert!(!state.float_layer_is_open());
     }
 
     fn app_with_workspaces(names: &[&str]) -> AppState {

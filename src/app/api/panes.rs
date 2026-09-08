@@ -1,20 +1,21 @@
 use bytes::Bytes;
 
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, PaneClearAgentAuthorityParams, PaneCopyMotion,
-    PaneCopyMotionParams, PaneCopySearchDirection, PaneCopySearchParams, PaneCurrentParams,
-    PaneDirection, PaneEdgesParams, PaneEdgesResult, PaneFloatParams, PaneFocusDirectionParams,
-    PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInfo, PaneInputSetParams,
-    PaneLayoutPane, PaneLayoutParams, PaneLayoutRect, PaneLayoutSnapshot, PaneLayoutSplit,
-    PaneListParams, PaneMoveDestination, PaneMoveParams, PaneMoveReason, PaneMoveResult,
-    PaneNeighborParams, PaneNeighborResult, PaneProcessInfo, PaneProcessInfoParams,
+    ArrangementSchema, EventData, EventEnvelope, EventKind, PaneClearAgentAuthorityParams,
+    PaneCopyMotion, PaneCopyMotionParams, PaneCopySearchDirection, PaneCopySearchParams,
+    PaneCurrentParams, PaneDirection, PaneEdgesParams, PaneEdgesResult, PaneFloatParams,
+    PaneFocusDirectionParams, PaneFocusDirectionReason, PaneFocusDirectionResult, PaneInfo,
+    PaneInputSetParams, PaneLayoutPane, PaneLayoutParams, PaneLayoutRect, PaneLayoutSnapshot,
+    PaneLayoutSplit, PaneListParams, PaneMoveDestination, PaneMoveParams, PaneMoveReason,
+    PaneMoveResult, PaneNeighborParams, PaneNeighborResult, PaneProcessInfo, PaneProcessInfoParams,
     PaneProcessInfoProcess, PaneReadParams, PaneReadResult, PaneReleaseAgentParams,
     PaneRenameParams, PaneReportAgentParams, PaneReportAgentSessionParams,
     PaneReportMetadataParams, PaneResizeParams, PaneResizeReason, PaneResizeResult,
     PaneScrollParams, PaneSelectionReadParams, PaneSendInputParams, PaneSendKeysParams,
     PaneSendTextParams, PaneSplitParams, PaneSwapParams, PaneSwapReason, PaneSwapResult,
     PaneTarget, PaneTextPoint, PaneTextRange, PaneZoomMode, PaneZoomParams, PaneZoomReason,
-    PaneZoomResult, ResponseResult, TabFloatsToggleParams,
+    PaneZoomResult, ResponseResult, TabArrangementParams, TabFloatActivateParams,
+    TabFloatsToggleParams, TabPaneAddParams,
 };
 use crate::app::actions::{PaneZoomCommand, PaneZoomNoopReason};
 use crate::app::App;
@@ -240,6 +241,128 @@ impl App {
         self.state.set_floats_hidden_in_active_tab(hidden);
         self.schedule_session_save();
         encode_success(id, ResponseResult::Ok {})
+    }
+
+    /// Open the float layer, focus it, or hide it, in that order of
+    /// preference. The three-way needs `floats_hidden` and float focus, so the
+    /// server decides rather than the client guessing from a snapshot.
+    pub(super) fn handle_tab_float_activate(
+        &mut self,
+        id: String,
+        params: TabFloatActivateParams,
+    ) -> String {
+        let ws_idx = match self.resolve_active_workspace(params.workspace_id.as_deref()) {
+            Ok(ws_idx) => ws_idx,
+            Err(response) => return encode_error(id, &response.0, response.1),
+        };
+        let floats_empty = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.active_tab())
+            .map(|tab| tab.floats().is_empty())
+            .unwrap_or(true);
+        if floats_empty {
+            if let Err(err) = self.open_float_pane(ws_idx, None) {
+                return encode_error(id, "pane_float_failed", err.to_string());
+            }
+        } else if !self.state.focus_floats_in_active_tab() {
+            self.state.set_floats_hidden_in_active_tab(true);
+        }
+        self.schedule_session_save();
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    pub(super) fn handle_tab_arrangement(
+        &mut self,
+        id: String,
+        params: TabArrangementParams,
+    ) -> String {
+        if let Err(response) = self.resolve_active_workspace(params.workspace_id.as_deref()) {
+            return encode_error(id, &response.0, response.1);
+        }
+        match params.arrangement {
+            Some(arrangement) => self.state.set_tab_arrangement(match arrangement {
+                ArrangementSchema::Vertical => crate::layout::Arrangement::Vertical,
+                ArrangementSchema::Horizontal => crate::layout::Arrangement::Horizontal,
+                ArrangementSchema::Grid => crate::layout::Arrangement::Grid,
+                ArrangementSchema::Stacked => crate::layout::Arrangement::Stacked,
+            }),
+            None => self.state.cycle_tab_arrangement(params.forward),
+        }
+        self.schedule_session_save();
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    /// Add a pane to whichever layer has focus. Creation follows focus, unlike
+    /// `pane.float`, which always targets the floating layer.
+    pub(super) fn handle_tab_pane_add(&mut self, id: String, params: TabPaneAddParams) -> String {
+        let ws_idx = match self.resolve_active_workspace(params.workspace_id.as_deref()) {
+            Ok(ws_idx) => ws_idx,
+            Err(response) => return encode_error(id, &response.0, response.1),
+        };
+        if self.state.float_layer_has_focus() {
+            return match self.open_float_pane(ws_idx, None) {
+                Ok(_) => {
+                    self.schedule_session_save();
+                    encode_success(id, ResponseResult::Ok {})
+                }
+                Err(err) => encode_error(id, "pane_float_failed", err.to_string()),
+            };
+        }
+        let arrangement = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.active_tab())
+            .map(|tab| tab.arrangement)
+            .unwrap_or_default();
+        let direction = match arrangement {
+            crate::layout::Arrangement::Vertical => crate::api::schema::SplitDirection::Right,
+            _ => crate::api::schema::SplitDirection::Down,
+        };
+        self.handle_pane_split(
+            id,
+            PaneSplitParams {
+                workspace_id: Some(self.public_workspace_id(ws_idx)),
+                target_pane_id: None,
+                direction,
+                ratio: None,
+                cwd: None,
+                focus: true,
+                right_click: Default::default(),
+                env: Default::default(),
+            },
+        )
+    }
+
+    fn resolve_active_workspace(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Result<usize, (String, String)> {
+        match workspace_id {
+            Some(workspace_id) => {
+                let Some(ws_idx) = self.parse_workspace_id(workspace_id) else {
+                    return Err((
+                        "workspace_not_found".into(),
+                        format!("workspace {workspace_id} not found"),
+                    ));
+                };
+                // These all act on the active tab, so an inactive workspace has
+                // nothing meaningful to change.
+                if self.state.active != Some(ws_idx) {
+                    return Err((
+                        "workspace_not_active".into(),
+                        "this action requires the active workspace".into(),
+                    ));
+                }
+                Ok(ws_idx)
+            }
+            None => self
+                .state
+                .active
+                .ok_or_else(|| ("workspace_not_found".into(), "no active workspace".into())),
+        }
     }
 
     pub(super) fn handle_pane_current(&mut self, id: String, params: PaneCurrentParams) -> String {
