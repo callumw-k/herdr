@@ -147,8 +147,8 @@ fn grouped_worktrees_render_parent_branch_and_indented_child() {
     state.set_pane_surface(replacement_surface);
     let collapsed = state.compose(106, 20).expect("collapsed worktree group");
     let parent = state.hits.workspaces[0].rect;
-    let status_cell = usize::from(parent.y) * usize::from(collapsed.width)
-        + usize::from(parent.x.saturating_add(1));
+    // The status ribbon in column 0 carries the rolled-up child state.
+    let status_cell = usize::from(parent.y) * usize::from(collapsed.width) + usize::from(parent.x);
     assert_eq!(
         collapsed.cells[status_cell].fg,
         crate::protocol::color_to_u32(state.config.palette.red)

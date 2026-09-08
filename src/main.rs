@@ -335,14 +335,15 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # status_indicators = "dots"
 
 # Expanded agent rows. Built-ins are state_icon, state_text, machine, workspace, tab,
-# pane, agent, terminal_title, and terminal_title_stripped.
+# pane, agent, activity, terminal_title, and terminal_title_stripped.
+# activity resolves to the first of terminal_title_stripped, pane, or agent that is set.
 # Custom values reported through pane metadata use a $name token.
 # A token occurrence may be styled with { token = "workspace", fg = "#89b4fa", bold = true, dim = false }.
 # Omitted style fields preserve the contextual default.
 # [ui.sidebar.agents]
 # Blank rows between agent entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
-# rows = [["state_icon", "machine", "workspace", "tab"], ["agent"]]
+# rows = [["machine", "workspace", "tab"], ["activity"]]
 # Optional canonical agent IDs replace the default rows for matching agents.
 # [ui.sidebar.agents.rows_by_agent]
 # claude = [["state_icon", "machine", "workspace", "tab"], ["terminal_title_stripped"], ["agent"]]
@@ -353,7 +354,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # [ui.sidebar.spaces]
 # Blank rows between space entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
-# rows = [["state_icon", "workspace"], ["branch", "git_status"]]
+# Draw a rule between top-level spaces. It sits in the row_gap and takes one row
+# when row_gap is 0. Worktree children stay packed under their parent either way.
+# divider = false
+# rows = [["workspace"], ["branch", "git_status"]]
 
 # Accent color for highlights, borders, and navigation UI.
 # Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)

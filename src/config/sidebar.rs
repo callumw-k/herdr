@@ -113,6 +113,7 @@ pub enum AgentSidebarToken {
     Tab,
     Pane,
     Agent,
+    Activity,
     TerminalTitle,
     TerminalTitleStripped,
     Custom(String),
@@ -277,6 +278,7 @@ fn agent_token_name(token: &AgentSidebarToken) -> String {
         AgentSidebarToken::Tab => "tab".into(),
         AgentSidebarToken::Pane => "pane".into(),
         AgentSidebarToken::Agent => "agent".into(),
+        AgentSidebarToken::Activity => "activity".into(),
         AgentSidebarToken::TerminalTitle => "terminal_title".into(),
         AgentSidebarToken::TerminalTitleStripped => "terminal_title_stripped".into(),
         AgentSidebarToken::Custom(name) => format!("${name}"),
@@ -336,6 +338,7 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
                 ("tab", Self::Tab),
                 ("pane", Self::Pane),
                 ("agent", Self::Agent),
+                ("activity", Self::Activity),
                 ("terminal_title", Self::TerminalTitle),
                 ("terminal_title_stripped", Self::TerminalTitleStripped),
             ],
@@ -442,12 +445,11 @@ impl Default for AgentsSidebarConfig {
         Self {
             rows: vec![
                 vec![
-                    AgentSidebarToken::StateIcon,
                     AgentSidebarToken::Machine,
                     AgentSidebarToken::Workspace,
                     AgentSidebarToken::Tab,
                 ],
-                vec![AgentSidebarToken::Agent],
+                vec![AgentSidebarToken::Activity],
             ],
             rows_by_agent: BTreeMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
@@ -461,16 +463,18 @@ pub struct SpacesSidebarConfig {
     #[serde(deserialize_with = "deserialize_sidebar_rows")]
     pub rows: SpaceSidebarRows,
     pub row_gap: u16,
+    pub divider: bool,
 }
 
 impl Default for SpacesSidebarConfig {
     fn default() -> Self {
         Self {
             rows: vec![
-                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
+                vec![SpaceSidebarToken::Workspace],
                 vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
             ],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
+            divider: false,
         }
     }
 }
@@ -493,12 +497,11 @@ mod tests {
             config.agents.rows,
             vec![
                 vec![
-                    AgentSidebarToken::StateIcon,
                     AgentSidebarToken::Machine,
                     AgentSidebarToken::Workspace,
                     AgentSidebarToken::Tab,
                 ],
-                vec![AgentSidebarToken::Agent],
+                vec![AgentSidebarToken::Activity],
             ]
         );
         assert!(config.agents.rows_by_agent.is_empty());
@@ -506,7 +509,7 @@ mod tests {
         assert_eq!(
             config.spaces.rows,
             vec![
-                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
+                vec![SpaceSidebarToken::Workspace],
                 vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
             ]
         );

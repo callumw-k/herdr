@@ -356,17 +356,20 @@ The expanded desktop sidebar renders each inner array in `rows` as one line. The
 [ui.sidebar.agents]
 row_gap = 0
 rows = [
-  ["state_icon", "machine", "workspace", "tab"],
-  ["agent"],
+  ["machine", "workspace", "tab"],
+  ["activity"],
 ]
 
 [ui.sidebar.spaces]
 row_gap = 0
+divider = false
 rows = [
-  ["state_icon", "workspace"],
+  ["workspace"],
   ["branch", "git_status"],
 ]
 ```
+
+Every space and agent entry carries a coloured status ribbon in its leftmost column, so the default rows leave out `state_icon`. Add the token back to a row to restore the inline icon.
 
 Agent rows accept these built-in tokens:
 
@@ -377,6 +380,7 @@ Agent rows accept these built-in tokens:
 - `tab` — tab name when available.
 - `pane` — pane name when available.
 - `agent` — detected or reported agent display name.
+- `activity` — the first of `terminal_title_stripped`, `pane`, or `agent` that is set.
 - `terminal_title` — latest OSC 0/2 terminal title after safety normalization.
 - `terminal_title_stripped` — the terminal title with one recognized leading activity or spinner glyph and its following whitespace removed.
 - `$name` — custom pane metadata named `name`.
@@ -424,6 +428,8 @@ The first matching rule wins. Its specified style fields override the occurrence
 Rules work with text-valued built-ins and custom `$name` tokens in Agent rows, `rows_by_agent` overrides, and Space rows. Custom tokens match their reported value: `$load` reporting `"90"` selects red and bold above, `"60"` selects yellow, and `"90%"` keeps white. Unreported tokens still disappear. `state_icon` and composite `git_status` accept fixed styles only, not rules. Unknown conditions and malformed rules are rejected when loading config; regex, fuzzy matching, and scripts are not supported.
 
 `row_gap` controls the blank terminal rows between entries, independently for the Agent and Space panels. It defaults to `0`, which packs entries together; set it to `1` to restore the previous spacing. It does not add spacing between the content lines declared in `rows`. Consecutive indented worktree children remain packed as one Space group.
+
+`ui.sidebar.spaces.divider` draws a rule between top-level spaces. The rule sits inside `row_gap`, and raises a zero gap to one row so it has somewhere to live. Worktree children stay packed under their parent either way.
 
 Override the complete Agent layout for a known agent under `rows_by_agent`:
 

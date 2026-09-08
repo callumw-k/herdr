@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+- The sidebar now marks agent state with a coloured ribbon down the left of every space and agent entry. The Navigate cursor's ribbon takes the accent colour so it stays readable next to a focused row. Default rows drop `state_icon` because the ribbon carries the same state; add the token back to a row in `ui.sidebar.spaces` or `ui.sidebar.agents` to restore the inline icon.
+- `ui.sidebar.spaces.divider` draws a rule between top-level spaces. The rule sits in `row_gap` and raises a zero gap to one row. Worktree children stay packed under their parent.
+- A new `activity` sidebar token resolves to the first of `terminal_title_stripped`, `pane`, or `agent` that is set, and replaces `agent` in the default agent rows, so the second row shows the pane's own context instead of repeating the agent name.
+
+### Changed
+- The collapsed sidebar sizes its workspace and agent sections to their contents, so the divider follows the workspace list instead of splitting the column in half. Workspace numbers appear only in Navigate mode where digits switch workspaces, and a section with more entries than rows ends in a `+N` count instead of cutting off.
+
 ## [0.9.0] - 2026-09-07
 
 ### Added

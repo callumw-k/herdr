@@ -10,7 +10,23 @@ pub(super) fn render_collapsed(
 ) {
     let palette = &config.palette;
     super::render::render_sidebar_background(buffer, area, palette);
-    let (workspace_area, divider_y, detail_area) = super::sidebar::collapsed_sidebar_sections(area);
+    let endpoint_rows = state
+        .endpoints
+        .iter()
+        .map(|endpoint| {
+            let workspaces = if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
+                0
+            } else {
+                endpoint
+                    .snapshot
+                    .as_deref()
+                    .map_or(0, |snapshot| snapshot.workspaces.len())
+            };
+            workspaces.saturating_add(1)
+        })
+        .sum::<usize>();
+    let (workspace_area, divider_y, detail_area) =
+        super::sidebar::collapsed_sidebar_sections(area, endpoint_rows);
     let mut y = workspace_area.y;
     for (index, endpoint) in state.endpoints.iter().enumerate() {
         if y >= workspace_area.bottom() {
