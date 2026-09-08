@@ -42,6 +42,24 @@ pub struct PaneSplitParams {
     pub env: HashMap<String, String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct PaneFloatParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub focus: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct TabFloatsToggleParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub mode: PaneZoomMode,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneInputSetParams {
     pub pane_id: String,
@@ -163,6 +181,8 @@ pub struct LayoutApplyParams {
     #[serde(default)]
     pub focus: bool,
     pub root: LayoutNode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_root: Option<LayoutNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -181,7 +201,17 @@ pub struct LayoutDescription {
     pub tab_id: String,
     pub zoomed: bool,
     pub focused_pane_id: String,
+    pub arrangement: ArrangementSchema,
+    #[serde(default = "stacked_arrangement_schema")]
+    pub float_arrangement: ArrangementSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub float_root: Option<LayoutNode>,
     pub root: LayoutNode,
+}
+
+/// Older clients omit this field; both layers default to Stacked.
+fn stacked_arrangement_schema() -> ArrangementSchema {
+    ArrangementSchema::Stacked
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -197,6 +227,22 @@ pub enum LayoutNode {
         first: Box<LayoutNode>,
         second: Box<LayoutNode>,
     },
+    Stack {
+        panes: Vec<LayoutPane>,
+        active: usize,
+    },
+}
+
+/// The whole-tab pane arrangement. A shared runtime fact: it determines the
+/// shape of the server-owned pane tree, so it is exposed on the API rather
+/// than kept as TUI-only state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArrangementSchema {
+    Vertical,
+    Horizontal,
+    Grid,
+    Stacked,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, Default)]
@@ -530,6 +576,8 @@ pub struct PaneInfo {
     pub workspace_id: String,
     pub tab_id: String,
     pub focused: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub floating: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

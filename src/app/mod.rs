@@ -410,6 +410,7 @@ impl App {
 
         let worktree_directory =
             crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
+        let declared_repo_paths = config.repo_paths();
 
         info!(
             pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes,
@@ -455,6 +456,7 @@ impl App {
             request_client_config_reload: false,
             worktree_directory,
             latest_release_notes,
+            declared_repo_paths,
             product_announcement: startup_product_announcement.map(|announcement| {
                 state::ProductAnnouncementState {
                     version: announcement.version,
@@ -487,6 +489,8 @@ impl App {
             next_agent_state_change_seq: 0,
             confirm_close: config.ui.confirm_close,
             pane_borders: config.ui.pane_borders,
+            floating_pane_width: config.ui.floating_pane_width,
+            floating_pane_height: config.ui.floating_pane_height,
             pane_outer_borders: config.ui.pane_outer_borders,
             pane_scrollbars: config.ui.pane_scrollbars,
             pane_gaps: config.ui.pane_gaps,
@@ -834,6 +838,8 @@ impl App {
                 self.loaded_host_cursor = config.ui.host_cursor;
                 self.state.confirm_close = config.ui.confirm_close;
                 self.state.pane_borders = config.ui.pane_borders;
+                self.state.floating_pane_width = config.ui.floating_pane_width;
+                self.state.floating_pane_height = config.ui.floating_pane_height;
                 self.state.pane_outer_borders = config.ui.pane_outer_borders;
                 self.state.pane_scrollbars = config.ui.pane_scrollbars;
                 self.state.pane_gaps = config.ui.pane_gaps;
@@ -930,6 +936,10 @@ impl App {
         if !invalid_section("worktrees") {
             self.state.worktree_directory =
                 crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
+        }
+
+        if !invalid_section("repos") {
+            self.state.declared_repo_paths = config.repo_paths();
         }
 
         if !invalid_section("theme") {
@@ -1679,7 +1689,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(
             &path,
-            "[terminal]\ndefault_shell = \"nu\"\nshell_mode = \"non_login\"\nnew_cwd = \"home\"\n[keys]\nnew_workspace = \"prefix+m\"\nprefix = \"ctrl+a\"\n[update]\nversion_check = false\nmanifest_check = false\n[server]\nheadless_cols = 160\nheadless_rows = 50\n[ui]\nagent_panel_sort = \"priority\"\n[ui.toast]\ndelivery = \"herdr\"\n",
+            "[terminal]\ndefault_shell = \"nu\"\nshell_mode = \"non_login\"\nnew_cwd = \"home\"\n[keys]\nnew_workspace = \"prefix+m\"\nprefix = \"ctrl+a\"\n[update]\nversion_check = false\nmanifest_check = false\n[server]\nheadless_cols = 160\nheadless_rows = 50\n[ui]\nagent_panel_sort = \"priority\"\n[ui.toast]\ndelivery = \"herdr\"\n[[repos]]\npath = \"/repos/herdr\"\n",
         )
         .unwrap();
         std::env::set_var(crate::config::CONFIG_PATH_ENV_VAR, &path);
@@ -1724,6 +1734,10 @@ mod tests {
         assert_eq!(toast.kind, crate::app::state::ToastKind::UpdateInstalled);
         assert_eq!(toast.title, "reloaded config");
         assert_eq!(toast.context, "using config.toml");
+        assert_eq!(
+            app.state.declared_repo_paths,
+            vec![std::path::PathBuf::from("/repos/herdr")]
+        );
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

@@ -10,6 +10,7 @@ const KNOWN_TOP_LEVEL_CONFIG_KEYS: &[&str] = &[
     "keys",
     "onboarding",
     "remote",
+    "repos",
     "server",
     "session",
     "terminal",
@@ -349,6 +350,14 @@ fn load_live_config_from_str(content: &str) -> Result<LoadedConfig, Vec<String>>
         &mut invalid_sections,
         |section| config.remote = section,
     );
+    load_live_section(
+        table,
+        "repos",
+        "repos config",
+        &mut diagnostics,
+        &mut invalid_sections,
+        |section| config.repos = section,
+    );
 
     diagnostics.extend(config.theme.diagnostics());
 
@@ -609,6 +618,71 @@ pub fn remove_section_key(content: &str, section: &str, key: &str) -> String {
     result.join("\n") + "\n"
 }
 
+/// Add a `[[repos]]` entry for `path`, or drop every entry that already
+/// declares it. Paths are compared after expansion so a `~` entry matches the
+/// absolute directory it names. Returns the new content and whether the path
+/// ended up declared.
+pub fn toggle_repo_path(content: &str, path: &Path) -> (String, bool) {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut result: Vec<String> = Vec::new();
+    let mut removed = false;
+    let mut i = 0;
+
+    while i < lines.len() {
+        if lines[i].trim() != "[[repos]]" {
+            result.push(lines[i].to_string());
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        i += 1;
+        let mut declares_path = false;
+        while i < lines.len() && toml_table_header_name(lines[i].trim()).is_none() {
+            if let Some(value) = repo_path_value(lines[i].trim()) {
+                declares_path = crate::workspace::expand_pinned_path(value) == path;
+            }
+            i += 1;
+        }
+
+        if declares_path {
+            removed = true;
+        } else {
+            result.extend(lines[start..i].iter().map(|line| line.to_string()));
+        }
+    }
+
+    if !removed {
+        if !result.is_empty() && !result.last().is_some_and(|line| line.trim().is_empty()) {
+            result.push(String::new());
+        }
+        result.push("[[repos]]".to_string());
+        result.push(format!(
+            "path = {}",
+            toml::Value::String(path.display().to_string())
+        ));
+    }
+
+    (result.join("\n") + "\n", !removed)
+}
+
+/// The string value of a `path = "..."` assignment, basic or literal.
+fn repo_path_value(trimmed: &str) -> Option<&str> {
+    let value = trimmed
+        .strip_prefix("path")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim();
+    value
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .or_else(|| {
+            value
+                .strip_prefix('\'')
+                .and_then(|rest| rest.strip_suffix('\''))
+        })
+}
+
 pub fn remove_keybinding_config_sections(content: &str) -> (String, bool) {
     let mut result = Vec::new();
     let mut removed = false;
@@ -738,6 +812,34 @@ mod tests {
         let updated = upsert_section_bool("", "ui.toast", "enabled", true);
         assert!(updated.contains("[ui.toast]"));
         assert!(updated.contains("enabled = true"));
+    }
+
+    #[test]
+    fn toggle_repo_path_appends_an_undeclared_path() {
+        let (updated, declared) =
+            toggle_repo_path("[ui]\nsidebar_width = 30\n", Path::new("/repos/herdr"));
+        assert!(declared);
+        assert!(updated.ends_with("[[repos]]\npath = \"/repos/herdr\"\n"));
+        assert!(updated.contains("sidebar_width = 30"));
+    }
+
+    #[test]
+    fn toggle_repo_path_drops_only_the_matching_block() {
+        let content = concat!(
+            "[[repos]]\n",
+            "path = \"/repos/api\"\n",
+            "\n",
+            "[[repos]]\n",
+            "path = '/repos/herdr'\n",
+            "\n",
+            "[ui]\n",
+            "sidebar_width = 30\n",
+        );
+        let (updated, declared) = toggle_repo_path(content, Path::new("/repos/herdr"));
+        assert!(!declared);
+        assert!(updated.contains("path = \"/repos/api\""));
+        assert!(!updated.contains("/repos/herdr"));
+        assert!(updated.contains("[ui]\nsidebar_width = 30"));
     }
 
     #[test]
@@ -1015,6 +1117,21 @@ mouse_captur = true
     }
 
     #[test]
+    fn load_live_config_reports_invalid_repos_section() {
+        let loaded = load_live_config_from_str(
+            r#"
+[[repos]]
+path = 123
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(loaded.diagnostics.len(), 1);
+        assert!(loaded.diagnostics[0].contains("invalid repos config"));
+        assert_eq!(loaded.invalid_sections, vec!["repos"]);
+    }
+
+    #[test]
     fn startup_config_accepts_legacy_agent_panel_scope_without_warning() {
         let _guard = crate::config::test_config_env_lock().lock().unwrap();
         let path = std::env::temp_dir().join(format!(
@@ -1107,5 +1224,41 @@ mouse_capture = false
         let (updated, removed) = remove_keybinding_config_sections(content);
         assert!(!removed);
         assert_eq!(updated, content);
+    }
+
+    #[test]
+    fn repos_section_is_known_and_expands_paths() {
+        let _guard = crate::config::test_config_env_lock().lock().unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "herdr-repos-section-{}-config.toml",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"
+[[repos]]
+path = "~/code/active/herdr"
+
+[[repos]]
+path = ""
+"#,
+        )
+        .unwrap();
+        std::env::set_var(CONFIG_PATH_ENV_VAR, &path);
+
+        let loaded = Config::load();
+
+        assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+        let home = std::env::var("HOME").expect("HOME");
+        assert_eq!(
+            loaded.config.repo_paths(),
+            vec![std::path::PathBuf::from(format!(
+                "{home}/code/active/herdr"
+            ))],
+            "blank entries should be dropped and ~ expanded"
+        );
+
+        std::env::remove_var(CONFIG_PATH_ENV_VAR);
+        let _ = std::fs::remove_file(&path);
     }
 }

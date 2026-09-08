@@ -846,6 +846,54 @@
           "type": "string",
           "default": "unset",
           "description": "Modifier combo for agent shortcuts 1-9. Unset by default."
+        },
+        {
+          "key": "keys.new_pane",
+          "type": "keybinding",
+          "default": "\"prefix+enter\"",
+          "description": "Add a pane without changing the tab's arrangement."
+        },
+        {
+          "key": "keys.arrangement_next",
+          "type": "keybinding",
+          "default": "\"prefix+]\"",
+          "description": "Cycle the tab to the next pane arrangement."
+        },
+        {
+          "key": "keys.arrangement_previous",
+          "type": "keybinding",
+          "default": "\"prefix+[\"",
+          "description": "Cycle the tab to the previous pane arrangement."
+        },
+        {
+          "key": "keys.new_float",
+          "type": "keybinding",
+          "default": "\"prefix+f\"",
+          "description": "Open a new floating pane."
+        },
+        {
+          "key": "keys.toggle_float",
+          "type": "keybinding",
+          "default": "\"prefix+ctrl+f\"",
+          "description": "Open a floating pane if none exist, focus the floating layer if it is unfocused, otherwise hide it."
+        },
+        {
+          "key": "keys.toggle_floats",
+          "type": "keybinding",
+          "default": "\"prefix+shift+f\"",
+          "description": "Show or hide the floating layer."
+        },
+        {
+          "key": "keys.pin_workspace_path",
+          "type": "keybinding",
+          "default": "\"prefix+.\"",
+          "description": "Pin the active workspace to the focused pane's directory, or unpin it when it is already pinned there."
+        },
+        {
+          "key": "keys.toggle_declared_repo",
+          "type": "keybinding",
+          "default": "\"prefix+>\"",
+          "description": "Add the active workspace's directory to the [[repos]] list in config.toml, or remove it when it is already declared."
         }
       ]
     },
@@ -1083,6 +1131,18 @@
           "type": "color",
           "default": "\"cyan\"",
           "description": "Accent color for highlights, borders, and navigation UI. Accepts hex (#89b4fa), named colors (cyan, blue), or RGB (rgb(137,180,250))."
+        },
+        {
+          "key": "ui.floating_pane_width",
+          "type": "string",
+          "default": "unset",
+          "description": "Width of floating panes, in cells or as a percentage like \"60%\". Unset uses half the terminal area."
+        },
+        {
+          "key": "ui.floating_pane_height",
+          "type": "string",
+          "default": "unset",
+          "description": "Height of floating panes, in cells or as a percentage like \"60%\". Unset uses half the terminal area."
         }
       ]
     },

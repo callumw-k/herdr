@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::api::schema::{
     Method, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceReportMetadataParams,
+    WorkspaceSetPathParams,
 };
 
 pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
@@ -16,6 +17,7 @@ pub(super) fn run_workspace_command(args: &[String]) -> std::io::Result<i32> {
         "get" => workspace_get(&args[1..]),
         "focus" => workspace_focus(&args[1..]),
         "rename" => workspace_rename(&args[1..]),
+        "set-path" => workspace_set_path(&args[1..]),
         "report-metadata" => workspace_report_metadata(&args[1..]),
         "close" => workspace_close(&args[1..]),
         "help" | "--help" | "-h" => {
@@ -140,6 +142,27 @@ fn workspace_rename(args: &[String]) -> std::io::Result<i32> {
     })
 }
 
+fn workspace_set_path(args: &[String]) -> std::io::Result<i32> {
+    let Some(raw_workspace_id) = args.first() else {
+        eprintln!("usage: herdr workspace set-path <workspace_id> [PATH | --clear]");
+        return Ok(2);
+    };
+    // The spec declares PATH and --clear as mutually exclusive, so reject the
+    // combination here rather than silently letting one of them win.
+    let rest = &args[1..];
+    let clear = rest.iter().any(|arg| arg == "--clear");
+    let path = rest.iter().find(|arg| arg.as_str() != "--clear").cloned();
+    if clear && path.is_some() {
+        eprintln!("usage: herdr workspace set-path <workspace_id> [PATH | --clear]");
+        return Ok(2);
+    }
+
+    super::runtime::workspace_set_path(WorkspaceSetPathParams {
+        workspace_id: super::normalize_workspace_id(raw_workspace_id),
+        path,
+    })
+}
+
 fn workspace_report_metadata(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_workspace_id) = args.first() else {
         eprintln!("usage: herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
@@ -248,6 +271,18 @@ fn print_workspace_help() {
     eprintln!("  herdr workspace get <workspace_id>");
     eprintln!("  herdr workspace focus <workspace_id>");
     eprintln!("  herdr workspace rename <workspace_id> <label>");
+    eprintln!("  herdr workspace set-path <workspace_id> [PATH | --clear]");
     eprintln!("  herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
     eprintln!("  herdr workspace close <workspace_id> [--group]");
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn set_path_rejects_a_path_and_clear_together() {
+        for args in [["w1", "/tmp", "--clear"], ["w1", "--clear", "/tmp"]] {
+            let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+            assert_eq!(super::workspace_set_path(&args).unwrap(), 2);
+        }
+    }
 }

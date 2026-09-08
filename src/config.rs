@@ -13,8 +13,8 @@ mod write;
 pub use self::{
     io::{
         config_diagnostic_summary, config_dir, config_path, load_live_config,
-        remove_keybinding_config_sections, remove_section_key, state_dir, upsert_section_bool,
-        upsert_section_value,
+        remove_keybinding_config_sections, remove_section_key, state_dir, toggle_repo_path,
+        upsert_section_bool, upsert_section_value,
     },
     keybinds::{
         format_key_combo, normalize_key_combo, terminal_key_matches_combo, ActionKeybinds,
@@ -184,6 +184,16 @@ impl Config {
         let mut keys = self.keys.local_profile(&self.keybinds());
         keys.set_prefix(format_key_combo(self.prefix_key()));
         toml::to_string_pretty(&KeysProfile { keys })
+    }
+
+    /// Declared repo paths, expanded and with blank entries dropped. A path
+    /// need not exist: a repo can be declared before it is cloned.
+    pub(crate) fn repo_paths(&self) -> Vec<std::path::PathBuf> {
+        self.repos
+            .iter()
+            .filter(|repo| !repo.path.trim().is_empty())
+            .map(|repo| crate::workspace::expand_pinned_path(&repo.path))
+            .collect()
     }
 }
 

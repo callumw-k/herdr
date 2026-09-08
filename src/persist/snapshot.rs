@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use ratatui::layout::Direction;
 use serde::{Deserialize, Serialize};
 
-use crate::layout::Node;
+use crate::layout::{Arrangement, Node};
 use crate::terminal::TerminalRuntimeRegistry;
 use crate::workspace::Workspace;
 
@@ -54,6 +54,8 @@ pub struct WorkspaceSnapshot {
     pub custom_name: Option<String>,
     pub identity_cwd: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_space: Option<crate::workspace::WorktreeSpaceMembership>,
     #[serde(default)]
     pub public_pane_numbers: HashMap<u32, usize>,
@@ -92,6 +94,21 @@ pub struct TabSnapshot {
     pub focused: Option<u32>,
     #[serde(default)]
     pub root_pane: Option<u32>,
+    #[serde(default)]
+    pub float_layout: Option<LayoutSnapshot>,
+    #[serde(default = "stacked_arrangement")]
+    pub float_arrangement: ArrangementSnapshot,
+    /// Which float held focus. A `Stack`'s `active` index says which member is
+    /// expanded, not which pane has keyboard focus, and non-stack arrangements
+    /// have no `active` at all, so focus needs its own field.
+    #[serde(default)]
+    pub float_focused_pane: Option<u32>,
+    #[serde(default)]
+    pub floats_hidden: bool,
+    #[serde(default)]
+    pub float_focused: bool,
+    #[serde(default)]
+    pub arrangement: ArrangementSnapshot,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -124,7 +141,7 @@ pub struct PaneHistorySnapshot {
 }
 
 /// Serializable BSP tree.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum LayoutSnapshot {
     Pane(u32),
     Split {
@@ -133,12 +150,55 @@ pub enum LayoutSnapshot {
         first: Box<LayoutSnapshot>,
         second: Box<LayoutSnapshot>,
     },
+    Stack {
+        panes: Vec<u32>,
+        active: usize,
+    },
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum DirectionSnapshot {
     Horizontal,
     Vertical,
+}
+
+/// Mirrors `Arrangement` for the on-disk format so a session snapshot round
+/// trips the tab's arrangement without depending on the layout module's enum
+/// representation.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArrangementSnapshot {
+    Vertical,
+    Horizontal,
+    #[default]
+    Grid,
+    Stacked,
+}
+
+/// The float layer defaults to Stacked, unlike the tiled layer's Grid.
+fn stacked_arrangement() -> ArrangementSnapshot {
+    ArrangementSnapshot::Stacked
+}
+
+impl From<Arrangement> for ArrangementSnapshot {
+    fn from(arrangement: Arrangement) -> Self {
+        match arrangement {
+            Arrangement::Vertical => ArrangementSnapshot::Vertical,
+            Arrangement::Horizontal => ArrangementSnapshot::Horizontal,
+            Arrangement::Grid => ArrangementSnapshot::Grid,
+            Arrangement::Stacked => ArrangementSnapshot::Stacked,
+        }
+    }
+}
+
+impl From<ArrangementSnapshot> for Arrangement {
+    fn from(snapshot: ArrangementSnapshot) -> Self {
+        match snapshot {
+            ArrangementSnapshot::Vertical => Arrangement::Vertical,
+            ArrangementSnapshot::Horizontal => Arrangement::Horizontal,
+            ArrangementSnapshot::Grid => Arrangement::Grid,
+            ArrangementSnapshot::Stacked => Arrangement::Stacked,
+        }
+    }
 }
 
 impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
@@ -151,12 +211,19 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             zoomed: snap.zoomed,
             focused: snap.focused,
             root_pane: snap.root_pane,
+            float_layout: None,
+            float_arrangement: ArrangementSnapshot::Stacked,
+            float_focused_pane: None,
+            floats_hidden: false,
+            float_focused: false,
+            arrangement: ArrangementSnapshot::default(),
         };
 
         Self {
             id: None,
             custom_name: snap.custom_name,
             identity_cwd,
+            pinned_path: None,
             worktree_space: None,
             public_pane_numbers: HashMap::new(),
             next_public_pane_number: 0,
@@ -245,6 +312,7 @@ fn first_pane_id_in_layout(layout: &LayoutSnapshot) -> Option<u32> {
         LayoutSnapshot::Split { first, second, .. } => {
             first_pane_id_in_layout(first).or_else(|| first_pane_id_in_layout(second))
         }
+        LayoutSnapshot::Stack { panes, .. } => panes.first().copied(),
     }
 }
 
@@ -287,6 +355,7 @@ fn capture_workspace(
         identity_cwd: ws
             .resolved_identity_cwd_from(terminals, terminal_runtimes)
             .unwrap_or_else(|| ws.identity_cwd.clone()),
+        pinned_path: ws.pinned_path.clone(),
         worktree_space: ws.worktree_space.clone(),
         public_pane_numbers: ws
             .public_pane_numbers
@@ -375,6 +444,18 @@ fn capture_tab(
         zoomed: tab.zoomed,
         focused: Some(tab.layout.focused().raw()),
         root_pane: Some(tab.root_pane.raw()),
+        float_layout: tab
+            .float_layout
+            .as_ref()
+            .map(|layout| capture_node(layout.root())),
+        float_arrangement: tab.float_arrangement.into(),
+        float_focused_pane: tab
+            .float_layout
+            .as_ref()
+            .map(|layout| layout.focused().raw()),
+        floats_hidden: tab.floats_hidden,
+        float_focused: tab.float_focused,
+        arrangement: tab.arrangement.into(),
     }
 }
 
@@ -440,6 +521,10 @@ pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
             ratio: *ratio,
             first: Box::new(capture_node(first)),
             second: Box::new(capture_node(second)),
+        },
+        Node::Stack { panes, active } => LayoutSnapshot::Stack {
+            panes: panes.iter().map(|id| id.raw()).collect(),
+            active: *active,
         },
     }
 }
@@ -548,7 +633,7 @@ mod tests {
     fn root_split_ratio(tab: &TabSnapshot) -> Option<f32> {
         match &tab.layout {
             LayoutSnapshot::Split { ratio, .. } => Some(*ratio),
-            LayoutSnapshot::Pane(_) => None,
+            LayoutSnapshot::Pane(_) | LayoutSnapshot::Stack { .. } => None,
         }
     }
 
@@ -661,6 +746,7 @@ mod tests {
                 id: Some("wproj".to_string()),
                 custom_name: Some("pi-mono".to_string()),
                 identity_cwd: PathBuf::from("/home/can/Projects/herdr"),
+                pinned_path: None,
                 worktree_space: None,
                 public_pane_numbers: HashMap::from([(0, 1), (1, 2)]),
                 next_public_pane_number: 3,
@@ -678,6 +764,12 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
+                    float_layout: None,
+                    float_arrangement: ArrangementSnapshot::Stacked,
+                    float_focused_pane: None,
+                    floats_hidden: false,
+                    float_focused: false,
+                    arrangement: ArrangementSnapshot::default(),
                 }],
                 active_tab: 0,
             }],
@@ -1003,6 +1095,7 @@ mod tests {
         let mut state = state_with_workspaces(&["one"]);
         let root = state.workspaces[0].tabs[0].root_pane;
         state.workspaces[0].identity_cwd = PathBuf::from("/tmp/pion");
+        state.workspaces[0].pinned_path = Some(PathBuf::from("/tmp/pion/pinned"));
         let second = state.workspaces[0].test_split(Direction::Horizontal);
         state.ensure_test_terminals();
         let root_terminal_id = state.workspaces[0].tabs[0].panes[&root]
@@ -1018,6 +1111,10 @@ mod tests {
         let workspace = &snapshot.workspaces[0];
         let tab = &workspace.tabs[0];
         assert_eq!(workspace.identity_cwd, PathBuf::from("/tmp/pion"));
+        assert_eq!(
+            workspace.pinned_path,
+            Some(PathBuf::from("/tmp/pion/pinned"))
+        );
         assert_eq!(tab.panes[&root.raw()].cwd, PathBuf::from("/tmp/pion"));
         assert_eq!(tab.panes[&second.raw()].cwd, PathBuf::from("/tmp/herdr"));
     }
@@ -1228,6 +1325,7 @@ mod tests {
                 id: Some("test-ws".to_string()),
                 custom_name: Some("fallback test".to_string()),
                 identity_cwd: PathBuf::from("/tmp"),
+                pinned_path: None,
                 worktree_space: None,
                 public_pane_numbers: HashMap::new(),
                 next_public_pane_number: 0,
@@ -1245,6 +1343,12 @@ mod tests {
                     zoomed: false,
                     focused: Some(0),
                     root_pane: Some(0),
+                    float_layout: None,
+                    float_arrangement: ArrangementSnapshot::Stacked,
+                    float_focused_pane: None,
+                    floats_hidden: false,
+                    float_focused: false,
+                    arrangement: ArrangementSnapshot::default(),
                 }],
                 active_tab: 0,
             }],
@@ -1261,6 +1365,147 @@ mod tests {
         assert_eq!(
             restored.workspaces[0].tabs[0].panes[&0].cwd,
             PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test")
+        );
+    }
+
+    #[test]
+    fn capture_preserves_float_layout_and_flags() {
+        let mut ws = Workspace::test_new("float-capture");
+        let float = crate::layout::PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(
+            float,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].float_focused = false;
+
+        let terminal_runtimes = TerminalRuntimeRegistry::new();
+        let snap = capture_tab(&ws.tabs[0], &HashMap::new(), &terminal_runtimes);
+
+        match &snap.float_layout {
+            Some(LayoutSnapshot::Pane(id)) => assert_eq!(*id, float.raw()),
+            other => panic!("expected a single-pane float layout, got {other:?}"),
+        }
+        assert_eq!(snap.float_focused_pane, Some(float.raw()));
+        assert!(!snap.floats_hidden);
+        assert!(!snap.float_focused);
+        assert!(
+            snap.panes.contains_key(&float.raw()),
+            "float pane state must be captured alongside tiled panes"
+        );
+    }
+
+    #[test]
+    fn tab_snapshot_without_float_fields_deserialises_to_empty_layer() {
+        let json = serde_json::json!({
+            "layout": { "Pane": 1 },
+            "panes": {},
+            "zoomed": false,
+        });
+
+        let snap: TabSnapshot = serde_json::from_value(json).expect("legacy snapshot loads");
+
+        assert!(snap.float_layout.is_none());
+        assert!(!snap.floats_hidden);
+        assert!(!snap.float_focused);
+    }
+
+    #[test]
+    fn a_snapshot_without_an_arrangement_restores_as_grid() {
+        let json = r#"{
+            "layout": {"Pane": 1},
+            "panes": {},
+            "zoomed": false
+        }"#;
+        let snapshot: TabSnapshot = serde_json::from_str(json).expect("legacy snapshot parses");
+        assert_eq!(snapshot.arrangement, ArrangementSnapshot::Grid);
+    }
+
+    #[test]
+    fn an_old_snapshot_parses_with_no_float_layer() {
+        // The removed `floats` field is an unknown key now. Serde ignores unknown
+        // fields (snapshot.rs sets no deny_unknown_fields anywhere), so the file
+        // still loads and simply carries no floats.
+        let json = r#"{
+            "layout": {"Pane": 1},
+            "panes": {
+                "1": {"cwd": "/tmp"},
+                "2": {"cwd": "/tmp"}
+            },
+            "zoomed": false,
+            "floats": [2],
+            "floats_hidden": false,
+            "float_focused": true
+        }"#;
+        let snapshot: TabSnapshot = serde_json::from_str(json).expect("legacy snapshot parses");
+        assert!(snapshot.float_layout.is_none());
+        assert_eq!(snapshot.float_arrangement, ArrangementSnapshot::Stacked);
+    }
+
+    #[test]
+    fn a_float_layout_round_trips_through_a_snapshot() {
+        let ids = vec![
+            crate::layout::PaneId::from_raw(7),
+            crate::layout::PaneId::from_raw(8),
+        ];
+        let node = Node::Stack {
+            panes: ids.clone(),
+            active: 1,
+        };
+        let snapshot = capture_node(&node);
+        match &snapshot {
+            LayoutSnapshot::Stack { panes, active } => {
+                assert_eq!(panes, &vec![7, 8]);
+                assert_eq!(*active, 1);
+            }
+            other => panic!("expected a stack snapshot, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn float_arrangement_defaults_to_stacked_when_absent() {
+        let json = r#"{"layout": {"Pane": 1}, "panes": {}, "zoomed": false}"#;
+        let snapshot: TabSnapshot = serde_json::from_str(json).expect("parses");
+        assert_eq!(snapshot.float_arrangement, ArrangementSnapshot::Stacked);
+    }
+
+    #[test]
+    fn workspace_snapshot_without_pinned_path_restores_as_none() {
+        let raw = serde_json::json!({
+            "id": "w1",
+            "custom_name": null,
+            "identity_cwd": "/tmp/herdr-test",
+            "tabs": [],
+            "active_tab": 0,
+        });
+
+        let snap: WorkspaceSnapshot = serde_json::from_value(raw).expect("deserialises");
+
+        assert_eq!(snap.pinned_path, None);
+    }
+
+    #[test]
+    fn workspace_snapshot_roundtrips_pinned_path() {
+        let snap = WorkspaceSnapshot {
+            id: Some("w1".to_string()),
+            custom_name: None,
+            identity_cwd: PathBuf::from("/tmp/herdr-test"),
+            pinned_path: Some(PathBuf::from("/tmp/herdr-test/pinned")),
+            worktree_space: None,
+            public_pane_numbers: HashMap::new(),
+            next_public_pane_number: 1,
+            public_tab_numbers: Vec::new(),
+            next_public_tab_number: 1,
+            tabs: Vec::new(),
+            active_tab: 0,
+        };
+
+        let encoded = serde_json::to_value(&snap).expect("serialises");
+        let decoded: WorkspaceSnapshot = serde_json::from_value(encoded).expect("deserialises");
+
+        assert_eq!(
+            decoded.pinned_path,
+            Some(PathBuf::from("/tmp/herdr-test/pinned"))
         );
     }
 }

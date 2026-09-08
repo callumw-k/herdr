@@ -309,7 +309,18 @@ impl App {
             } else {
                 None
             };
-        let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
+        let cwd_report = if let AppEvent::TerminalCwdReported { pane_id, cwd } = &ev {
+            // Captured before the state layer applies the report, because
+            // afterwards an unchanged cwd is indistinguishable from a change.
+            let previous_cwd = self
+                .find_pane(*pane_id)
+                .map(|(_, pane)| pane.attached_terminal_id.clone())
+                .and_then(|terminal_id| self.state.terminals.get(&terminal_id))
+                .map(|terminal| terminal.cwd.clone());
+            Some((*pane_id, cwd.clone(), previous_cwd))
+        } else {
+            None
+        };
         let previous_toast = self.state.toast.clone();
         let mut pane_updates = self.state.handle_app_event(ev);
         if update_ready.is_some() {
@@ -335,8 +346,14 @@ impl App {
             }
         }
         self.sync_full_lifecycle_authority_detection_pauses();
-        if terminal_cwd_reported {
+        if let Some((pane_id, cwd, previous_cwd)) = cwd_report {
             self.request_git_identity_refresh(Instant::now());
+            // Every pane reports its cwd at the first prompt after spawn or
+            // restore, so only relocate on a directory the pane was not
+            // already in. Otherwise a restart would undo manual placement.
+            if previous_cwd.as_deref() != Some(cwd.as_path()) {
+                self.reclaim_pane_after_cwd_change(pane_id, &cwd);
+            }
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }
@@ -1016,6 +1033,9 @@ impl App {
             Method::WorkspaceRename(params) => {
                 return self.handle_workspace_rename(request.id, params);
             }
+            Method::WorkspaceSetPath(params) => {
+                return self.handle_workspace_set_path(request.id, params)
+            }
             Method::WorkspaceMove(params) => {
                 return self.handle_workspace_move(request.id, params);
             }
@@ -1085,6 +1105,10 @@ impl App {
             Method::PaneSwap(params) => return self.handle_pane_swap(request.id, params),
             Method::PaneMove(params) => return self.handle_pane_move(request.id, params),
             Method::PaneZoom(params) => return self.handle_pane_zoom(request.id, params),
+            Method::PaneFloat(params) => return self.handle_pane_float(request.id, params),
+            Method::TabFloatsToggle(params) => {
+                return self.handle_tab_floats_toggle(request.id, params)
+            }
             Method::PaneLayout(params) => return self.handle_pane_layout(request.id, params),
             Method::PaneProcessInfo(params) => {
                 return self.handle_pane_process_info(request.id, params);
