@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+- The sidebar now marks agent state with a coloured ribbon down the left of every space and agent entry. The Navigate cursor's ribbon takes the accent colour so it stays readable next to a focused row. Default rows drop `state_icon` because the ribbon carries the same state; add the token back to a row in `ui.sidebar.spaces` or `ui.sidebar.agents` to restore the inline icon.
+- `ui.sidebar.spaces.divider` draws a rule between top-level spaces. The rule sits in `row_gap` and raises a zero gap to one row. Worktree children stay packed under their parent.
+- A new `activity` sidebar token resolves to the first of `terminal_title_stripped`, `pane`, or `agent` that is set, and replaces `agent` in the default agent rows, so the second row shows the pane's own context instead of repeating the agent name.
+
+### Fixed
+- Floating panes now draw their own thick, opaque frame instead of borrowing a thin line from the tiled border grid, so a float reads as sitting above the panes it covers.
+- Collapsed panes in a stacked tab now draw as a titled bar with corners facing the expanded pane, instead of a bare horizontal rule. Members that do not fit fold into a `+N more` bar. Clicking a bar focuses that pane.
+- Panes without an agent or a manual name now show a border title, falling back through the foreground process, the terminal title, the working directory, and finally the pane number, so a stacked shell is never nameless.
+- The keyboard documentation listed `prefix+[` for copy mode, which now cycles the pane arrangement backwards. Copy mode is `prefix+u`.
+
+### Changed
+- The collapsed sidebar sizes its workspace and agent sections to their contents, so the divider follows the workspace list instead of splitting the column in half. Workspace numbers appear only in Navigate mode where digits switch workspaces, and a section with more entries than rows ends in a `+N` count instead of cutting off.
+
 ## [0.9.0] - 2026-09-07
 
 ### Added

@@ -144,6 +144,7 @@ fn pane_scroll_result(
             terminal_id: "terminal_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
+            floating: false,
             focused: true,
             cwd: None,
             foreground_cwd: None,

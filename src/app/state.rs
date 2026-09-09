@@ -805,6 +805,9 @@ pub struct AppState {
     pub worktree_directory: std::path::PathBuf,
     /// Latest endpoint-owned release notes, cached outside render paths.
     pub latest_release_notes: Option<crate::release_notes::ReleaseNotes>,
+    /// Repo paths from `[[repos]]`. Entering one creates the workspace that
+    /// should own it.
+    pub declared_repo_paths: Vec<std::path::PathBuf>,
     pub product_announcement: Option<ProductAnnouncementState>,
     // Geometry of the most recently computed server pane surface.
     pub view: ViewState,
@@ -832,6 +835,8 @@ pub struct AppState {
     pub next_agent_state_change_seq: u64,
     pub confirm_close: bool,
     pub pane_borders: crate::config::PaneBordersConfig,
+    pub floating_pane_width: Option<crate::popup_size::PopupSize>,
+    pub floating_pane_height: Option<crate::popup_size::PopupSize>,
     pub pane_outer_borders: bool,
     pub pane_scrollbars: bool,
     pub pane_gaps: bool,
@@ -922,10 +927,20 @@ impl AppState {
     }
 
     pub fn estimate_pane_size(&self) -> (u16, u16) {
-        if let Some(info) = self.view.pane_infos.first() {
-            (info.rect.height, info.rect.width)
-        } else {
-            (self.headless_size.1, self.headless_size.0)
+        // Prefer the focused pane: in a stacked arrangement the unfocused panes
+        // are collapsed to their title bar, so the first one is no guide to the
+        // size a new pane will get. Estimate from the content area rather than
+        // the outer rect, because a lone pane spends a row on its title strip
+        // and nothing resizes a pane created while the server is detached.
+        let info = self
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.is_focused)
+            .or_else(|| self.view.pane_infos.first());
+        match info {
+            Some(info) => (info.inner_rect.height.max(1), info.inner_rect.width.max(1)),
+            None => (self.headless_size.1, self.headless_size.0),
         }
     }
 
@@ -1033,6 +1048,7 @@ impl AppState {
             request_client_config_reload: false,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             latest_release_notes: None,
+            declared_repo_paths: Vec::new(),
             product_announcement: None,
             view: ViewState {
                 terminal_area: Rect::default(),
@@ -1059,6 +1075,8 @@ impl AppState {
             next_agent_state_change_seq: 0,
             confirm_close: true,
             pane_borders: crate::config::PaneBordersConfig::Auto,
+            floating_pane_width: None,
+            floating_pane_height: None,
             pane_outer_borders: true,
             pane_scrollbars: true,
             pane_gaps: false,

@@ -3,6 +3,8 @@ use std::{collections::BTreeSet, num::NonZeroUsize};
 use crossterm::event::KeyModifiers;
 use serde::{de, Deserialize, Deserializer, Serialize};
 
+use crate::popup_size::PopupSize;
+
 use super::{
     ActionKeybinds, BindingConfig, CommandKeybindConfig, IndexedKeybind, Keybinds, SidebarConfig,
     SoundConfig, TabBarRightEntryConfig, ThemeConfig, DEFAULT_MOBILE_WIDTH_THRESHOLD,
@@ -317,6 +319,7 @@ pub struct Config {
     pub keys: KeysConfig,
     pub ui: UiConfig,
     pub worktrees: WorktreesConfig,
+    pub repos: Vec<RepoConfig>,
     pub advanced: AdvancedConfig,
     pub experimental: ExperimentalConfig,
     pub remote: RemoteConfig,
@@ -353,6 +356,12 @@ pub struct KeysConfig {
     pub workspace_picker: BindingConfig,
     /// Open the session navigator. Default: "prefix+g"
     pub goto: BindingConfig,
+    /// Pin the active workspace to the focused pane's directory, or unpin it
+    /// when it is already pinned there. Default: "prefix+."
+    pub pin_workspace_path: BindingConfig,
+    /// Add the active workspace's directory to the `[[repos]]` list in
+    /// config.toml, or remove it when it is already declared. Default: "prefix+>"
+    pub toggle_declared_repo: BindingConfig,
     /// Move workspace selection up in navigate mode. Default: "up".
     pub navigate_workspace_up: BindingConfig,
     /// Move workspace selection down in navigate mode. Default: "down".
@@ -405,7 +414,7 @@ pub struct KeysConfig {
     pub rename_pane: BindingConfig,
     /// Open the focused pane scrollback in $EDITOR. Default: "prefix+e".
     pub edit_scrollback: BindingConfig,
-    /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
+    /// Enter keyboard copy mode for the focused pane. Default: "prefix+u".
     pub copy_mode: BindingConfig,
     /// Focus the pane to the left. Default: "prefix+h".
     pub focus_pane_left: BindingConfig,
@@ -429,15 +438,28 @@ pub struct KeysConfig {
     pub cycle_pane_previous: BindingConfig,
     /// Focus the last focused pane across workspaces and tabs. Unset by default.
     pub last_pane: BindingConfig,
-    /// Split pane vertically (side by side). Default: "prefix+v"
+    /// Set the tab to the vertical arrangement and add a pane. Default: "prefix+v"
     pub split_vertical: BindingConfig,
-    /// Split pane horizontally (stacked). Default: "prefix+minus"
+    /// Set the tab to the horizontal arrangement and add a pane. Default: "prefix+minus"
     pub split_horizontal: BindingConfig,
+    /// Cycle the tab to the next pane arrangement. Default: "prefix+]"
+    pub arrangement_next: BindingConfig,
+    /// Cycle the tab to the previous pane arrangement. Default: "prefix+["
+    pub arrangement_previous: BindingConfig,
+    /// Add a pane without changing the tab's arrangement. Default: "prefix+enter"
+    pub new_pane: BindingConfig,
     /// Close the focused pane. Default: "prefix+x"
     pub close_pane: BindingConfig,
     /// Toggle zoom for the focused pane. Default: "prefix+z"
     #[serde(alias = "fullscreen")]
     pub zoom: BindingConfig,
+    /// Open a new floating pane. Default: "prefix+f"
+    pub new_float: BindingConfig,
+    /// Open a floating pane if none exist, focus the floating layer if it is
+    /// unfocused, otherwise hide it. Default: "prefix+ctrl+f"
+    pub toggle_float: BindingConfig,
+    /// Show or hide the floating layer. Default: "prefix+shift+f"
+    pub toggle_floats: BindingConfig,
     /// Enter resize mode. Default: "prefix+r"
     pub resize_mode: BindingConfig,
     /// Resize the focused pane toward the left. Unset by default.
@@ -484,6 +506,10 @@ pub(crate) struct KeysConfigOverlay {
     workspace_picker: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     goto: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pin_workspace_path: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_declared_repo: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     navigate_workspace_up: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -565,9 +591,21 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     split_horizontal: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    arrangement_next: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arrangement_previous: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_pane: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     close_pane: Option<BindingConfig>,
     #[serde(alias = "fullscreen", skip_serializing_if = "Option::is_none")]
     zoom: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_float: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_float: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    toggle_floats: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     resize_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -620,6 +658,8 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(close_workspace);
         apply_field!(workspace_picker);
         apply_field!(goto);
+        apply_field!(pin_workspace_path);
+        apply_field!(toggle_declared_repo);
         apply_field!(navigate_workspace_up);
         apply_field!(navigate_workspace_down);
         apply_field!(navigate_pane_left);
@@ -660,8 +700,14 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(last_pane);
         apply_field!(split_vertical);
         apply_field!(split_horizontal);
+        apply_field!(arrangement_next);
+        apply_field!(arrangement_previous);
+        apply_field!(new_pane);
         apply_field!(close_pane);
         apply_field!(zoom);
+        apply_field!(new_float);
+        apply_field!(toggle_float);
+        apply_field!(toggle_floats);
         apply_field!(resize_mode);
         apply_field!(resize_pane_left);
         apply_field!(resize_pane_down);
@@ -724,6 +770,8 @@ impl KeysConfig {
         copy_effective_action_field!(close_workspace, keybinds.close_workspace);
         copy_effective_action_field!(workspace_picker, keybinds.workspace_picker);
         copy_effective_action_field!(goto, keybinds.goto);
+        copy_effective_action_field!(pin_workspace_path, keybinds.pin_workspace_path);
+        copy_effective_action_field!(toggle_declared_repo, keybinds.toggle_declared_repo);
         copy_effective_action_field!(navigate_workspace_up, keybinds.navigate.workspace_up);
         copy_effective_action_field!(navigate_workspace_down, keybinds.navigate.workspace_down);
         copy_effective_action_field!(navigate_pane_left, keybinds.navigate.pane_left);
@@ -764,8 +812,14 @@ impl KeysConfig {
         copy_effective_action_field!(last_pane, keybinds.last_pane);
         copy_effective_action_field!(split_vertical, keybinds.split_vertical);
         copy_effective_action_field!(split_horizontal, keybinds.split_horizontal);
+        copy_effective_action_field!(arrangement_next, keybinds.arrangement_next);
+        copy_effective_action_field!(arrangement_previous, keybinds.arrangement_previous);
+        copy_effective_action_field!(new_pane, keybinds.new_pane);
         copy_effective_action_field!(close_pane, keybinds.close_pane);
         copy_effective_action_field!(zoom, keybinds.zoom);
+        copy_effective_action_field!(new_float, keybinds.new_float);
+        copy_effective_action_field!(toggle_float, keybinds.toggle_float);
+        copy_effective_action_field!(toggle_floats, keybinds.toggle_floats);
         copy_effective_action_field!(resize_mode, keybinds.resize_mode);
         copy_effective_action_field!(resize_pane_left, keybinds.resize_pane_left);
         copy_effective_action_field!(resize_pane_down, keybinds.resize_pane_down);
@@ -827,6 +881,13 @@ pub struct IndexedKeysConfig {
     pub workspaces: String,
     /// Modifier combo for agent shortcuts 1-9. Unset by default.
     pub agents: String,
+}
+
+/// A repo path that owns a workspace. Entering it creates that workspace.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(default)]
+pub struct RepoConfig {
+    pub path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -936,6 +997,12 @@ pub struct UiConfig {
     /// disables them. Legacy booleans map true to auto and false to off.
     /// Default: auto.
     pub pane_borders: PaneBordersConfig,
+    /// Width of floating panes, in cells or as a percentage like "60%".
+    /// Unset uses half the terminal area.
+    pub floating_pane_width: Option<PopupSize>,
+    /// Height of floating panes, in cells or as a percentage like "60%".
+    /// Unset uses half the terminal area.
+    pub floating_pane_height: Option<PopupSize>,
     /// Draw borders along the outside edge of the pane area. Default: true.
     pub pane_outer_borders: bool,
     /// Draw interactive scrollbars beside terminal panes. Default: true.
@@ -1092,6 +1159,8 @@ impl Default for KeysConfig {
             close_workspace: BindingConfig::one("prefix+shift+d"),
             workspace_picker: BindingConfig::one("prefix+w"),
             goto: BindingConfig::one("prefix+g"),
+            pin_workspace_path: BindingConfig::one("prefix+."),
+            toggle_declared_repo: BindingConfig::one("prefix+>"),
             navigate_workspace_up: BindingConfig::one("up"),
             navigate_workspace_down: BindingConfig::one("down"),
             navigate_pane_left: BindingConfig::one("h"),
@@ -1118,7 +1187,7 @@ impl Default for KeysConfig {
             close_tab: BindingConfig::one("prefix+shift+x"),
             rename_pane: BindingConfig::one("prefix+shift+p"),
             edit_scrollback: BindingConfig::one("prefix+e"),
-            copy_mode: BindingConfig::one("prefix+["),
+            copy_mode: BindingConfig::one("prefix+u"),
             focus_pane_left: BindingConfig::one("prefix+h"),
             focus_pane_down: BindingConfig::one("prefix+j"),
             focus_pane_up: BindingConfig::one("prefix+k"),
@@ -1132,8 +1201,14 @@ impl Default for KeysConfig {
             last_pane: BindingConfig::empty(),
             split_vertical: BindingConfig::one("prefix+v"),
             split_horizontal: BindingConfig::one("prefix+minus"),
+            arrangement_next: BindingConfig::one("prefix+]"),
+            arrangement_previous: BindingConfig::one("prefix+["),
+            new_pane: BindingConfig::one("prefix+enter"),
             close_pane: BindingConfig::one("prefix+x"),
             zoom: BindingConfig::one("prefix+z"),
+            new_float: BindingConfig::one("prefix+f"),
+            toggle_float: BindingConfig::one("prefix+ctrl+f"),
+            toggle_floats: BindingConfig::one("prefix+shift+f"),
             resize_mode: BindingConfig::one("prefix+r"),
             resize_pane_left: BindingConfig::empty(),
             resize_pane_down: BindingConfig::empty(),
@@ -1174,6 +1249,8 @@ impl Default for UiConfig {
             prompt_new_tab_name: true,
             prompt_new_workspace_name: false,
             pane_borders: PaneBordersConfig::Auto,
+            floating_pane_width: None,
+            floating_pane_height: None,
             pane_outer_borders: true,
             pane_scrollbars: true,
             pane_gaps: true,

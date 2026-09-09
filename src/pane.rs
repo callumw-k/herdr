@@ -322,6 +322,16 @@ fn usable_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
     absolute_process_cwd(pid).filter(|cwd| cwd.is_dir())
 }
 
+/// The pane shell's own directory, read only while the shell is the foreground
+/// process. Restricting it to an idle prompt makes a polled report mean the
+/// same thing as an OSC 7 one, which shells emit when they draw the prompt.
+#[cfg(unix)]
+fn polled_shell_cwd(pid: u32, foreground_pgid: Option<u32>) -> Option<std::path::PathBuf> {
+    (pid > 0 && foreground_pgid == Some(pid))
+        .then(|| usable_process_cwd(pid))
+        .flatten()
+}
+
 #[cfg(unix)]
 fn foreground_member_cwd_different_from_shell(
     shell_pid: u32,
@@ -566,6 +576,7 @@ struct ProcessProbeResult {
     foreground_is_pane_shell: bool,
     agent: Option<Agent>,
     process_name: Option<String>,
+    foreground_leader_name: Option<String>,
 }
 
 fn agent_hint_for_foreground_job_members(
@@ -600,6 +611,13 @@ fn identify_process_group_leader_in_job(
     crate::detect::identify_agent_in_job(&leader_job)
 }
 
+fn foreground_leader_name(job: &crate::platform::ForegroundJob) -> Option<String> {
+    job.processes
+        .iter()
+        .find(|process| process.pid == job.process_group_id)
+        .map(|process| process.name.clone())
+}
+
 fn process_probe_result(
     job: &crate::platform::ForegroundJob,
     pid: u32,
@@ -611,6 +629,7 @@ fn process_probe_result(
         foreground_is_pane_shell: job.processes.iter().any(|process| process.pid == pid),
         agent: Some(agent),
         process_name: Some(process_name),
+        foreground_leader_name: foreground_leader_name(job),
     }
 }
 
@@ -672,6 +691,7 @@ fn probe_foreground_process_from_jobs(
             foreground_is_pane_shell: job.processes.iter().any(|process| process.pid == pid),
             agent: identified.as_ref().map(|(agent, _)| *agent),
             process_name: identified.map(|(_, process_name)| process_name),
+            foreground_leader_name: foreground_leader_name(job),
         };
     }
 
@@ -680,6 +700,7 @@ fn probe_foreground_process_from_jobs(
         foreground_is_pane_shell: false,
         agent: None,
         process_name: None,
+        foreground_leader_name: None,
     }
 }
 
@@ -693,6 +714,32 @@ fn probe_foreground_process(pid: u32, foreground_pgid: Option<u32>) -> ProcessPr
     )
 }
 
+fn foreground_process_name_to_publish(probe: &ProcessProbeResult) -> Option<String> {
+    if probe.foreground_is_pane_shell || probe.agent.is_some() {
+        return None;
+    }
+    probe.foreground_leader_name.clone()
+}
+
+fn publish_foreground_process_name(
+    pane_id: PaneId,
+    name: Option<String>,
+    last_reported: &mut Option<String>,
+    events: &mpsc::Sender<AppEvent>,
+) {
+    if last_reported.as_ref() == name.as_ref() {
+        return;
+    }
+    *last_reported = name.clone();
+    if let Err(err) = events.try_send(AppEvent::ForegroundProcessReported { pane_id, name }) {
+        warn!(
+            pane = pane_id.raw(),
+            err = %err,
+            "failed to send foreground process report"
+        );
+    }
+}
+
 #[cfg(unix)]
 fn spawn_basic_detection_task(
     pane_id: PaneId,
@@ -701,6 +748,7 @@ fn spawn_basic_detection_task(
     detection_content_seq: Arc<AtomicU64>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     state_events: mpsc::Sender<AppEvent>,
+    reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
 ) -> (
     tokio::task::AbortHandle,
     Arc<Notify>,
@@ -721,6 +769,7 @@ fn spawn_basic_detection_task(
         let mut last_process_check = std::time::Instant::now();
         let mut last_foreground_pgid = None;
         let mut has_process_probe = false;
+        let mut last_reported_process_name: Option<String> = None;
         let mut acquisition_started_at = None;
         let mut last_content_change_at = None;
         let mut pending_foreground_shell_clear = false;
@@ -749,6 +798,7 @@ fn spawn_basic_detection_task(
                     last_process_check = std::time::Instant::now();
                     last_foreground_pgid = None;
                     has_process_probe = false;
+                    last_reported_process_name = None;
                     acquisition_started_at = None;
                     last_content_change_at = None;
                     pending_foreground_shell_clear = false;
@@ -779,6 +829,14 @@ fn spawn_basic_detection_task(
                 .flatten();
             let process_group_changed =
                 foreground_group_changed(foreground_pgid, last_foreground_pgid);
+            // Shells without OSC 7, bash being the common one, never report
+            // their directory. Polling covers them; publish_reported_cwd
+            // dedupes, so a shell that does emit OSC 7 gets here first and this
+            // costs nothing.
+            #[cfg(unix)]
+            if let Some(cwd) = polled_shell_cwd(pid, foreground_pgid) {
+                publish_reported_cwd(pane_id, cwd, &reported_cwd, &state_events);
+            }
             let should_check_process = pid > 0 && {
                 let process_probe_input = ProcessProbeInput {
                     current_agent: agent,
@@ -807,6 +865,12 @@ fn spawn_basic_detection_task(
                 let tracked_process_group_id =
                     process_group_for_change_tracking(foreground_pgid, process_group_id);
                 let foreground_is_pane_shell = probe.foreground_is_pane_shell;
+                publish_foreground_process_name(
+                    pane_id,
+                    foreground_process_name_to_publish(&probe),
+                    &mut last_reported_process_name,
+                    &state_events,
+                );
                 let mut new_agent = probe.agent;
                 if let Some(suppressed_agent) = suppressed_agent {
                     if new_agent == Some(suppressed_agent) {
@@ -2219,6 +2283,7 @@ impl PaneRuntime {
             detection_content_seq.clone(),
             full_lifecycle_authority_active.clone(),
             events,
+            reported_cwd.clone(),
         );
 
         Ok(Self {
@@ -2422,6 +2487,8 @@ impl PaneRuntime {
             let detect_reset = detect_reset_notify.clone();
             let pending_release = Arc::new(Mutex::new(None));
             let pending_release_for_task = pending_release.clone();
+            #[cfg(unix)]
+            let reported_cwd_for_detection = reported_cwd.clone();
 
             let handle = tokio::spawn(async move {
                 let mut agent_presence =
@@ -2433,6 +2500,7 @@ impl PaneRuntime {
                 let mut last_observation = (Instant::now(), Some(0));
                 let mut last_foreground_pgid = None;
                 let mut has_process_probe = false;
+                let mut last_reported_process_name: Option<String> = None;
                 let mut acquisition_started_at = None;
                 let mut last_content_change_at = None;
                 let mut pending_foreground_shell_clear = false;
@@ -2471,6 +2539,7 @@ impl PaneRuntime {
                             last_visible_idle = false;
                             last_foreground_pgid = None;
                             has_process_probe = false;
+                            last_reported_process_name = None;
                             acquisition_started_at = None;
                             last_content_change_at = None;
                             pending_foreground_shell_clear = false;
@@ -2539,6 +2608,19 @@ impl PaneRuntime {
                     }
                     let process_group_changed =
                         foreground_group_changed(foreground_pgid, last_foreground_pgid);
+                    // Shells without OSC 7, bash being the common one, never
+                    // report their directory. Polling covers them;
+                    // publish_reported_cwd dedupes, so a shell that does emit
+                    // OSC 7 gets here first and this costs nothing.
+                    #[cfg(unix)]
+                    if let Some(cwd) = polled_shell_cwd(pid, foreground_pgid) {
+                        publish_reported_cwd(
+                            pane_id,
+                            cwd,
+                            &reported_cwd_for_detection,
+                            &state_events,
+                        );
+                    }
                     let should_check_process = pid > 0 && {
                         let process_probe_input = ProcessProbeInput {
                             foreground_pgid,
@@ -2557,6 +2639,12 @@ impl PaneRuntime {
                         has_process_probe = true;
                         if pid > 0 {
                             let probe = probe_foreground_process(pid, foreground_pgid);
+                            publish_foreground_process_name(
+                                pane_id,
+                                foreground_process_name_to_publish(&probe),
+                                &mut last_reported_process_name,
+                                &state_events,
+                            );
                             let process_name = probe.process_name;
                             let process_group_id = probe.process_group_id;
                             let tracked_process_group_id = process_group_for_change_tracking(
@@ -3411,6 +3499,72 @@ mod tests {
     }
 
     #[test]
+    fn foreground_process_name_to_publish_omits_the_pane_shell() {
+        let probe = |foreground_is_pane_shell| ProcessProbeResult {
+            process_group_id: Some(1),
+            foreground_is_pane_shell,
+            agent: None,
+            process_name: None,
+            foreground_leader_name: Some("nvim".to_string()),
+        };
+
+        assert_eq!(foreground_process_name_to_publish(&probe(true)), None);
+        assert_eq!(
+            foreground_process_name_to_publish(&probe(false)),
+            Some("nvim".to_string())
+        );
+    }
+
+    #[test]
+    fn foreground_process_name_to_publish_omits_a_recognised_agent() {
+        let probe = ProcessProbeResult {
+            process_group_id: Some(1),
+            foreground_is_pane_shell: false,
+            agent: Some(Agent::Claude),
+            process_name: Some("claude".to_string()),
+            foreground_leader_name: Some("claude".to_string()),
+        };
+
+        assert_eq!(foreground_process_name_to_publish(&probe), None);
+    }
+
+    #[tokio::test]
+    async fn publish_foreground_process_name_sends_only_on_change() {
+        let (events, mut event_rx) = mpsc::channel(4);
+        let mut last_reported = None;
+        let pane_id = PaneId::from_raw(7);
+
+        publish_foreground_process_name(
+            pane_id,
+            Some("nvim".to_string()),
+            &mut last_reported,
+            &events,
+        );
+        publish_foreground_process_name(
+            pane_id,
+            Some("nvim".to_string()),
+            &mut last_reported,
+            &events,
+        );
+        publish_foreground_process_name(pane_id, None, &mut last_reported, &events);
+
+        let first = event_rx.try_recv().expect("first change sent");
+        assert!(matches!(
+            first,
+            AppEvent::ForegroundProcessReported { name: Some(n), .. } if n == "nvim"
+        ));
+        let second = event_rx.try_recv().expect("second change sent");
+        assert!(matches!(
+            second,
+            AppEvent::ForegroundProcessReported { name: None, .. }
+        ));
+        assert!(
+            event_rx.try_recv().is_err(),
+            "the repeated \"nvim\" report must not resend"
+        );
+    }
+
+    #[test]
     fn pane_terminal_identity_removes_outer_windows_terminal_session() {
         let mut cmd = CommandBuilder::new("shell");
         cmd.env("WT_SESSION", "outer-session");
@@ -3489,6 +3643,32 @@ mod tests {
             return;
         }
         assert_eq!(observed, Some(expected_cwd));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn polled_shell_cwd_reads_the_shell_at_an_idle_prompt() {
+        let pid = std::process::id();
+
+        assert_eq!(
+            polled_shell_cwd(pid, Some(pid)),
+            std::env::current_dir().ok(),
+            "the shell being its own foreground group is an idle prompt"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn polled_shell_cwd_stays_quiet_while_something_runs_in_the_foreground() {
+        let pid = std::process::id();
+
+        assert_eq!(
+            polled_shell_cwd(pid, Some(pid.wrapping_add(1))),
+            None,
+            "another foreground group means a process is running, not a prompt"
+        );
+        assert_eq!(polled_shell_cwd(pid, None), None);
+        assert_eq!(polled_shell_cwd(0, Some(0)), None, "no child pid yet");
     }
 
     #[cfg(unix)]
@@ -4293,6 +4473,20 @@ mod tests {
 
         assert_eq!(result.agent, Some(Agent::Claude));
         assert_eq!(result.process_name.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn probe_result_captures_raw_leader_name_for_unrecognized_processes() {
+        let job = crate::platform::ForegroundJob {
+            process_group_id: 99,
+            processes: vec![foreground_process(99, "nvim")],
+        };
+
+        let result =
+            probe_foreground_process_from_jobs(42, Some(99), None, || Some(job), |_pid| None);
+
+        assert_eq!(result.agent, None);
+        assert_eq!(result.foreground_leader_name.as_deref(), Some("nvim"));
     }
 
     fn process_probe_input() -> ProcessProbeInput {

@@ -1,27 +1,74 @@
 use super::*;
 use ratatui::{
+    style::Color,
     text::Line,
     widgets::{Paragraph, Widget},
 };
 
+/// Sized to its contents so a short list does not strand the divider halfway down
+/// the column. `detail_area` still includes the bottom toggle row.
 pub(in crate::client::shell) fn collapsed_sidebar_sections(
     area: Rect,
+    workspace_rows: usize,
 ) -> (Rect, Option<u16>, Rect) {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.is_empty() {
         return (Rect::default(), None, Rect::default());
     }
-    if content.height < 7 {
+    // A split needs a divider, at least one agent row, and the toggle row.
+    let total_height = content.height as usize;
+    let Some(max_workspace) = total_height.checked_sub(3).filter(|max| *max > 0) else {
         return (content, None, Rect::default());
-    }
-    let workspace_height = content.height.div_ceil(2);
+    };
+    let workspace_height = workspace_rows.clamp(1, max_workspace);
+    let detail_height = total_height - workspace_height - 1;
+    let workspace_height = workspace_height as u16;
     let divider_y = content.y + workspace_height;
-    let detail_height = content.height.saturating_sub(workspace_height + 1);
     (
         Rect::new(content.x, content.y, content.width, workspace_height),
         Some(divider_y),
-        Rect::new(content.x, divider_y + 1, content.width, detail_height),
+        Rect::new(
+            content.x,
+            divider_y + 1,
+            content.width,
+            detail_height as u16,
+        ),
     )
+}
+
+/// An overflowing list gives up its tail row to a `+N` marker, so that row must
+/// not stay clickable either.
+pub(in crate::client::shell) fn collapsed_visible_rows(capacity: usize, total: usize) -> usize {
+    if total > capacity {
+        capacity.saturating_sub(1)
+    } else {
+        total
+    }
+}
+
+/// Two content columns only fit one digit, so the count saturates at 9.
+fn render_collapsed_overflow(
+    buffer: &mut Buffer,
+    section: Rect,
+    shown: usize,
+    hidden: usize,
+    palette: &Palette,
+) {
+    if hidden == 0 || section.width < 2 {
+        return;
+    }
+    let y = section.y.saturating_add(shown as u16);
+    if y >= section.bottom() {
+        return;
+    }
+    put_text(
+        buffer,
+        section.x.saturating_add(1),
+        y,
+        section.width.saturating_sub(1),
+        &format!("+{}", hidden.min(9)),
+        Style::default().fg(palette.overlay0),
+    );
 }
 
 pub(crate) fn render_collapsed_sidebar(
@@ -34,11 +81,15 @@ pub(crate) fn render_collapsed_sidebar(
 ) {
     let palette = &config.palette;
     render_sidebar_background(buffer, area, palette);
-    let (workspace_area, divider_y, detail_area) = collapsed_sidebar_sections(area);
+    let (workspace_area, divider_y, detail_area) =
+        collapsed_sidebar_sections(area, snapshot.workspaces.len());
+    let navigating = selected_workspace_id.is_some();
+    let workspaces_shown =
+        collapsed_visible_rows(workspace_area.height as usize, snapshot.workspaces.len());
     for (index, workspace) in snapshot
         .workspaces
         .iter()
-        .take(workspace_area.height as usize)
+        .take(workspaces_shown)
         .enumerate()
     {
         let rect = Rect::new(
@@ -48,43 +99,39 @@ pub(crate) fn render_collapsed_sidebar(
             1,
         );
         let selected = selected_workspace_id == Some(workspace.workspace_id.as_str());
-        let selection_background =
-            if workspace.focused && palette.selection_bg == ratatui::style::Color::Reset {
-                palette.active_row_bg
-            } else {
-                palette.selection_bg
-            };
-        if selected {
-            buffer.set_style(rect, Style::default().bg(selection_background));
-        } else if workspace.focused {
-            buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
-        }
-        let number_style = if selected {
-            Style::default()
-                .fg(palette.overlay1)
-                .bg(selection_background)
-        } else if workspace.focused {
-            Style::default().fg(palette.text).bg(palette.active_row_bg)
-        } else {
-            Style::default().fg(palette.overlay0)
-        };
-        put_text(
-            buffer,
-            rect.x,
-            rect.y,
-            rect.width.min(2),
-            &format!("{:<2}", index + 1),
-            number_style,
-        );
         let status = workspace.agent_status;
-        put_text(
-            buffer,
-            rect.x.saturating_add(2),
-            rect.y,
-            rect.width.saturating_sub(2),
-            status_icon(status, config.status_indicators),
-            Style::default().fg(status_color(status, palette)),
+        let (ribbon_color, ribbon_weight) = workspace_ribbon(
+            palette,
+            status_color(status, palette),
+            selected,
+            workspace.focused,
         );
+        render_status_ribbon(buffer, rect.x, rect.y, 1, ribbon_color, ribbon_weight);
+        // Digits 1-9 switch workspaces in navigate mode. Outside it, and past the
+        // ninth row, the number is noise in a three-column strip.
+        if navigating && index < 9 {
+            put_text(
+                buffer,
+                rect.x.saturating_add(1),
+                rect.y,
+                rect.width.saturating_sub(1),
+                &format!("{}", index + 1),
+                Style::default().fg(if selected {
+                    palette.text
+                } else {
+                    palette.overlay0
+                }),
+            );
+        } else {
+            put_text(
+                buffer,
+                rect.x.saturating_add(1),
+                rect.y,
+                rect.width.saturating_sub(1),
+                status_icon(status, config.status_indicators),
+                Style::default().fg(status_color(status, palette)),
+            );
+        }
         hits.workspaces.push(WorkspaceHit {
             rect,
             endpoint_id: ClientEndpointId::Local,
@@ -93,6 +140,13 @@ pub(crate) fn render_collapsed_sidebar(
             group_toggle: None,
         });
     }
+    render_collapsed_overflow(
+        buffer,
+        workspace_area,
+        workspaces_shown,
+        snapshot.workspaces.len().saturating_sub(workspaces_shown),
+        palette,
+    );
 
     if let Some(divider_y) = divider_y {
         put_text(
@@ -111,11 +165,11 @@ pub(crate) fn render_collapsed_sidebar(
         detail_area.width,
         detail_area.height.saturating_sub(1),
     );
-    for (index, pane_id) in super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
-        .into_iter()
-        .take(detail_content.height as usize)
-        .enumerate()
-    {
+    // Agent positions are not keyboard-addressable, so the strip shows state only.
+    let agent_pane_ids = super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort);
+    let agents_total = agent_pane_ids.len();
+    let agents_shown = collapsed_visible_rows(detail_content.height as usize, agents_total);
+    for (index, pane_id) in agent_pane_ids.into_iter().take(agents_shown).enumerate() {
         let Some(agent) = snapshot
             .agents
             .iter()
@@ -129,31 +183,35 @@ pub(crate) fn render_collapsed_sidebar(
             detail_content.width,
             1,
         );
-        if agent.focused {
-            buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
-        }
-        put_text(
+        render_status_ribbon(
             buffer,
             rect.x,
             rect.y,
-            rect.width.min(2),
-            &format!("{:<2}", index + 1),
-            Style::default().fg(if agent.focused {
-                palette.text
+            1,
+            status_color(agent.agent_status, palette),
+            if agent.focused {
+                RibbonWeight::Full
             } else {
-                palette.overlay0
-            }),
+                RibbonWeight::Faint
+            },
         );
         put_text(
             buffer,
-            rect.x.saturating_add(2),
+            rect.x.saturating_add(1),
             rect.y,
-            rect.width.saturating_sub(2),
+            rect.width.saturating_sub(1),
             status_icon(agent.agent_status, config.status_indicators),
             Style::default().fg(status_color(agent.agent_status, palette)),
         );
         hits.agents.push((rect, pane_id));
     }
+    render_collapsed_overflow(
+        buffer,
+        detail_content,
+        agents_shown,
+        agents_total.saturating_sub(agents_shown),
+        palette,
+    );
     hits.sidebar_toggle = if area.is_empty() || workspace_area.width == 0 {
         Rect::default()
     } else {
@@ -243,11 +301,7 @@ pub(crate) fn render_sidebar(
     let gaps = entries
         .iter()
         .enumerate()
-        .map(|(index, _)| {
-            entries
-                .get(index + 1)
-                .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap)
-        })
+        .map(|(index, _)| workspace_entry_gap(&entries, index, &config.spaces))
         .collect::<Vec<_>>();
     let mut metrics = super::scroll::list_scroll_metrics(
         &row_heights,
@@ -339,9 +393,23 @@ pub(crate) fn render_sidebar(
             indented: entry.indented,
             group_toggle,
         });
-        let gap = entries
+        let next_is_top_level = entries
             .get(entry_position + 1)
-            .map_or(0, |next| u16::from(!next.indented) * config.spaces.row_gap);
+            .is_some_and(|next| !next.indented);
+        let gap = workspace_entry_gap(&entries, entry_position, &config.spaces);
+        if next_is_top_level && config.spaces.divider {
+            let divider_y = y.saturating_add(row_height + gap / 2);
+            if divider_y < body.bottom() {
+                put_text(
+                    buffer,
+                    body.x,
+                    divider_y,
+                    content_width,
+                    &"─".repeat(content_width as usize),
+                    Style::default().fg(palette.surface_dim),
+                );
+            }
+        }
         y = y.saturating_add(row_height + gap);
     }
 
@@ -443,6 +511,24 @@ pub(crate) fn render_sidebar(
         "«",
         Style::default().fg(palette.overlay0),
     );
+}
+
+/// Rows reserved after an entry. Worktree children stay packed under their
+/// parent, so only a following top-level space gets a gap, and the divider rule
+/// is drawn inside that gap, so it needs at least one row to live in.
+fn workspace_entry_gap(
+    entries: &[WorkspaceEntry],
+    index: usize,
+    spaces: &crate::config::SpacesSidebarConfig,
+) -> u16 {
+    if entries.get(index + 1).is_none_or(|next| next.indented) {
+        return 0;
+    }
+    if spaces.divider {
+        spaces.row_gap.max(1)
+    } else {
+        spaces.row_gap
+    }
 }
 
 pub(crate) fn workspace_entries(
@@ -612,6 +698,55 @@ pub(in crate::client::shell) fn workspace_rows(
     )
 }
 
+/// Weight of the left status ribbon. Colour carries agent state, weight carries
+/// emphasis.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(in crate::client::shell) enum RibbonWeight {
+    Faint,
+    Medium,
+    Full,
+}
+
+/// The selection cursor outranks state here. A selected space is the one the
+/// navigate cursor sits on, so it takes the accent colour: state owns the colour
+/// channel everywhere else, and accent already means "navigation is engaged" for
+/// the sidebar separator and the section divider.
+pub(in crate::client::shell) fn workspace_ribbon(
+    palette: &Palette,
+    state_color: Color,
+    selected: bool,
+    focused: bool,
+) -> (Color, RibbonWeight) {
+    if selected {
+        (palette.accent, RibbonWeight::Full)
+    } else if focused {
+        (state_color, RibbonWeight::Medium)
+    } else {
+        (state_color, RibbonWeight::Faint)
+    }
+}
+
+pub(in crate::client::shell) fn render_status_ribbon(
+    buffer: &mut Buffer,
+    x: u16,
+    y: u16,
+    height: u16,
+    color: Color,
+    weight: RibbonWeight,
+) {
+    let symbol = match weight {
+        RibbonWeight::Faint => "▏",
+        RibbonWeight::Medium => "▌",
+        RibbonWeight::Full => "█",
+    };
+    let style = Style::default().fg(color);
+    for row in y..y.saturating_add(height) {
+        if let Some(cell) = buffer.cell_mut((x, row)) {
+            cell.set_symbol(symbol).set_style(style);
+        }
+    }
+}
+
 pub(in crate::client::shell) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
@@ -631,17 +766,20 @@ pub(in crate::client::shell) fn render_workspace_rows(
             break;
         }
         let mut x = area.x;
+        // Column 0 is the status ribbon, so every prefix starts one column in and
+        // each entry keeps one width across its rows: labels stay in a single
+        // column instead of stepping right on continuation rows.
         if entry.indented {
             let prefix = if row_index == 0 {
                 if entry.last_child {
-                    "   └─ "
+                    "  └─ "
                 } else {
-                    "   ├─ "
+                    "  ├─ "
                 }
             } else if entry.last_child {
-                "        "
+                "     "
             } else {
-                "   │    "
+                "  │  "
             };
             x = put_segment(
                 buffer,
@@ -651,10 +789,8 @@ pub(in crate::client::shell) fn render_workspace_rows(
                 prefix,
                 Style::default().fg(palette.overlay0),
             );
-        } else if row_index == 0 {
-            x = x.saturating_add(1);
         } else {
-            x = x.saturating_add(3);
+            x = x.saturating_add(2);
         }
         let highlighted = endpoint_active && workspace.focused || dragged;
         let workspace_style = Style::default()
@@ -709,5 +845,151 @@ pub(in crate::client::shell) fn render_workspace_rows(
                 buffer[(x, y)].set_bg(background);
             }
         }
+    }
+
+    // Drawn last so the row background does not paint over the gutter this
+    // function already reserves in column 0.
+    let (ribbon_color, ribbon_weight) = workspace_ribbon(
+        palette,
+        status_color(status, palette),
+        selected || dragged,
+        endpoint_active && workspace.focused,
+    );
+    render_status_ribbon(
+        buffer,
+        area.x,
+        area.y,
+        area.height,
+        ribbon_color,
+        ribbon_weight,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::SpacesSidebarConfig;
+
+    fn entries(indented: &[bool]) -> Vec<WorkspaceEntry> {
+        indented
+            .iter()
+            .enumerate()
+            .map(|(index, indented)| WorkspaceEntry {
+                index,
+                indented: *indented,
+                last_child: false,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn divider_reserves_a_row_even_when_the_gap_is_zero() {
+        let entries = entries(&[false, false]);
+        let mut spaces = SpacesSidebarConfig {
+            row_gap: 0,
+            ..Default::default()
+        };
+        assert_eq!(workspace_entry_gap(&entries, 0, &spaces), 0);
+
+        spaces.divider = true;
+        assert_eq!(workspace_entry_gap(&entries, 0, &spaces), 1);
+    }
+
+    #[test]
+    fn worktree_children_and_the_last_entry_never_take_a_gap() {
+        let spaces = SpacesSidebarConfig {
+            row_gap: 2,
+            divider: true,
+            ..Default::default()
+        };
+        let entries = entries(&[false, true, false]);
+
+        assert_eq!(
+            workspace_entry_gap(&entries, 0, &spaces),
+            0,
+            "a worktree child packs under its parent"
+        );
+        assert_eq!(workspace_entry_gap(&entries, 1, &spaces), 2);
+        assert_eq!(
+            workspace_entry_gap(&entries, 2, &spaces),
+            0,
+            "nothing follows the last entry"
+        );
+    }
+
+    #[test]
+    fn a_configured_gap_wider_than_one_survives_the_divider() {
+        let entries = entries(&[false, false]);
+        let spaces = SpacesSidebarConfig {
+            row_gap: 3,
+            divider: true,
+            ..Default::default()
+        };
+        assert_eq!(workspace_entry_gap(&entries, 0, &spaces), 3);
+    }
+
+    #[test]
+    fn the_navigate_cursor_outranks_agent_state_on_the_ribbon() {
+        let palette = Palette::catppuccin();
+        let state = Color::Red;
+
+        assert_eq!(
+            workspace_ribbon(&palette, state, true, true),
+            (palette.accent, RibbonWeight::Full),
+            "the cursor takes accent even on the focused space"
+        );
+        assert_eq!(
+            workspace_ribbon(&palette, state, false, true),
+            (state, RibbonWeight::Medium),
+            "the focused space keeps agent state at medium weight"
+        );
+        assert_eq!(
+            workspace_ribbon(&palette, state, false, false),
+            (state, RibbonWeight::Faint)
+        );
+    }
+
+    #[test]
+    fn an_overflowing_section_gives_its_tail_row_to_the_count() {
+        assert_eq!(
+            collapsed_visible_rows(5, 5),
+            5,
+            "an exact fit shows every row"
+        );
+        assert_eq!(collapsed_visible_rows(5, 6), 4, "the tail row becomes +N");
+        assert_eq!(collapsed_visible_rows(0, 3), 0);
+    }
+
+    #[test]
+    fn the_collapsed_workspace_section_shrinks_to_its_contents() {
+        let area = Rect::new(0, 0, 4, 20);
+
+        let (workspaces, divider, detail) = collapsed_sidebar_sections(area, 2);
+        assert_eq!(
+            workspaces.height, 2,
+            "a short list must not strand the divider"
+        );
+        assert_eq!(divider, Some(2));
+        assert_eq!(detail.y, 3);
+        assert_eq!(workspaces.height + 1 + detail.height, area.height);
+    }
+
+    #[test]
+    fn a_long_list_leaves_room_for_the_divider_agents_and_toggle() {
+        let area = Rect::new(0, 0, 4, 10);
+        let (workspaces, divider, detail) = collapsed_sidebar_sections(area, 99);
+
+        assert_eq!(workspaces.height, 7);
+        assert_eq!(divider, Some(7));
+        assert_eq!(detail.height, 2, "one agent row plus the toggle row");
+    }
+
+    #[test]
+    fn a_column_too_short_to_split_keeps_one_section() {
+        let (workspaces, divider, detail) = collapsed_sidebar_sections(Rect::new(0, 0, 4, 3), 2);
+
+        assert_eq!(divider, None);
+        assert_eq!(workspaces.height, 3);
+        assert_eq!(detail, Rect::default());
     }
 }

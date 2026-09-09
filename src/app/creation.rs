@@ -5,6 +5,7 @@ use super::{
     App, Mode,
 };
 use crate::api::schema::{EventData, EventEnvelope, EventKind};
+use crate::layout::PaneId;
 use crate::{config::NewTerminalCwdConfig, workspace::Workspace};
 
 pub(crate) fn resolve_new_terminal_cwd(
@@ -160,6 +161,68 @@ impl App {
         Ok(idx)
     }
 
+    pub(crate) fn open_float_pane(
+        &mut self,
+        ws_idx: usize,
+        cwd: Option<PathBuf>,
+    ) -> std::io::Result<crate::layout::PaneId> {
+        let Some(ws) = self.state.workspaces.get(ws_idx) else {
+            return Err(std::io::Error::other("workspace not found"));
+        };
+        let tab_idx = ws.active_tab_index();
+        let cwd = cwd
+            .or_else(|| {
+                let tab = ws.active_tab()?;
+                let focused = tab.focused_pane();
+                tab.cwd_for_pane(focused, &self.state.terminals, &self.terminal_runtimes)
+            })
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
+
+        let terminal_area = self.state.view.terminal_area;
+        let geometry = crate::popup_size::resolve_popup_geometry(
+            self.state.floating_pane_width,
+            self.state.floating_pane_height,
+            terminal_area,
+        );
+        let (rows, cols) = match geometry {
+            Some(geometry) => (geometry.inner.height, geometry.inner.width),
+            None => self.state.estimate_pane_size(),
+        };
+
+        let pane_id = crate::layout::PaneId::alloc();
+        let pane_number = self.state.workspaces[ws_idx].next_public_pane_number;
+        let launch_env = self
+            .pane_launch_env(ws_idx, pane_id, Vec::new())
+            .unwrap_or_else(|| crate::pane::PaneLaunchEnv::from_extra(Vec::new()));
+
+        let runtime = crate::terminal::TerminalRuntime::spawn(
+            pane_id,
+            rows,
+            cols,
+            cwd.clone(),
+            self.state.pane_scrollback_limit_bytes,
+            self.state.host_terminal_theme,
+            self.state.host_terminal_appearance,
+            crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
+            &launch_env,
+            self.event_tx.clone(),
+            self.render_notify.clone(),
+            self.render_dirty.clone(),
+        )?;
+
+        let terminal_id = crate::terminal::TerminalId::alloc();
+        let terminal = crate::terminal::TerminalState::new(terminal_id.clone(), cwd);
+        self.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        self.state.terminals.insert(terminal_id.clone(), terminal);
+
+        let ws = &mut self.state.workspaces[ws_idx];
+        ws.register_new_pane_with_number(pane_id, pane_number);
+        ws.tabs[tab_idx].push_float(pane_id, crate::pane::PaneState::new(terminal_id));
+
+        self.schedule_session_save();
+        Ok(pane_id)
+    }
+
     pub(super) fn collect_panes_for_workspace(
         &self,
         workspace_id: Option<&str>,
@@ -180,7 +243,7 @@ impl App {
             Ok(ws
                 .tabs
                 .iter()
-                .flat_map(|tab| tab.layout.pane_ids().into_iter())
+                .flat_map(|tab| tab.all_pane_ids())
                 .filter_map(|pane_id| self.pane_info(ws_idx, pane_id))
                 .collect())
         } else {
@@ -192,7 +255,7 @@ impl App {
                 .flat_map(|(ws_idx, ws)| {
                     ws.tabs
                         .iter()
-                        .flat_map(|tab| tab.layout.pane_ids().into_iter())
+                        .flat_map(|tab| tab.all_pane_ids())
                         .filter_map(move |pane_id| self.pane_info(ws_idx, pane_id))
                 })
                 .collect())
@@ -334,6 +397,7 @@ impl App {
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             focused,
+            floating: ws.tabs[tab_idx].is_float(pane_id),
             cwd: ws.tabs[tab_idx]
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
@@ -399,7 +463,267 @@ impl App {
                     checkout_path: space.checkout_path.display().to_string(),
                     is_linked_worktree: space.is_linked_worktree,
                 }),
+            path: ws
+                .pinned_path
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
         }
+    }
+
+    /// The workspace whose pinned path claims `cwd`, if it is not the one the
+    /// pane is already in. Deepest pinned path wins so a worktree pinned
+    /// under its repo takes precedence over the repo. The pane's own
+    /// workspace competes on depth too: nothing pulls a pane towards a pin
+    /// no more specific than the one it already sits under.
+    pub(crate) fn claiming_workspace(
+        &self,
+        cwd: &std::path::Path,
+        source_ws_idx: usize,
+    ) -> Option<usize> {
+        // Measured on the canonical path so the depths being compared match
+        // the paths path_claims actually compared.
+        let claim_depth = |ws: &Workspace| -> Option<usize> {
+            let pinned = ws.pinned_path.as_ref()?;
+            crate::workspace::path_claims(pinned, cwd).then(|| {
+                crate::worktree::canonical_or_original(pinned)
+                    .components()
+                    .count()
+            })
+        };
+        let (claimant, depth) = self
+            .state
+            .workspaces
+            .iter()
+            .enumerate()
+            .filter(|(ws_idx, _)| *ws_idx != source_ws_idx)
+            .filter_map(|(ws_idx, ws)| Some((ws_idx, claim_depth(ws)?)))
+            .max_by_key(|(_, depth)| *depth)?;
+        // Two workspaces pinned to one directory would otherwise trade the
+        // pane back and forth on every directory change inside it.
+        let source_depth = self
+            .state
+            .workspaces
+            .get(source_ws_idx)
+            .and_then(claim_depth);
+        source_depth
+            .is_none_or(|source| source < depth)
+            .then_some(claimant)
+    }
+
+    /// Route a freshly created pane into the workspace that claims its cwd.
+    /// Best effort: a failure here never fails the creation that triggered it.
+    /// `label` is the destination tab's name, if the caller wants one — e.g.
+    /// `tab.create --label` passes its own label; a plain pane split has none
+    /// and passes `None`. The mover does not guess this from ambient state:
+    /// picking it up from the source tab's name would leak an unrelated
+    /// tab's name onto the destination after a split.
+    pub(crate) fn auto_move_pane_to_pinned_workspace(
+        &mut self,
+        source_ws_idx: usize,
+        pane_id: PaneId,
+        cwd: &std::path::Path,
+        focus: bool,
+        label: Option<String>,
+    ) -> bool {
+        let Some(target_ws_idx) = self.claiming_workspace(cwd, source_ws_idx) else {
+            return false;
+        };
+        let Some(workspace_id) = self
+            .state
+            .workspaces
+            .get(target_ws_idx)
+            .map(|ws| ws.id.clone())
+        else {
+            return false;
+        };
+        let Some(public_pane_id) = self.public_pane_id(source_ws_idx, pane_id) else {
+            return false;
+        };
+        let response = self.handle_pane_move(
+            "auto-move".to_string(),
+            crate::api::schema::PaneMoveParams {
+                pane_id: public_pane_id,
+                destination: crate::api::schema::PaneMoveDestination::NewTab {
+                    workspace_id: Some(workspace_id.clone()),
+                    label,
+                },
+                focus,
+            },
+        );
+        // A move can succeed without moving anything: a zoomed source tab is
+        // left alone on purpose. Report that as not routed so the caller and
+        // the log both describe where the pane actually is.
+        let move_result = serde_json::from_str::<crate::api::schema::SuccessResponse>(&response)
+            .ok()
+            .and_then(|success| match success.result {
+                crate::api::schema::ResponseResult::PaneMove { move_result } => Some(move_result),
+                _ => None,
+            });
+        match move_result {
+            Some(move_result) if move_result.changed => true,
+            Some(move_result) => {
+                // Expected, not a fault: a zoomed source tab declines on
+                // purpose, and the pane stays where the user put it.
+                tracing::debug!(
+                    %workspace_id,
+                    reason = ?move_result.reason,
+                    "auto-move into pinned workspace declined"
+                );
+                false
+            }
+            None => {
+                tracing::warn!(%workspace_id, "auto-move into pinned workspace failed");
+                false
+            }
+        }
+    }
+
+    /// Re-run the pinned-path claim after a pane reports a new cwd, so a
+    /// directory jump relocates the pane the way opening it there would have.
+    /// Only fires at an idle shell prompt: a foreground process or a detected
+    /// agent means something is running that should not be moved out from
+    /// under the user.
+    pub(crate) fn reclaim_pane_after_cwd_change(&mut self, pane_id: PaneId, cwd: &std::path::Path) {
+        let Some((ws_idx, pane)) = self.find_pane(pane_id) else {
+            return;
+        };
+        let terminal_id = pane.attached_terminal_id.clone();
+        let Some(terminal) = self.state.terminals.get(&terminal_id) else {
+            return;
+        };
+        // AppState rejects reports that are not absolute directories without
+        // storing them, so a stored cwd that differs from the report means it
+        // was rejected.
+        if terminal.cwd != cwd {
+            return;
+        }
+        if terminal.foreground_process_name.is_some() || terminal.detected_agent.is_some() {
+            return;
+        }
+        // Follow the pane only when it is the one the user is sitting in: a
+        // background pane changing directory on its own must not drag them out
+        // of the workspace they are working in.
+        let focus = self.state.active == Some(ws_idx)
+            && self
+                .state
+                .workspaces
+                .get(ws_idx)
+                .and_then(|ws| ws.focused_pane_id())
+                == Some(pane_id);
+        if self.claiming_workspace(cwd, ws_idx).is_some() {
+            self.auto_move_pane_to_pinned_workspace(ws_idx, pane_id, cwd, focus, None);
+            return;
+        }
+        // Only the pane the user is sitting in may conjure a workspace, and
+        // never one the pane's own workspace is already pinned under:
+        // `claiming_workspace` skips the source workspace, so its pin has to
+        // be checked here.
+        let source_pin_claims = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pinned_path.as_deref())
+            .is_some_and(|pinned| crate::workspace::path_claims(pinned, cwd));
+        if !focus || source_pin_claims {
+            return;
+        }
+        let Some(repo) = crate::workspace::declared_repo_for(cwd, &self.state.declared_repo_paths)
+            .map(std::path::Path::to_path_buf)
+        else {
+            return;
+        };
+        // The pane's own workspace already originated at this repo: pin it in
+        // place rather than conjuring a twin workspace and closing the
+        // original, which would silently discard its name, tab labels,
+        // sidebar position, worktree membership, and id.
+        let source_ws_is_repo = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .is_some_and(|ws| crate::workspace::path_claims(&repo, &ws.identity_cwd));
+        if source_ws_is_repo {
+            if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
+                ws.pinned_path = Some(repo);
+            }
+            self.schedule_session_save();
+            return;
+        }
+        self.create_declared_repo_workspace_for_pane(ws_idx, pane_id, &repo);
+    }
+
+    /// Move `pane_id` into a fresh workspace pinned to `repo`, the workspace a
+    /// declared repo should have had all along. Best effort, like the pinned
+    /// auto-move: a failure here never fails the directory change that
+    /// triggered it.
+    fn create_declared_repo_workspace_for_pane(
+        &mut self,
+        source_ws_idx: usize,
+        pane_id: PaneId,
+        repo: &std::path::Path,
+    ) {
+        let Some(public_pane_id) = self.public_pane_id(source_ws_idx, pane_id) else {
+            return;
+        };
+        let response = self.handle_pane_move(
+            "declared-repo".to_string(),
+            crate::api::schema::PaneMoveParams {
+                pane_id: public_pane_id,
+                destination: crate::api::schema::PaneMoveDestination::NewWorkspace {
+                    label: None,
+                    tab_label: None,
+                },
+                focus: true,
+            },
+        );
+        let move_result = serde_json::from_str::<crate::api::schema::SuccessResponse>(&response)
+            .ok()
+            .and_then(|success| match success.result {
+                crate::api::schema::ResponseResult::PaneMove { move_result } => Some(move_result),
+                _ => None,
+            });
+        let created = match move_result {
+            Some(move_result) if move_result.changed => move_result.created_workspace,
+            Some(move_result) => {
+                // Expected, not a fault: a zoomed source tab declines on
+                // purpose, and the pane stays where the user put it.
+                tracing::debug!(
+                    repo = %repo.display(),
+                    reason = ?move_result.reason,
+                    "declared repo workspace move declined"
+                );
+                None
+            }
+            None => {
+                tracing::warn!(repo = %repo.display(), "declared repo workspace creation failed");
+                None
+            }
+        };
+        let Some(workspace) = created else {
+            return;
+        };
+        // Both arms below are unreachable in practice: the id was generated
+        // and pushed into `self.state.workspaces` moments earlier. Warn
+        // rather than restructure, so a regression here is diagnosable
+        // instead of silently leaving the pane in an unpinned workspace that
+        // a later `cd` would try to reclaim all over again.
+        let Some(ws_idx) = self.parse_workspace_id(&workspace.workspace_id) else {
+            tracing::warn!(
+                repo = %repo.display(),
+                workspace_id = %workspace.workspace_id,
+                "declared repo workspace id did not parse after creation"
+            );
+            return;
+        };
+        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+            tracing::warn!(
+                repo = %repo.display(),
+                workspace_id = %workspace.workspace_id,
+                "declared repo workspace vanished before it could be pinned"
+            );
+            return;
+        };
+        ws.pinned_path = Some(repo.to_path_buf());
+        self.schedule_session_save();
     }
 }
 
@@ -426,4 +750,118 @@ fn terminal_agent_session_info(
             kind: session.session_ref.kind,
             value: session.session_ref.value.clone(),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+
+    fn app_with_pinned_workspaces(pins: &[(&str, Option<&str>)]) -> App {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = pins
+            .iter()
+            .map(|(name, pin)| {
+                let mut ws = crate::workspace::Workspace::test_new(name);
+                ws.pinned_path = pin.map(std::path::PathBuf::from);
+                ws
+            })
+            .collect();
+        app.state.active = Some(0);
+        app
+    }
+
+    #[test]
+    fn claims_a_pane_opened_below_the_pinned_path() {
+        let app = app_with_pinned_workspaces(&[("a", None), ("b", Some("/ws"))]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/ws/src"), 0),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn a_duplicate_pin_does_not_claim_a_pane_from_its_twin() {
+        let app = app_with_pinned_workspaces(&[("a", Some("/ws")), ("b", Some("/ws"))]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/ws/src"), 0),
+            None
+        );
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/ws/src"), 1),
+            None
+        );
+    }
+
+    #[test]
+    fn a_shallower_pin_does_not_claim_a_pane_from_a_deeper_one() {
+        let app = app_with_pinned_workspaces(&[("deep", Some("/a/b")), ("shallow", Some("/a"))]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/a/b/c"), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn a_deeper_pin_still_claims_a_pane_from_a_shallower_one() {
+        let app = app_with_pinned_workspaces(&[("shallow", Some("/a")), ("deep", Some("/a/b"))]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/a/b/c"), 0),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn does_not_claim_a_sibling_directory() {
+        let app = app_with_pinned_workspaces(&[("a", None), ("b", Some("/ws"))]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/ws-worktrees/x"), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn does_not_claim_a_pane_already_in_the_claiming_workspace() {
+        let app = app_with_pinned_workspaces(&[("b", Some("/ws"))]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/ws/src"), 0),
+            None
+        );
+    }
+
+    #[test]
+    fn deepest_pinned_path_wins() {
+        let app = app_with_pinned_workspaces(&[
+            ("source", None),
+            ("shallow", Some("/a")),
+            ("deep", Some("/a/b")),
+        ]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/a/b/c"), 0),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn workspaces_without_a_pinned_path_never_claim() {
+        let app = app_with_pinned_workspaces(&[("a", None), ("b", None)]);
+
+        assert_eq!(
+            app.claiming_workspace(std::path::Path::new("/ws/src"), 0),
+            None
+        );
+    }
 }

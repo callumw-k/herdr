@@ -111,7 +111,7 @@ pub(super) fn navigator_rows(
         Some(ClientNavigatorFilter::Done) => status == crate::api::schema::AgentStatus::Done,
         None => true,
     };
-    let text = |value: &str| query.is_empty() || value.to_lowercase().contains(&query);
+    let text = |value: &str| crate::fuzzy::fuzzy_score(&query, value).is_some();
     let filtering = navigator.filter.is_some() || !query.is_empty();
     let federated = endpoints.len() > 1;
     let depth_offset = u8::from(federated);

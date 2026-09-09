@@ -46,6 +46,7 @@ pub(crate) use self::text::truncate_end;
 pub(crate) use self::widgets::{centered_popup_rect, modal_stack_areas};
 
 use crate::app::AppState;
+use crate::popup_size::resolve_popup_geometry;
 use crate::terminal::TerminalRuntimeRegistry;
 
 pub fn compute_view_with_runtime_registry(
@@ -92,6 +93,19 @@ fn compute_view_internal(
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) {
+    // The float layer is laid out against its own region, so it has to be
+    // reflowed before the surface reads `float_layout` for pane geometry.
+    let float_region =
+        resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
+            .map(|geometry| geometry.outer);
+    if let Some(tab) = app
+        .active
+        .and_then(|index| app.workspaces.get_mut(index))
+        .and_then(|workspace| workspace.active_tab_mut())
+    {
+        tab.reflow(area, float_region);
+    }
+
     let TabSurfaceLayout { pane_infos, .. } =
         compute_tab_surface(app, terminal_runtimes, area, resize_panes, cell_size);
 

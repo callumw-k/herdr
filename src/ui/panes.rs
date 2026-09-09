@@ -2,14 +2,13 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders},
+    text::{Line, Span},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
 use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
-#[cfg(test)]
-use super::text::display_width;
-use super::text::truncate_end;
+use super::text::{display_width, truncate_end};
 use super::widgets::panel_contrast_fg;
 use crate::app::state::Palette;
 use crate::app::AppState;
@@ -20,6 +19,24 @@ use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
 pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
     rt.scroll_metrics()
         .is_some_and(|metrics| metrics.offset_from_bottom > 0)
+}
+
+/// The name to draw on a pane's own chrome. Falls back to the pane's public
+/// number rather than its layer, so a stacked tiled pane is never called
+/// "float".
+fn pane_label(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    pane_id: crate::layout::PaneId,
+) -> String {
+    ws.pane_state(pane_id)
+        .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
+        .and_then(|terminal| terminal.pane_label(app.show_agent_labels_on_pane_borders))
+        .or_else(|| {
+            ws.public_pane_number(pane_id)
+                .map(|number| format!("pane {number}"))
+        })
+        .unwrap_or_default()
 }
 
 fn pane_border_title(label: &str, pane_width: u16, _focused: bool) -> Option<String> {
@@ -251,7 +268,7 @@ pub(super) fn resize_tab_panes(
             runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, info.id)
         {
             let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
-            if !app.direct_attach_resize_locks.contains(terminal_id) {
+            if info.rect.height > 1 && !app.direct_attach_resize_locks.contains(terminal_id) {
                 rt.resize(
                     inner_rect.height,
                     inner_rect.width,
@@ -315,7 +332,7 @@ pub(super) fn compute_pane_infos_for_tab(
             inner_rect,
             scrollbar_rect,
             borders,
-            is_focused: true,
+            is_focused: !tab.float_focused,
         }];
     }
 
@@ -334,7 +351,9 @@ pub(super) fn compute_pane_infos_for_tab(
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
             (inner_rect, scrollbar_rect) =
                 stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
+            // Reflowing a collapsed member wrecks an alt screen for no visible gain.
             if resize_panes
+                && info.rect.height > 1
                 && tab.terminal_id(info.id).is_some_and(|terminal_id| {
                     !app.direct_attach_resize_locks.contains(terminal_id)
                 })
@@ -350,6 +369,46 @@ pub(super) fn compute_pane_infos_for_tab(
 
         info.inner_rect = inner_rect;
         info.scrollbar_rect = scrollbar_rect;
+        info.is_focused = !tab.float_focused && info.is_focused;
+    }
+
+    // A hidden layer emits nothing at all. Drawing, PTY resizing, mouse
+    // hit-testing, hyperlink scanning and graphics all key off this list, so
+    // this one gate is what `floats_hidden` means everywhere downstream.
+    if let Some(layout) = tab.float_layout.as_ref().filter(|_| !tab.floats_hidden) {
+        if let Some(geometry) =
+            resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
+        {
+            let focused_float = tab.focused_float();
+            for mut info in layout.panes(geometry.outer) {
+                info.borders = Borders::ALL;
+                // Floats get no scrollbar lane, matching the old popup pane;
+                // `layout.panes` already leaves `scrollbar_rect: None`.
+                info.inner_rect = pane_inner_rect(info.rect, info.borders);
+                info.is_focused = tab.float_focused && Some(info.id) == focused_float;
+                // Only the expanded member has content to display; resizing a
+                // collapsed or folded float's PTY to its near-zero box would
+                // reflow it for nothing.
+                if resize_panes
+                    && info.rect.height > 1
+                    && tab.terminal_id(info.id).is_some_and(|terminal_id| {
+                        !app.direct_attach_resize_locks.contains(terminal_id)
+                    })
+                {
+                    if let Some(rt) =
+                        app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
+                    {
+                        rt.resize(
+                            info.inner_rect.height,
+                            info.inner_rect.width,
+                            cell_size.width_px,
+                            cell_size.height_px,
+                        );
+                    }
+                }
+                pane_infos.push(info);
+            }
+        }
     }
 
     pane_infos
@@ -399,7 +458,24 @@ pub(super) fn render_panes(
         return;
     };
 
+    // The lookup is skipped entirely for a tab with no floating layer, which is
+    // the common case in this pane-scaled path.
+    let floats = target
+        .map(|target| target.tab_index)
+        .and_then(|tab_index| ws.tabs.get(tab_index))
+        .filter(|tab| tab.float_layout.is_some())
+        .map(|tab| tab.floats())
+        .unwrap_or_default();
+
     for info in pane_infos {
+        // A collapsed or folded stack member has no content rows; it is drawn
+        // as a stack bar below.
+        if info.rect.height <= 1 {
+            continue;
+        }
+        if floats.contains(&info.id) {
+            render_float_chrome(app, ws, frame, info);
+        }
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
             let show_cursor = info.is_focused
                 && !pane_is_scrolled_back(rt)
@@ -409,7 +485,224 @@ pub(super) fn render_panes(
         }
     }
 
-    render_pane_borders(app, ws, pane_infos, split_borders, frame);
+    render_pane_borders(app, ws, pane_infos, split_borders, &floats, frame);
+
+    // After the borders and titles, so a bar overwrites the junction-table row
+    // and any label already drawn on its own rect. Outside `render_pane_borders`
+    // so turning borders off does not make collapsed members invisible again.
+    if !pane_infos.iter().any(|info| info.rect.height <= 1) {
+        return;
+    }
+    for bar in stack_bars_for(pane_infos.iter().filter(|info| !floats.contains(&info.id))) {
+        render_stack_bar(app, ws, frame, &bar);
+    }
+    for bar in stack_bars_for(pane_infos.iter().filter(|info| floats.contains(&info.id))) {
+        render_stack_bar(app, ws, frame, &bar);
+    }
+}
+
+/// A float overlaps the tiled panes behind it, so it draws its own frame rather
+/// than taking a line from the shared junction table: a thick border and an
+/// opaque fill are what separate it from the panes it covers.
+fn render_float_chrome(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    frame: &mut Frame,
+    info: &PaneInfo,
+) {
+    let title = pane_label(app, ws, info.id);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Thick)
+        .border_style(Style::default().fg(if info.is_focused {
+            app.palette.accent
+        } else {
+            app.palette.overlay1
+        }))
+        .title(pane_border_title(&title, info.rect.width, info.is_focused).unwrap_or_default())
+        .style(Style::default().bg(app.palette.panel_bg));
+    frame.render_widget(Clear, info.rect);
+    frame.render_widget(block, info.rect);
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StackBarKind {
+    Pane(crate::layout::PaneId),
+    /// Folds `count` further hidden members that did not fit as their own rows.
+    Summary {
+        count: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StackBar {
+    rect: Rect,
+    kind: StackBarKind,
+    /// The bar sits after the stack's expanded member, so its single row reads
+    /// as that pane's bottom edge rather than its top edge.
+    below_active: bool,
+}
+
+/// Where to find an already-valid, currently-drawn row to repurpose as a fold's
+/// `+N more` indicator, since a fold's own rect is never one. See
+/// `close_fold_run`.
+#[derive(Clone, Copy)]
+enum FoldAnchor {
+    Bar(usize),
+    Active(Rect),
+}
+
+struct ZeroRun {
+    rect: Rect,
+    count: usize,
+    predecessor: Option<FoldAnchor>,
+}
+
+/// Derives collapsed (height 1) and folded (height 0) rows into `StackBar`s from
+/// already-laid-out stack members. `stack_rects` lays out a tiled `Node::Stack`
+/// and the floating layer's stacked arrangement identically, so this is shared
+/// between them: a run of consecutive height-0 entries sharing a rect position
+/// is one fold, and a run interrupted by the active member is a second,
+/// separate fold, since those are genuinely different screen locations.
+fn stack_bars_for<'a>(infos: impl Iterator<Item = &'a PaneInfo>) -> Vec<StackBar> {
+    let mut bars: Vec<StackBar> = Vec::new();
+    // The most recent non-folded entry and its x: a fold's predecessor
+    // candidate, valid only inside the same stack column.
+    let mut last_real: Option<(u16, FoldAnchor)> = None;
+    let mut zero_run: Option<ZeroRun> = None;
+    let mut seen_active = false;
+
+    for info in infos {
+        if info.rect.height == 0 {
+            let continues = zero_run
+                .as_ref()
+                .is_some_and(|run| run.rect.x == info.rect.x && run.rect.y == info.rect.y);
+            if continues {
+                if let Some(run) = zero_run.as_mut() {
+                    run.count += 1;
+                }
+            } else {
+                if let Some(run) = zero_run.take() {
+                    close_fold_run(&mut bars, run, None);
+                }
+                let predecessor = last_real
+                    .filter(|(x, _)| *x == info.rect.x)
+                    .map(|(_, anchor)| anchor);
+                zero_run = Some(ZeroRun {
+                    rect: Rect::new(info.rect.x, info.rect.y, info.rect.width, 0),
+                    count: 1,
+                    predecessor,
+                });
+            }
+            continue;
+        }
+
+        if let Some(run) = zero_run.take() {
+            close_fold_run(&mut bars, run, Some(info.rect));
+        }
+
+        if info.rect.height == 1 {
+            bars.push(StackBar {
+                rect: info.rect,
+                kind: StackBarKind::Pane(info.id),
+                below_active: seen_active,
+            });
+            last_real = Some((info.rect.x, FoldAnchor::Bar(bars.len() - 1)));
+        } else {
+            seen_active = true;
+            last_real = Some((info.rect.x, FoldAnchor::Active(info.rect)));
+        }
+    }
+    if let Some(run) = zero_run.take() {
+        close_fold_run(&mut bars, run, None);
+    }
+    bars
+}
+
+/// `stack_rects` consumes the whole stack area once any folding happens, so a
+/// fold's own rect is never a real, drawable row: a fold before the active
+/// member lands on the active member's first row, and one after it lands a row
+/// past the end of the area. Borrow an already-valid row instead. The last
+/// collapsed bar before the fold if there is one, whose pane now reads as part
+/// of the fold and so joins the count; otherwise the active member's near edge,
+/// whose pane stays visible in its own rect and so does not. A fold with no bar
+/// before it is always followed immediately by the active member, because
+/// `stack_rects` never folds the active member itself.
+fn close_fold_run(bars: &mut Vec<StackBar>, run: ZeroRun, successor: Option<Rect>) {
+    match run.predecessor {
+        Some(FoldAnchor::Bar(index)) => {
+            bars[index].kind = StackBarKind::Summary {
+                count: run.count + 1,
+            };
+        }
+        Some(FoldAnchor::Active(rect)) => {
+            bars.push(StackBar {
+                rect: active_edge_row(rect, false),
+                kind: StackBarKind::Summary { count: run.count },
+                below_active: true,
+            });
+        }
+        None => {
+            if let Some(active_rect) = successor {
+                bars.push(StackBar {
+                    rect: active_edge_row(active_rect, true),
+                    kind: StackBarKind::Summary { count: run.count },
+                    below_active: false,
+                });
+            }
+            // Neither anchor is geometrically reachable, since `stack_rects`
+            // always keeps the active member present, but skip rather than draw
+            // an invalid rect if that ever changes.
+        }
+    }
+}
+
+fn active_edge_row(rect: Rect, top: bool) -> Rect {
+    let y = if top {
+        rect.y
+    } else {
+        rect.y.saturating_add(rect.height).saturating_sub(1)
+    };
+    Rect::new(rect.x, y, rect.width, 1)
+}
+
+fn render_stack_bar(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    frame: &mut Frame,
+    bar: &StackBar,
+) {
+    let label = match bar.kind {
+        StackBarKind::Pane(pane_id) => pane_label(app, ws, pane_id),
+        StackBarKind::Summary { count } => format!("+{count} more"),
+    };
+    let text = pane_border_title(&label, bar.rect.width, false).unwrap_or_default();
+    let border_style = Style::default().fg(app.palette.overlay0);
+    let label_style = Style::default()
+        .fg(app.palette.subtext0)
+        .add_modifier(Modifier::BOLD);
+    // A collapsed member is one row tall, so its top and bottom borders share
+    // that row. Closing both ends with corners keeps a hidden pane readable as a
+    // box rather than a bare label, which matters most for floats with no
+    // neighbouring pane border to sit against. The corners face the expanded
+    // member so a bar below it does not read as a box opening off-screen.
+    let (left, right) = if bar.below_active {
+        ("\u{2514}", "\u{2518}")
+    } else {
+        ("\u{250c}", "\u{2510}")
+    };
+    let fill = (bar.rect.width as usize).saturating_sub(2 + display_width(text.as_str()));
+    frame.render_widget(Clear, bar.rect);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(left, border_style),
+            Span::styled(text, label_style),
+            Span::styled("\u{2500}".repeat(fill), border_style),
+            Span::styled(right, border_style),
+        ]))
+        .style(Style::default().bg(app.palette.panel_bg)),
+        bar.rect,
+    );
 }
 
 pub(crate) fn popup_pane_rects(app: &AppState, area: Rect) -> Option<(Rect, Rect)> {
@@ -456,6 +749,7 @@ fn render_pane_borders(
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
     split_borders: &[crate::layout::SplitBorder],
+    floats: &[crate::layout::PaneId],
     frame: &mut Frame,
 ) {
     if !app.pane_borders.draws_borders() || pane_infos.iter().all(|info| info.borders.is_empty()) {
@@ -464,6 +758,11 @@ fn render_pane_borders(
 
     let mut cells = std::collections::HashMap::<(u16, u16), LineCell>::new();
     for info in pane_infos {
+        // Floats draw their own frame in `render_float_chrome`; a junction line
+        // here would be drawn over it.
+        if floats.contains(&info.id) {
+            continue;
+        }
         add_pane_border_cells(&mut cells, info);
     }
     add_split_border_cells(app.pane_gaps, split_borders, &mut cells);
@@ -495,7 +794,7 @@ fn render_pane_borders(
         cell.set_style(Style::default().fg(color));
     }
 
-    render_pane_border_titles(app, ws, pane_infos, frame);
+    render_pane_border_titles(app, ws, pane_infos, floats, frame);
 }
 
 fn add_split_border_cells(
@@ -624,6 +923,7 @@ fn render_pane_border_titles(
     app: &AppState,
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
+    floats: &[crate::layout::PaneId],
     frame: &mut Frame,
 ) {
     let buf = frame.buffer_mut();
@@ -632,10 +932,14 @@ fn render_pane_border_titles(
         if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
             continue;
         }
+        // A float's title comes from its own block.
+        if floats.contains(&info.id) {
+            continue;
+        }
         let Some(title) = ws
             .pane_state(info.id)
             .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| terminal.border_label(app.show_agent_labels_on_pane_borders))
+            .and_then(|terminal| terminal.pane_label(app.show_agent_labels_on_pane_borders))
             .and_then(|label| pane_border_title(&label, info.rect.width, info.is_focused))
         else {
             continue;
@@ -844,7 +1148,7 @@ mod tests {
         split_borders: &[crate::layout::SplitBorder],
         frame: &mut Frame,
     ) {
-        render_pane_borders(app, ws, &app.view.pane_infos, split_borders, frame);
+        render_pane_borders(app, ws, &app.view.pane_infos, split_borders, &[], frame);
     }
 
     #[test]
@@ -1193,6 +1497,236 @@ mod tests {
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
         assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
+    }
+
+    fn stacked_pane_infos(
+        ws: &mut Workspace,
+        count: usize,
+        active_index: usize,
+        area: Rect,
+    ) -> Vec<PaneInfo> {
+        let tab = &mut ws.tabs[0];
+        for _ in 1..count {
+            tab.layout
+                .split_focused(ratatui::layout::Direction::Horizontal);
+        }
+        let ids = tab.layout.pane_ids();
+        assert_eq!(ids.len(), count);
+        tab.layout.focus_pane(ids[active_index]);
+        tab.arrangement = crate::layout::Arrangement::Stacked;
+        tab.needs_reflow = true;
+        tab.reflow(area, None);
+        tab.layout.panes(area)
+    }
+
+    fn render_stacked(pane_infos: &[PaneInfo], app: &AppState, area: Rect) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    Some(super::super::tab_surface::TabSurfaceTarget {
+                        workspace_index: 0,
+                        tab_index: 0,
+                    }),
+                    pane_infos,
+                    &[],
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..area.height)
+            .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_float_draws_its_own_thick_frame_over_the_tiled_panes() {
+        let area = Rect::new(0, 0, 40, 12);
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("test");
+        let float_id = crate::layout::PaneId::alloc();
+        let number = ws.next_public_pane_number;
+        ws.register_new_pane_with_number(float_id, number);
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(20, 6, 1024, b"floating\n"),
+        );
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let float = pane_infos
+            .iter()
+            .find(|info| info.id == float_id)
+            .expect("float info");
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    Some(super::super::tab_surface::TabSurfaceTarget {
+                        workspace_index: 0,
+                        tab_index: 0,
+                    }),
+                    &pane_infos,
+                    &[],
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let corner = buffer[(float.rect.x, float.rect.y)].symbol().to_string();
+        assert_eq!(
+            corner, "\u{250f}",
+            "a float takes a thick corner, not a junction-table line"
+        );
+        assert_eq!(
+            buffer[(float.rect.x, float.rect.y)].bg,
+            app.palette.panel_bg,
+            "the frame is opaque over whatever it covers"
+        );
+    }
+
+    #[test]
+    fn collapsed_bars_point_their_corners_at_the_active_member() {
+        let area = Rect::new(0, 0, 20, 10);
+        let mut ws = Workspace::test_new("test");
+        let pane_infos = stacked_pane_infos(&mut ws, 3, 1, area);
+
+        let mut app = AppState::test_new();
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let rows = render_stacked(&pane_infos, &app, area);
+        assert!(
+            rows[0].starts_with('\u{250c}') && rows[0].ends_with('\u{2510}'),
+            "bar above the active member: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[9].starts_with('\u{2514}') && rows[9].ends_with('\u{2518}'),
+            "bar below the active member: {:?}",
+            rows[9]
+        );
+    }
+
+    #[test]
+    fn a_fold_before_the_active_member_absorbs_the_bar_it_lands_on() {
+        let pane = |id: u32, y: u16, height: u16| PaneInfo {
+            id: crate::layout::PaneId::from_raw(id),
+            rect: Rect::new(0, y, 20, height),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::NONE,
+            is_focused: false,
+        };
+        // Two folded members land on the row the collapsed bar already owns, so
+        // that pane joins the count rather than keeping its own row.
+        let bars =
+            stack_bars_for([pane(1, 0, 1), pane(2, 1, 0), pane(3, 1, 0), pane(4, 1, 8)].iter());
+
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].kind, StackBarKind::Summary { count: 3 });
+        assert!(!bars[0].below_active);
+    }
+
+    #[test]
+    fn a_fold_after_the_active_member_borrows_its_bottom_edge() {
+        let pane = |id: u32, y: u16, height: u16| PaneInfo {
+            id: crate::layout::PaneId::from_raw(id),
+            rect: Rect::new(0, y, 20, height),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::NONE,
+            is_focused: false,
+        };
+        let bars = stack_bars_for([pane(1, 0, 9), pane(2, 9, 0), pane(3, 9, 0)].iter());
+
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].kind, StackBarKind::Summary { count: 2 });
+        assert!(
+            bars[0].below_active,
+            "it reads as the active member's bottom edge"
+        );
+        assert_eq!(bars[0].rect, Rect::new(0, 8, 20, 1));
+    }
+
+    #[tokio::test]
+    async fn a_collapsed_stack_member_keeps_its_runtime_size() {
+        let area = Rect::new(0, 0, 40, 12);
+        let mut app = AppState::test_new();
+        let mut workspace = Workspace::test_new("stack");
+        let collapsed_id = workspace.tabs[0].root_pane;
+        let active_id = workspace.tabs[0]
+            .layout
+            .split_focused(ratatui::layout::Direction::Horizontal);
+        workspace.tabs[0].panes.insert(
+            active_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        workspace.tabs[0].arrangement = crate::layout::Arrangement::Stacked;
+        workspace.tabs[0].needs_reflow = true;
+        workspace.tabs[0].reflow(area, None);
+        workspace.tabs[0].runtimes.insert(
+            collapsed_id,
+            TerminalRuntime::test_with_scrollback_bytes(40, 10, 1024, b"vim\n"),
+        );
+        workspace.tabs[0].runtimes.insert(
+            active_id,
+            TerminalRuntime::test_with_scrollback_bytes(40, 10, 1024, b"shell\n"),
+        );
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+
+        let infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        let collapsed = infos
+            .iter()
+            .find(|info| info.id == collapsed_id)
+            .expect("collapsed member");
+        assert_eq!(collapsed.rect.height, 1);
+        assert_eq!(
+            app.workspaces[0].tabs[0].runtimes[&collapsed_id].current_size(),
+            (10, 40),
+            "reflowing a collapsed member destroys an alt screen with no scrollback"
+        );
+
+        let active = infos
+            .iter()
+            .find(|info| info.id == active_id)
+            .expect("active member");
+        assert!(active.rect.height > 1);
+        assert_ne!(
+            app.workspaces[0].tabs[0].runtimes[&active_id].current_size(),
+            (10, 40),
+            "the expanded member still tracks its box"
+        );
     }
 
     #[tokio::test]

@@ -354,8 +354,9 @@ pub(super) fn render_agent_row(
     } else {
         row.rows.clone()
     };
+    // Column 0 belongs to the status ribbon, so the first row starts one column in.
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
-        let indent = if index == 0 { 1 } else { 3 };
+        let indent = if index == 0 { 2 } else { 3 };
         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
         spans.extend(crate::ui::resolved_token_spans(
             tokens,
@@ -370,6 +371,23 @@ pub(super) fn render_agent_row(
         Paragraph::new(Line::from(spans)).style(row_style).render(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
+        );
+    }
+
+    // Drawn last so the row background does not paint over it.
+    let ribbon_height = (rows.len().min(u16::MAX as usize) as u16).min(rect.height);
+    if ribbon_height > 0 {
+        super::sidebar::render_status_ribbon(
+            buffer,
+            rect.x,
+            rect.y,
+            ribbon_height,
+            status_color(row.status, palette),
+            if row.focused {
+                super::sidebar::RibbonWeight::Full
+            } else {
+                super::sidebar::RibbonWeight::Faint
+            },
         );
     }
 }

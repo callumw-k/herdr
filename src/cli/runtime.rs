@@ -1,9 +1,10 @@
 use crate::api::schema::{
-    EmptyParams, Method, PaneFocusDirectionParams, PaneInputSetParams, PaneMoveParams,
-    PaneRenameParams, PaneResizeParams, PaneSplitParams, PaneSwapParams, PaneTarget,
-    PaneZoomParams, Request, TabCreateParams, TabListParams, TabRenameParams, TabTarget,
-    WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams, WorkspaceTarget,
-    WorktreeCreateParams, WorktreeListParams, WorktreeOpenParams, WorktreeRemoveParams,
+    EmptyParams, Method, PaneFloatParams, PaneFocusDirectionParams, PaneInputSetParams,
+    PaneMoveParams, PaneRenameParams, PaneResizeParams, PaneSplitParams, PaneSwapParams,
+    PaneTarget, PaneZoomParams, Request, TabCreateParams, TabFloatsToggleParams, TabListParams,
+    TabRenameParams, TabTarget, WorkspaceCloseParams, WorkspaceCreateParams, WorkspaceRenameParams,
+    WorkspaceSetPathParams, WorkspaceTarget, WorktreeCreateParams, WorktreeListParams,
+    WorktreeOpenParams, WorktreeRemoveParams,
 };
 
 fn print_method_response(id: &'static str, method: Method) -> std::io::Result<i32> {
@@ -40,6 +41,10 @@ pub(super) fn workspace_focus(workspace_id: String) -> std::io::Result<i32> {
 
 pub(super) fn workspace_rename(params: WorkspaceRenameParams) -> std::io::Result<i32> {
     print_method_response("cli:workspace:rename", Method::WorkspaceRename(params))
+}
+
+pub(super) fn workspace_set_path(params: WorkspaceSetPathParams) -> std::io::Result<i32> {
+    print_method_response("cli:workspace:set-path", Method::WorkspaceSetPath(params))
 }
 
 pub(super) fn workspace_close(params: WorkspaceCloseParams) -> std::io::Result<i32> {
@@ -96,6 +101,14 @@ pub(super) fn pane_resize(params: PaneResizeParams) -> std::io::Result<i32> {
 
 pub(super) fn pane_zoom(params: PaneZoomParams) -> std::io::Result<i32> {
     print_method_response("cli:pane:zoom", Method::PaneZoom(params))
+}
+
+pub(super) fn pane_float(params: PaneFloatParams) -> std::io::Result<i32> {
+    print_method_response("cli:pane:float", Method::PaneFloat(params))
+}
+
+pub(super) fn tab_floats_toggle(params: TabFloatsToggleParams) -> std::io::Result<i32> {
+    print_method_response("cli:tab:floats_toggle", Method::TabFloatsToggle(params))
 }
 
 pub(super) fn pane_rename(params: PaneRenameParams) -> std::io::Result<i32> {

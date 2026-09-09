@@ -808,6 +808,7 @@ fn worktree_request_and_response_round_trip() {
                     checkout_path: "/worktrees/herdr/worktree-api".into(),
                     is_linked_worktree: true,
                 }),
+                path: None,
             },
             tab: TabInfo {
                 tab_id: "w_1:1".into(),
@@ -824,6 +825,7 @@ fn worktree_request_and_response_round_trip() {
                 workspace_id: "w_1".into(),
                 tab_id: "w_1:1".into(),
                 focused: true,
+                floating: false,
                 cwd: Some("/worktrees/herdr/worktree-api".into()),
                 foreground_cwd: None,
                 label: None,
@@ -894,6 +896,7 @@ fn worktree_lifecycle_events_round_trip() {
             checkout_path: "/worktrees/herdr/worktree-api".into(),
             is_linked_worktree: true,
         }),
+        path: None,
     };
     let worktree = WorktreeInfo {
         path: "/worktrees/herdr/worktree-api".into(),
@@ -1062,6 +1065,77 @@ fn plugin_link_list_unlink_round_trip() {
 }
 
 #[test]
+fn a_stack_layout_node_round_trips_through_json() {
+    let node = LayoutNode::Stack {
+        panes: vec![
+            LayoutPane {
+                pane_id: Some("1".into()),
+                ..Default::default()
+            },
+            LayoutPane {
+                pane_id: Some("2".into()),
+                ..Default::default()
+            },
+        ],
+        active: 1,
+    };
+    let json = serde_json::to_string(&node).expect("serialises");
+    assert!(json.contains(r#""type":"stack""#));
+    let back: LayoutNode = serde_json::from_str(&json).expect("deserialises");
+    assert_eq!(back, node);
+}
+
+#[test]
+fn layout_export_describes_the_float_layer() {
+    let description = LayoutDescription {
+        workspace_id: "w".into(),
+        tab_id: "t".into(),
+        zoomed: false,
+        focused_pane_id: "1".into(),
+        arrangement: ArrangementSchema::Grid,
+        float_arrangement: ArrangementSchema::Stacked,
+        float_root: Some(LayoutNode::Stack {
+            panes: vec![LayoutPane {
+                pane_id: Some("2".into()),
+                ..Default::default()
+            }],
+            active: 0,
+        }),
+        root: LayoutNode::Pane {
+            pane: LayoutPane {
+                pane_id: Some("1".into()),
+                ..Default::default()
+            },
+        },
+    };
+    let json = serde_json::to_string(&description).expect("serialises");
+    assert!(json.contains(r#""float_arrangement":"stacked""#));
+    let back: LayoutDescription = serde_json::from_str(&json).expect("deserialises");
+    assert_eq!(back, description);
+}
+
+#[test]
+fn a_description_without_float_fields_still_deserialises() {
+    let json = r#"{
+        "workspace_id": "w",
+        "tab_id": "t",
+        "zoomed": false,
+        "focused_pane_id": "1",
+        "arrangement": "grid",
+        "root": {"type": "pane", "pane_id": "1"}
+    }"#;
+    let description: LayoutDescription = serde_json::from_str(json).expect("parses");
+    assert!(description.float_root.is_none());
+    assert_eq!(description.float_arrangement, ArrangementSchema::Stacked);
+}
+
+#[test]
+fn arrangement_serialises_as_snake_case() {
+    let json = serde_json::to_string(&ArrangementSchema::Stacked).expect("serialises");
+    assert_eq!(json, r#""stacked""#);
+}
+
+#[test]
 fn layout_export_apply_round_trip() {
     let root = LayoutNode::Split {
         direction: SplitDirection::Right,
@@ -1103,6 +1177,7 @@ fn layout_export_apply_round_trip() {
             tab_label: Some("dev".into()),
             focus: true,
             root: root.clone(),
+            float_root: None,
         }),
     };
     let json = serde_json::to_string(&apply).unwrap();
@@ -1118,6 +1193,9 @@ fn layout_export_apply_round_trip() {
                 tab_id: "w1:1".into(),
                 zoomed: false,
                 focused_pane_id: "w1-1".into(),
+                arrangement: ArrangementSchema::Grid,
+                float_arrangement: ArrangementSchema::Stacked,
+                float_root: None,
                 root,
             },
         },
@@ -1134,6 +1212,9 @@ fn layout_export_apply_round_trip() {
                 tab_id: "w1:1".into(),
                 zoomed: false,
                 focused_pane_id: "w1-1".into(),
+                arrangement: ArrangementSchema::Grid,
+                float_arrangement: ArrangementSchema::Stacked,
+                float_root: None,
                 root: LayoutNode::Pane {
                     pane: LayoutPane {
                         pane_id: Some("w1-1".into()),
@@ -1252,6 +1333,7 @@ fn create_response_round_trips_with_root_pane() {
                 workspace_id: "w_1".into(),
                 tab_id: "w_1:2".into(),
                 focused: false,
+                floating: false,
                 cwd: Some("/tmp/review".into()),
                 foreground_cwd: None,
                 label: None,

@@ -69,6 +69,14 @@ pub(crate) enum KeybindAction {
     OpenNotificationTarget,
     Detach,
     OpenNavigator,
+    NewPane,
+    NewFloat,
+    ToggleFloat,
+    ToggleFloats,
+    ArrangementNext,
+    ArrangementPrevious,
+    PinWorkspacePath,
+    ToggleDeclaredRepo,
 }
 
 pub(crate) fn resolve_direct_binding(
@@ -134,6 +142,23 @@ pub(crate) fn resolve_non_indexed_action(
         (
             &keybinds.cycle_pane_previous,
             KeybindAction::CyclePanePrevious,
+        ),
+        (&keybinds.new_pane, KeybindAction::NewPane),
+        (&keybinds.new_float, KeybindAction::NewFloat),
+        (&keybinds.toggle_float, KeybindAction::ToggleFloat),
+        (&keybinds.toggle_floats, KeybindAction::ToggleFloats),
+        (&keybinds.arrangement_next, KeybindAction::ArrangementNext),
+        (
+            &keybinds.arrangement_previous,
+            KeybindAction::ArrangementPrevious,
+        ),
+        (
+            &keybinds.pin_workspace_path,
+            KeybindAction::PinWorkspacePath,
+        ),
+        (
+            &keybinds.toggle_declared_repo,
+            KeybindAction::ToggleDeclaredRepo,
         ),
         (&keybinds.split_vertical, KeybindAction::SplitVertical),
         (&keybinds.split_horizontal, KeybindAction::SplitHorizontal),

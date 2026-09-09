@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use crate::api::schema::{
     EventData, EventEnvelope, EventKind, ResponseResult, WorkspaceCloseParams,
-    WorkspaceCreateParams, WorkspaceMoveBlockParams, WorkspaceMoveParams, WorkspaceRenameParams,
-    WorkspaceReportMetadataParams, WorkspaceTarget,
+    WorkspaceCreateParams, WorkspaceDeclaredRepoToggleParams, WorkspaceMoveBlockParams,
+    WorkspaceMoveParams, WorkspacePathPinToggleParams, WorkspaceRenameParams,
+    WorkspaceReportMetadataParams, WorkspaceSetPathParams, WorkspaceTarget,
 };
 use crate::app::App;
 
@@ -122,6 +123,141 @@ impl App {
                 label: params.label,
             },
         });
+
+        encode_success(
+            id,
+            ResponseResult::WorkspaceInfo {
+                workspace: self.workspace_info(index),
+            },
+        )
+    }
+
+    pub(super) fn handle_workspace_path_pin_toggle(
+        &mut self,
+        id: String,
+        params: WorkspacePathPinToggleParams,
+    ) -> String {
+        let Some(ws_idx) = self.parse_workspace_id(&params.workspace_id) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        self.toggle_workspace_path_pin_via_api(ws_idx);
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    /// Declare or undeclare the workspace's directory in `[[repos]]`. The
+    /// pinned path is the workspace's own directory; the focused pane's cwd
+    /// stands in for an unpinned workspace, matching the pin action.
+    pub(super) fn handle_workspace_declared_repo_toggle(
+        &mut self,
+        id: String,
+        params: WorkspaceDeclaredRepoToggleParams,
+    ) -> String {
+        let Some(ws_idx) = self.parse_workspace_id(&params.workspace_id) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        let path = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|ws| ws.pinned_path.clone())
+            .or_else(|| self.focused_pane_cwd_in_workspace(ws_idx));
+        let Some(path) = path else {
+            return encode_error(id, "workspace_path_unknown", "workspace has no directory");
+        };
+
+        let mut declared = false;
+        if let Err(error) = crate::config::update_file_at(
+            &crate::config::config_path(),
+            "declared repos",
+            |content| {
+                let (updated, now_declared) = crate::config::toggle_repo_path(content, &path);
+                declared = now_declared;
+                updated
+            },
+        ) {
+            return encode_error(id, "config_write_failed", error);
+        }
+        self.apply_config_from_disk(false);
+
+        let previous_toast = self.state.toast.clone();
+        self.state.toast = Some(crate::app::state::ToastNotification {
+            // The same neutral informational toast the pin action uses.
+            kind: crate::app::state::ToastKind::UpdateInstalled,
+            title: if declared {
+                "declared repo".to_string()
+            } else {
+                "undeclared repo".to_string()
+            },
+            context: path.display().to_string(),
+            position: None,
+            target: None,
+        });
+        self.sync_toast_deadline(previous_toast);
+        encode_success(id, ResponseResult::Ok {})
+    }
+
+    pub(crate) fn toggle_workspace_path_pin_via_api(&mut self, ws_idx: usize) {
+        let Some(current) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .map(|ws| ws.pinned_path.clone())
+        else {
+            return;
+        };
+        let Some(cwd) = self.focused_pane_cwd_in_workspace(ws_idx) else {
+            return;
+        };
+        let next = crate::workspace::toggled_pin(current.as_deref(), &cwd);
+        let previous_toast = self.state.toast.clone();
+        let workspace_id = self.public_workspace_id(ws_idx);
+        self.handle_workspace_set_path(
+            "tui.workspace.set_path".into(),
+            WorkspaceSetPathParams {
+                workspace_id,
+                path: next
+                    .as_ref()
+                    .map(|path| path.to_string_lossy().into_owned()),
+            },
+        );
+        let (title, context) = match &next {
+            Some(path) => (
+                "pinned workspace path".to_string(),
+                path.display().to_string(),
+            ),
+            None => (
+                "unpinned workspace path".to_string(),
+                "no longer claims a path".to_string(),
+            ),
+        };
+        self.state.toast = Some(crate::app::state::ToastNotification {
+            // The only neutral informational toast kind; `reloaded config`
+            // reuses it the same way.
+            kind: crate::app::state::ToastKind::UpdateInstalled,
+            title,
+            context,
+            position: None,
+            target: None,
+        });
+        self.sync_toast_deadline(previous_toast);
+    }
+
+    pub(super) fn handle_workspace_set_path(
+        &mut self,
+        id: String,
+        params: WorkspaceSetPathParams,
+    ) -> String {
+        let Some(index) = self.parse_workspace_id(&params.workspace_id) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        let Some(ws) = self.state.workspaces.get_mut(index) else {
+            return workspace_not_found(id, &params.workspace_id);
+        };
+        ws.pinned_path = params
+            .path
+            .as_deref()
+            .map(crate::workspace::expand_pinned_path);
+        self.schedule_session_save();
 
         encode_success(
             id,
@@ -378,6 +514,82 @@ mod tests {
         config::Config,
         workspace::Workspace,
     };
+
+    fn test_app() -> App {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        )
+    }
+
+    fn test_app_with_workspace() -> App {
+        let mut app = test_app();
+        app.state.workspaces = vec![Workspace::test_new("ws")];
+        app.state.active = Some(0);
+        app
+    }
+
+    #[test]
+    fn workspace_set_path_sets_and_clears() {
+        let mut app = test_app_with_workspace();
+        let workspace_id = app.state.workspaces[0].id.clone();
+
+        let set_response = app.handle_api_request(crate::api::schema::Request {
+            id: "set".into(),
+            method: crate::api::schema::Method::WorkspaceSetPath(
+                crate::api::schema::WorkspaceSetPathParams {
+                    workspace_id: workspace_id.clone(),
+                    path: Some("~/code".into()),
+                },
+            ),
+        });
+
+        let home = std::env::var("HOME").expect("HOME");
+        assert_eq!(
+            app.state.workspaces[0].pinned_path,
+            Some(std::path::PathBuf::from(format!("{home}/code")))
+        );
+        let set_json: serde_json::Value = serde_json::from_str(&set_response).unwrap();
+        assert_eq!(
+            set_json["result"]["workspace"]["path"],
+            format!("{home}/code")
+        );
+
+        let clear_response = app.handle_api_request(crate::api::schema::Request {
+            id: "clear".into(),
+            method: crate::api::schema::Method::WorkspaceSetPath(
+                crate::api::schema::WorkspaceSetPathParams {
+                    workspace_id,
+                    path: None,
+                },
+            ),
+        });
+
+        assert_eq!(app.state.workspaces[0].pinned_path, None);
+        let clear_json: serde_json::Value = serde_json::from_str(&clear_response).unwrap();
+        assert!(clear_json["result"]["workspace"]["path"].is_null());
+    }
+
+    #[test]
+    fn workspace_set_path_rejects_an_unknown_workspace() {
+        let mut app = test_app_with_workspace();
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "set".into(),
+            method: crate::api::schema::Method::WorkspaceSetPath(
+                crate::api::schema::WorkspaceSetPathParams {
+                    workspace_id: "wNOPE".into(),
+                    path: Some("/tmp".into()),
+                },
+            ),
+        });
+
+        assert!(response.contains("workspace_not_found"), "got: {response}");
+    }
 
     // `new_cwd = follow` must anchor on the focused pane for every creation
     // surface. Splits and tabs already do; a new workspace must follow the

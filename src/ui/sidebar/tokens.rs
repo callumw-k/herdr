@@ -97,6 +97,22 @@ pub(crate) fn agent_rows(
                         AgentSidebarToken::Agent => context
                             .agent_label
                             .map(|value| ResolvedTokenKind::Agent(value.to_string())),
+                        // The dim second row is per-agent context, so prefer the most
+                        // specific thing this pane knows about itself over the agent name,
+                        // which repeats on every row.
+                        AgentSidebarToken::Activity => context
+                            .terminal_title_stripped
+                            .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string()))
+                            .or_else(|| {
+                                context
+                                    .pane
+                                    .map(|value| ResolvedTokenKind::Pane(value.to_string()))
+                            })
+                            .or_else(|| {
+                                context
+                                    .agent_label
+                                    .map(|value| ResolvedTokenKind::Agent(value.to_string()))
+                            }),
                         AgentSidebarToken::TerminalTitle => context
                             .terminal_title
                             .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
@@ -228,6 +244,32 @@ mod tests {
             canonical_agent: entry.canonical_agent,
             tokens: &entry.tokens,
         }
+    }
+
+    #[test]
+    fn activity_prefers_terminal_title_then_pane_then_agent() {
+        let config = AgentsSidebarConfig {
+            rows: vec![vec![AgentSidebarToken::Activity]],
+            ..Default::default()
+        };
+
+        let mut entry = entry();
+        assert_eq!(
+            agent_rows(&config, context(&entry), "working")[0][0].kind,
+            ResolvedTokenKind::Agent("pi".into())
+        );
+
+        entry.pane = Some("build".into());
+        assert_eq!(
+            agent_rows(&config, context(&entry), "working")[0][0].kind,
+            ResolvedTokenKind::Pane("build".into())
+        );
+
+        entry.terminal_title_stripped = Some("cargo test".into());
+        assert_eq!(
+            agent_rows(&config, context(&entry), "working")[0][0].kind,
+            ResolvedTokenKind::TerminalTitle("cargo test".into())
+        );
     }
 
     #[test]
@@ -491,10 +533,9 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
                     suppress_git_details: true,
                 },
             ),
-            vec![vec![
-                ResolvedToken::unstyled(ResolvedTokenKind::StateIcon),
-                ResolvedToken::unstyled(ResolvedTokenKind::Workspace("feature".into())),
-            ]]
+            vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
+                "feature".into()
+            ))]]
         );
     }
 

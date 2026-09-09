@@ -7,9 +7,9 @@ use tracing::warn;
 
 use crate::detect::{Agent, AgentState};
 use crate::events::AppEvent;
-use crate::layout::PaneId;
 #[cfg(test)]
 use crate::layout::{find_in_direction, NavDirection};
+use crate::layout::{Arrangement, PaneId};
 use crate::selection::Selection;
 use crate::terminal::{EffectiveStateChange, TerminalStateMutation};
 use crate::workspace::WorkspaceGitStatus;
@@ -315,12 +315,112 @@ impl AppState {
             .get_mut(ws_idx)
             .and_then(|ws| ws.tabs.get_mut(tab_idx))
         {
-            tab.layout.focus_pane(pane_id);
+            if tab.is_float(pane_id) {
+                // With the float layer as its own layout there is no z-order to
+                // raise the target through; focusing it directly is the same
+                // "bring to top" effect the old stack reorder produced.
+                if let Some(layout) = tab.float_layout.as_mut() {
+                    layout.focus_pane(pane_id);
+                }
+                tab.floats_hidden = false;
+                tab.float_focused = true;
+            } else {
+                tab.float_focused = false;
+                tab.layout.focus_pane(pane_id);
+            }
             self.previous_pane_focus = previous;
             self.mark_session_dirty();
             return true;
         }
         false
+    }
+
+    /// Arrangement actions target whichever layer holds focus. Five actions share
+    /// this predicate so the rule is "creation and arrangement follow focus".
+    pub(crate) fn float_layer_has_focus(&self) -> bool {
+        self.active
+            .and_then(|ws_idx| self.workspaces.get(ws_idx))
+            .and_then(|ws| ws.active_tab())
+            .is_some_and(|tab| tab.float_focused && !tab.floats_hidden)
+    }
+
+    pub(crate) fn focus_floats_in_active_tab(&mut self) -> bool {
+        let Some(ws_idx) = self.active else {
+            return false;
+        };
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return false;
+        };
+        let Some(tab) = ws.active_tab_mut() else {
+            return false;
+        };
+        if tab.focus_floats() {
+            self.mark_session_dirty();
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn set_floats_hidden_in_active_tab(&mut self, hidden: bool) -> bool {
+        let Some(ws_idx) = self.active else {
+            return false;
+        };
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return false;
+        };
+        let Some(tab) = ws.active_tab_mut() else {
+            return false;
+        };
+        if tab.set_floats_hidden(hidden) {
+            self.mark_session_dirty();
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn set_tab_arrangement(&mut self, arrangement: Arrangement) {
+        let float_focused = self.float_layer_has_focus();
+        let Some(ws_idx) = self.active else {
+            return;
+        };
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return;
+        };
+        let Some(tab) = ws.active_tab_mut() else {
+            return;
+        };
+        if float_focused {
+            tab.float_arrangement = arrangement;
+            tab.float_needs_reflow = true;
+        } else {
+            tab.arrangement = arrangement;
+            tab.needs_reflow = true;
+        }
+        self.mark_session_dirty();
+    }
+
+    pub(crate) fn cycle_tab_arrangement(&mut self, forward: bool) {
+        let float_focused = self.float_layer_has_focus();
+        let Some(ws_idx) = self.active else {
+            return;
+        };
+        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+            return;
+        };
+        let Some(tab) = ws.active_tab_mut() else {
+            return;
+        };
+        if float_focused {
+            tab.float_arrangement = if forward {
+                tab.float_arrangement.next()
+            } else {
+                tab.float_arrangement.previous()
+            };
+            tab.float_needs_reflow = true;
+        } else {
+            tab.cycle_arrangement(forward);
+        }
+        self.mark_session_dirty();
     }
 }
 
@@ -879,6 +979,25 @@ impl AppState {
         }
     }
 
+    #[cfg(test)]
+    pub fn cycle_pane(&mut self, reverse: bool) {
+        let Some(ws_idx) = self.active else {
+            return;
+        };
+        let Some(tab) = self.workspaces.get(ws_idx).and_then(|ws| ws.active_tab()) else {
+            return;
+        };
+        let ids = tab.focused_layer_pane_ids();
+        if let Some(pos) = ids.iter().position(|id| *id == tab.focused_pane()) {
+            let target = if reverse {
+                ids[(pos + ids.len() - 1) % ids.len()]
+            } else {
+                ids[(pos + 1) % ids.len()]
+            };
+            self.focus_pane_in_workspace(ws_idx, target);
+        }
+    }
+
     pub(crate) fn apply_pane_zoom(
         &mut self,
         ws_idx: usize,
@@ -979,18 +1098,21 @@ impl AppState {
     #[cfg(test)]
     fn close_focused_pane_would_close_workspace(&self, ws_idx: usize) -> bool {
         self.workspaces.get(ws_idx).is_some_and(|ws| {
-            let pane_count = ws
-                .active_tab()
-                .map(|tab| tab.layout.pane_count())
-                .unwrap_or(0);
-            pane_count <= 1 && ws.tabs.len() <= 1
+            let tab = ws.active_tab();
+            let pane_count = tab.map(|tab| tab.layout.pane_count()).unwrap_or(0);
+            let is_float = tab
+                .map(|tab| tab.is_float(tab.focused_pane()))
+                .unwrap_or(false);
+            !is_float && pane_count <= 1 && ws.tabs.len() <= 1
         })
     }
 
     pub(crate) fn close_pane_would_close_workspace(&self, ws_idx: usize, pane_id: PaneId) -> bool {
         self.workspaces.get(ws_idx).is_some_and(|ws| {
             ws.find_tab_index_for_pane(pane_id).is_some_and(|tab_idx| {
-                ws.tabs[tab_idx].layout.pane_count() <= 1 && ws.tabs.len() <= 1
+                !ws.tabs[tab_idx].is_float(pane_id)
+                    && ws.tabs[tab_idx].layout.pane_count() <= 1
+                    && ws.tabs.len() <= 1
             })
         })
     }
@@ -1804,6 +1926,19 @@ impl AppState {
                 let _ = cache_updates;
                 Vec::new()
             }
+            AppEvent::ForegroundProcessReported { pane_id, name } => {
+                let Some(terminal_id) = self.workspaces.iter().find_map(|ws| {
+                    ws.pane_state(pane_id)
+                        .map(|pane| pane.attached_terminal_id.clone())
+                }) else {
+                    return Vec::new();
+                };
+                let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+                    return Vec::new();
+                };
+                terminal.foreground_process_name = name;
+                Vec::new()
+            }
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
             AppEvent::TabBarCommandFinished { .. } => Vec::new(),
@@ -2248,6 +2383,22 @@ mod tests {
     use crate::workspace::Workspace;
     use ratatui::layout::Direction;
 
+    fn app_with_float_stack(count: usize) -> (AppState, Vec<crate::layout::PaneId>) {
+        use crate::pane::PaneState;
+        use crate::terminal::TerminalId;
+
+        let mut state = app_with_workspaces(&["ws"]);
+        state.active = Some(0);
+        let mut ids = Vec::new();
+        let tab = state.workspaces[0].active_tab_mut().expect("a tab");
+        for _ in 0..count {
+            let id = crate::layout::PaneId::alloc();
+            tab.push_float(id, PaneState::new(TerminalId::alloc()));
+            ids.push(id);
+        }
+        (state, ids)
+    }
+
     fn app_with_workspaces(names: &[&str]) -> AppState {
         let mut state = AppState::test_new();
         state.toast_config.delay_seconds = 0;
@@ -2486,6 +2637,22 @@ mod tests {
             None
         );
         assert_eq!(selected_url("open file:///tmp/report", "file"), None);
+    }
+
+    #[test]
+    fn directional_navigation_off_a_float_leaves_the_layer_visible() {
+        let (mut state, _) = app_with_float_stack(1);
+        let tiled = state.workspaces[0].tabs[0].root_pane;
+
+        state.focus_pane_in_workspace(0, tiled);
+
+        assert!(
+            !state.workspaces[0]
+                .active_tab()
+                .expect("a tab")
+                .floats_hidden,
+            "focus_pane_in_workspace must not hide floats"
+        );
     }
 
     #[test]
@@ -3618,6 +3785,53 @@ mod tests {
     }
 
     #[test]
+    fn foreground_process_report_updates_terminal_foreground_process_name() {
+        let mut state = app_with_workspaces(&["active"]);
+        let pane_id = *state.workspaces[0].panes.keys().next().unwrap();
+        let terminal_id = state.workspaces[0]
+            .pane_state(pane_id)
+            .unwrap()
+            .attached_terminal_id
+            .clone();
+        state.session_dirty = false;
+
+        let updates = state.handle_app_event(AppEvent::ForegroundProcessReported {
+            pane_id,
+            name: Some("nvim".to_string()),
+        });
+
+        assert!(updates.is_empty());
+        assert_eq!(
+            state
+                .terminals
+                .get(&terminal_id)
+                .unwrap()
+                .foreground_process_name
+                .as_deref(),
+            Some("nvim")
+        );
+        assert!(
+            !state.session_dirty,
+            "foreground process name must not be persisted"
+        );
+
+        let updates = state.handle_app_event(AppEvent::ForegroundProcessReported {
+            pane_id,
+            name: None,
+        });
+
+        assert!(updates.is_empty());
+        assert_eq!(
+            state
+                .terminals
+                .get(&terminal_id)
+                .unwrap()
+                .foreground_process_name,
+            None
+        );
+    }
+
+    #[test]
     fn background_idle_sets_finished_toast() {
         let mut state = app_with_workspaces(&["active", "background"]);
         state.active = Some(0);
@@ -3823,6 +4037,170 @@ mod tests {
         assert_eq!(toast.kind, ToastKind::UpdateInstalled);
         assert_eq!(toast.title, "Agent detection rules updated");
         assert_eq!(toast.context, "codex 2026.06.10.1");
+    }
+
+    #[test]
+    fn set_tab_arrangement_updates_active_tab_and_marks_reflow() {
+        let mut state = app_with_workspaces(&["test"]);
+        state.set_tab_arrangement(Arrangement::Stacked);
+        let tab = &state.workspaces[0].tabs[0];
+        assert_eq!(tab.arrangement, Arrangement::Stacked);
+        assert!(tab.needs_reflow);
+    }
+
+    #[test]
+    fn cycle_tab_arrangement_advances_and_wraps() {
+        let mut state = app_with_workspaces(&["test"]);
+        assert_eq!(
+            state.workspaces[0].tabs[0].arrangement,
+            Arrangement::Stacked
+        );
+        state.cycle_tab_arrangement(true);
+        assert_eq!(
+            state.workspaces[0].tabs[0].arrangement,
+            Arrangement::Vertical
+        );
+        state.cycle_tab_arrangement(false);
+        assert_eq!(
+            state.workspaces[0].tabs[0].arrangement,
+            Arrangement::Stacked
+        );
+    }
+
+    #[test]
+    fn cycling_affects_only_the_focused_layer() {
+        let (mut state, _) = app_with_float_stack(2);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        let tiled_before = tab.arrangement;
+
+        state.cycle_tab_arrangement(true);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(tab.arrangement, tiled_before, "tiled layer untouched");
+        assert_ne!(
+            tab.float_arrangement,
+            Arrangement::Stacked,
+            "float layer cycled"
+        );
+    }
+
+    #[test]
+    fn cycling_hits_the_tiled_layer_when_floats_are_not_focused() {
+        let (mut state, _) = app_with_float_stack(2);
+        state.workspaces[0]
+            .active_tab_mut()
+            .expect("a tab")
+            .float_focused = false;
+        let float_before = state.workspaces[0]
+            .active_tab()
+            .expect("a tab")
+            .float_arrangement;
+
+        state.cycle_tab_arrangement(true);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(tab.float_arrangement, float_before, "float layer untouched");
+        assert_ne!(tab.arrangement, Arrangement::Stacked, "tiled layer cycled");
+    }
+
+    #[test]
+    fn cycling_panes_walks_the_focused_float_layer() {
+        let (mut state, ids) = app_with_float_stack(3);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert!(tab.float_focused);
+        assert_eq!(tab.focused_pane(), ids[2]);
+
+        state.cycle_pane(false);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(
+            tab.focused_pane(),
+            ids[0],
+            "forward wraps within the float layer"
+        );
+
+        state.cycle_pane(true);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(tab.focused_pane(), ids[2], "backward wraps the other way");
+    }
+
+    #[test]
+    fn cycling_panes_never_leaves_the_float_layer_for_a_tiled_pane() {
+        let (mut state, ids) = app_with_float_stack(2);
+        let tiled = state.workspaces[0]
+            .active_tab()
+            .expect("a tab")
+            .layout
+            .focused();
+        for _ in 0..4 {
+            state.cycle_pane(false);
+            let tab = state.workspaces[0].active_tab().expect("a tab");
+            assert_ne!(tab.focused_pane(), tiled, "cycling must not cross layers");
+            assert!(ids.contains(&tab.focused_pane()));
+        }
+    }
+
+    #[test]
+    fn cycling_panes_walks_the_tiled_layer_when_floats_are_hidden() {
+        let (mut state, _) = app_with_float_stack(2);
+        let tiled = {
+            let tab = state.workspaces[0].active_tab_mut().expect("a tab");
+            // A stale focus flag on a hidden layer must not capture cycling.
+            tab.floats_hidden = true;
+            tab.layout.focused()
+        };
+
+        state.cycle_pane(false);
+
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(tab.focused_pane(), tiled, "single tiled pane stays focused");
+    }
+
+    #[test]
+    fn a_hidden_float_layer_does_not_capture_the_arrangement_keys() {
+        let (mut state, _) = app_with_float_stack(2);
+        {
+            let tab = state.workspaces[0].active_tab_mut().expect("a tab");
+            // A stale focus flag on a hidden layer must not win.
+            tab.float_focused = true;
+            tab.floats_hidden = true;
+        }
+        let float_before = state.workspaces[0]
+            .active_tab()
+            .expect("a tab")
+            .float_arrangement;
+
+        state.cycle_tab_arrangement(true);
+
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(
+            tab.float_arrangement, float_before,
+            "hidden float layer untouched"
+        );
+        assert_ne!(
+            tab.arrangement,
+            Arrangement::Stacked,
+            "tiled layer cycled instead"
+        );
+    }
+
+    #[test]
+    fn setting_an_arrangement_targets_the_focused_layer() {
+        let (mut state, _) = app_with_float_stack(2);
+        state.set_tab_arrangement(Arrangement::Grid);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(tab.float_arrangement, Arrangement::Grid);
+        assert_eq!(
+            tab.arrangement,
+            Arrangement::Stacked,
+            "tiled layer untouched"
+        );
+
+        state.set_tab_arrangement(Arrangement::Vertical);
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert_eq!(tab.float_arrangement, Arrangement::Vertical);
+        assert_eq!(
+            tab.arrangement,
+            Arrangement::Stacked,
+            "tiled layer untouched"
+        );
     }
 
     #[test]

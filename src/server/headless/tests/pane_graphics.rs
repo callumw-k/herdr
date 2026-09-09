@@ -1476,3 +1476,40 @@ fn timeout_retires_stream_without_producer_ack() {
     assert!(!server.clients[&7].direct_graphics);
     assert!(server.clients[&7].pixel_mouse);
 }
+
+#[tokio::test]
+async fn a_visible_float_declines_the_retained_pane_surface_patch() {
+    let (mut server, client_rx, tiled_pane) = retained_test_server(b"tiled-aaaa");
+    let client = server.clients.get_mut(&1).unwrap();
+    client.mode = ClientConnectionMode::ClientShell;
+    client.render_state =
+        crate::server::render_stream::ClientRenderState::new(RenderEncoding::SemanticFrame);
+    server.render_and_stream();
+    let _ = recv_pane_surface(&client_rx, "baseline surface");
+
+    write_shared_test_pane(&mut server, tiled_pane, b"\rZ");
+    assert!(server.render_retained_pane_surface_and_stream(&HashSet::from([tiled_pane])));
+    let _ = recv_pane_surface_patch(&client_rx, "patch with no float present");
+
+    let workspace = &mut server.app.state.workspaces[0];
+    let float = crate::layout::PaneId::alloc();
+    let number = workspace.next_public_pane_number;
+    workspace.register_new_pane_with_number(float, number);
+    workspace.tabs[0].push_float(
+        float,
+        crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+    );
+    workspace.insert_test_runtime(
+        float,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(40, 12, b"float-aaaa"),
+    );
+    server.render_and_stream();
+    let composited = recv_pane_surface(&client_rx, "surface with the float composited");
+    assert!(frame_text(&composited.frame).contains("float-aaaa"));
+
+    write_shared_test_pane(&mut server, tiled_pane, b"\rY");
+    assert!(
+        !server.render_retained_pane_surface_and_stream(&HashSet::from([tiled_pane])),
+        "patching a covered pane would paint through the float"
+    );
+}

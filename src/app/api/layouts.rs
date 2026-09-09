@@ -1,13 +1,14 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use ratatui::layout::Direction;
 
 use crate::api::schema::{
-    EventData, EventEnvelope, EventKind, LayoutApplyParams, LayoutDescription, LayoutExportParams,
-    LayoutNode, LayoutPane, LayoutSetSplitRatioParams, ResponseResult, SplitDirection,
+    ArrangementSchema, EventData, EventEnvelope, EventKind, LayoutApplyParams, LayoutDescription,
+    LayoutExportParams, LayoutNode, LayoutPane, LayoutSetSplitRatioParams, ResponseResult,
+    SplitDirection,
 };
 use crate::app::{App, Mode};
-use crate::layout::{Node, PaneId};
+use crate::layout::{Arrangement, Node, PaneId, TileLayout};
 use crate::workspace::NewPane;
 
 use super::responses::{encode_error, encode_success};
@@ -65,7 +66,10 @@ impl App {
         } else {
             return encode_error(id, "workspace_not_found", "no active workspace");
         };
-        if let Err(message) = validate_layout_tree(&params.root) {
+        let roots: Vec<&LayoutNode> = std::iter::once(&params.root)
+            .chain(params.float_root.as_ref())
+            .collect();
+        if let Err(message) = validate_layout_trees(&roots) {
             return encode_error(id, "invalid_layout", message);
         }
 
@@ -148,6 +152,42 @@ impl App {
         if let Err(message) = self.apply_layout_node_to_pane(ws_idx, new_root_pane, &params.root) {
             self.rollback_layout_tab(ws_idx, new_root_pane);
             return encode_error(id, "layout_apply_failed", message);
+        }
+
+        if let Some(float_root) = params.float_root.as_ref() {
+            let float_leaf = first_layout_leaf(float_root);
+            let float_cwd = self.layout_root_cwd(ws_idx, replace_target, float_leaf);
+            if let Err(message) =
+                self.apply_float_layout_root(ws_idx, new_tab_idx, float_root, float_cwd)
+            {
+                self.rollback_layout_tab(ws_idx, new_root_pane);
+                return encode_error(id, "layout_apply_failed", message);
+            }
+        }
+        // Building the trees above goes through the same split and float
+        // primitives as ordinary pane creation, which mark each layer for a
+        // re-flow. That re-flow is meant for pane create/close/arrangement-
+        // cycle, not for a tree layout.apply just finished building to spec —
+        // left set, the next render would discard it back into the layer's
+        // arrangement.
+        if let Some(tab) = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(new_tab_idx))
+        {
+            tab.needs_reflow = false;
+            tab.float_needs_reflow = false;
+            // An applied stack root is the tab's arrangement, not a one-off
+            // shape. Leaving `arrangement` alone made `layout.export` report a
+            // grid for a stacked tree, and the next pane create or close would
+            // re-flow that stack away.
+            if matches!(params.root, LayoutNode::Stack { .. }) {
+                tab.arrangement = Arrangement::Stacked;
+            }
+            if matches!(params.float_root, Some(LayoutNode::Stack { .. })) {
+                tab.float_arrangement = Arrangement::Stacked;
+            }
         }
 
         if let Some((target_ws_idx, target_tab_idx)) = replace_target {
@@ -275,11 +315,18 @@ impl App {
     fn layout_description(&self, ws_idx: usize, tab_idx: usize) -> Option<LayoutDescription> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab = ws.tabs.get(tab_idx)?;
+        let float_root = match tab.float_layout.as_ref() {
+            Some(layout) => Some(self.layout_node_description(ws_idx, tab_idx, layout.root())?),
+            None => None,
+        };
         Some(LayoutDescription {
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             zoomed: tab.zoomed,
-            focused_pane_id: self.public_pane_id(ws_idx, tab.layout.focused())?,
+            focused_pane_id: self.public_pane_id(ws_idx, tab.focused_pane())?,
+            arrangement: arrangement_schema(tab.arrangement),
+            float_arrangement: arrangement_schema(tab.float_arrangement),
+            float_root,
             root: self.layout_node_description(ws_idx, tab_idx, tab.layout.root())?,
         })
     }
@@ -308,6 +355,16 @@ impl App {
                 first: Box::new(self.layout_node_description(ws_idx, tab_idx, first)?),
                 second: Box::new(self.layout_node_description(ws_idx, tab_idx, second)?),
             }),
+            Node::Stack { panes, active } => {
+                let panes = panes
+                    .iter()
+                    .map(|pane_id| self.layout_pane_description(ws_idx, tab_idx, *pane_id))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(LayoutNode::Stack {
+                    panes,
+                    active: *active,
+                })
+            }
         }
     }
 
@@ -385,7 +442,58 @@ impl App {
                 self.apply_layout_node_to_pane(ws_idx, pane_id, first)?;
                 self.apply_layout_node_to_pane(ws_idx, new_pane, second)
             }
+            LayoutNode::Stack { panes, active } => {
+                // `pane_id` already carries stack_panes[0]'s cwd/command/env: the
+                // caller created it (tab root or a split's leaf) using
+                // `first_layout_leaf`, which descends into a stack the same way it
+                // descends into a split's first child.
+                let Some(first) = panes.first() else {
+                    return Err("stack must have at least one pane".into());
+                };
+                self.apply_layout_pane_label(ws_idx, pane_id, first);
+
+                let mut members = vec![pane_id];
+                for pane in &panes[1..] {
+                    let new_pane =
+                        self.layout_split_pane(ws_idx, pane_id, SplitDirection::Right, 0.5, pane)?;
+                    members.push(new_pane);
+                }
+                let active = (*active).min(members.len() - 1);
+                self.collapse_layout_pane_into_stack(ws_idx, &members, active);
+                Ok(())
+            }
         }
+    }
+
+    /// Fold the panes created for a `LayoutNode::Stack` into a single
+    /// `Node::Stack`. The panes were created one at a time via ordinary splits
+    /// (there is no dedicated stack-insertion primitive), so this rewrites the
+    /// resulting split chain — the smallest subtree whose panes are exactly
+    /// `members` — into the flat shape the API describes. Pane ids are unique
+    /// for the process lifetime, so that subtree is unambiguous.
+    ///
+    /// Focus moves to the requested active member: `TileLayout` tracks one
+    /// focus pane for the whole tab, and `from_saved` derives a stack's active
+    /// index from it, so the active member has to be the focus for the
+    /// requested index to stick.
+    fn collapse_layout_pane_into_stack(
+        &mut self,
+        ws_idx: usize,
+        members: &[PaneId],
+        active: usize,
+    ) {
+        let Some(&focus_member) = members.get(active).or_else(|| members.first()) else {
+            return;
+        };
+        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+            return;
+        };
+        let Some(tab_idx) = ws.find_tab_index_for_pane(focus_member) else {
+            return;
+        };
+        let tab = &mut ws.tabs[tab_idx];
+        let new_root = rebuild_layout_node_as_stack(tab.layout.root(), members, active);
+        tab.layout = TileLayout::from_saved(new_root, focus_member);
     }
 
     fn layout_split_pane(
@@ -491,6 +599,191 @@ impl App {
         }
     }
 
+    /// Builds the float layer for a layout.apply request. Unlike the tiled
+    /// root, which grows through incremental splits so it can attach to an
+    /// already-running tab, the float layer starts empty for a freshly
+    /// created tab, so the whole tree can be spawned and assembled in one pass.
+    fn apply_float_layout_root(
+        &mut self,
+        ws_idx: usize,
+        tab_idx: usize,
+        node: &LayoutNode,
+        default_cwd: PathBuf,
+    ) -> Result<(), String> {
+        let (float_node, focus) = self.build_float_node(ws_idx, tab_idx, node, &default_cwd)?;
+        let Some(tab) = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+        else {
+            return Err("tab not found".into());
+        };
+        tab.float_layout = Some(TileLayout::from_saved(float_node, focus));
+        Ok(())
+    }
+
+    fn build_float_node(
+        &mut self,
+        ws_idx: usize,
+        tab_idx: usize,
+        node: &LayoutNode,
+        default_cwd: &Path,
+    ) -> Result<(Node, PaneId), String> {
+        match node {
+            LayoutNode::Pane { pane } => {
+                let pane_id = self.spawn_float_pane(ws_idx, tab_idx, pane, default_cwd)?;
+                Ok((Node::Pane(pane_id), pane_id))
+            }
+            LayoutNode::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => {
+                let (first_node, focus) =
+                    self.build_float_node(ws_idx, tab_idx, first, default_cwd)?;
+                let (second_node, _) =
+                    self.build_float_node(ws_idx, tab_idx, second, default_cwd)?;
+                let direction = match direction {
+                    SplitDirection::Right => Direction::Horizontal,
+                    SplitDirection::Down => Direction::Vertical,
+                };
+                Ok((
+                    Node::Split {
+                        direction,
+                        ratio: *ratio,
+                        first: Box::new(first_node),
+                        second: Box::new(second_node),
+                    },
+                    focus,
+                ))
+            }
+            LayoutNode::Stack { panes, active } => {
+                let mut ids = Vec::with_capacity(panes.len());
+                for pane in panes {
+                    ids.push(self.spawn_float_pane(ws_idx, tab_idx, pane, default_cwd)?);
+                }
+                // validate_layout_tree already rejected an empty stack and an
+                // out-of-range active index before this ran.
+                let focus = ids[*active];
+                Ok((
+                    Node::Stack {
+                        panes: ids,
+                        active: *active,
+                    },
+                    focus,
+                ))
+            }
+        }
+    }
+
+    /// Spawns a runtime for one float leaf. There is no existing float pane to
+    /// split from here — unlike `layout_split_pane`, which extends the tiled
+    /// tree — so this mirrors `App::open_float_pane`'s spawn plumbing rather
+    /// than routing through it.
+    ///
+    /// ponytail: every leaf without its own `cwd` falls back to the same
+    /// `default_cwd` (the float root's), rather than chaining from its
+    /// nearest sibling the way the tiled root's split-by-split build does.
+    /// Upgrade to per-sibling chaining if float trees with deep, mixed
+    /// explicit/inherited cwds turn out to matter in practice.
+    fn spawn_float_pane(
+        &mut self,
+        ws_idx: usize,
+        tab_idx: usize,
+        pane: &LayoutPane,
+        default_cwd: &Path,
+    ) -> Result<PaneId, String> {
+        let cwd = pane
+            .cwd
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| default_cwd.to_path_buf());
+        let extra_env = super::env::normalize_launch_env(pane.env.clone())
+            .map_err(|(_, message)| message.to_string())?;
+        let command = layout_command(pane)?;
+
+        let terminal_area = self.state.view.terminal_area;
+        let geometry = crate::popup_size::resolve_popup_geometry(
+            self.state.floating_pane_width,
+            self.state.floating_pane_height,
+            terminal_area,
+        );
+        let (rows, cols) = match geometry {
+            Some(geometry) => (geometry.inner.height, geometry.inner.width),
+            None => self.state.estimate_pane_size(),
+        };
+
+        let pane_id = PaneId::alloc();
+        let pane_number = self.state.workspaces[ws_idx].next_public_pane_number;
+        let workspace_id = self.public_workspace_id(ws_idx);
+        let tab_number = self.state.workspaces[ws_idx].tabs[tab_idx].number;
+        let launch_env = crate::pane::PaneLaunchEnv::from_extra(extra_env).with_identity(
+            workspace_id.clone(),
+            crate::workspace::public_tab_id_for_number(&workspace_id, tab_number),
+            crate::workspace::public_pane_id_for_number(&workspace_id, pane_number),
+        );
+        let default_shell = self.state.default_shell.clone();
+        let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
+        let host_terminal_theme = self.state.host_terminal_theme;
+        let host_terminal_appearance = self.state.host_terminal_appearance;
+
+        let runtime = if let Some(argv) = command.as_deref() {
+            crate::terminal::TerminalRuntime::spawn_argv_command(
+                pane_id,
+                rows,
+                cols,
+                cwd.clone(),
+                argv,
+                &launch_env,
+                crate::pane::AgentDetection::Enabled,
+                scrollback_limit_bytes,
+                host_terminal_theme,
+                host_terminal_appearance,
+                self.event_tx.clone(),
+                self.render_notify.clone(),
+                self.render_dirty.clone(),
+            )
+        } else {
+            crate::terminal::TerminalRuntime::spawn(
+                pane_id,
+                rows,
+                cols,
+                cwd.clone(),
+                scrollback_limit_bytes,
+                host_terminal_theme,
+                host_terminal_appearance,
+                crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
+                &launch_env,
+                self.event_tx.clone(),
+                self.render_notify.clone(),
+                self.render_dirty.clone(),
+            )
+        }
+        .map_err(|err| err.to_string())?;
+
+        let terminal_id = crate::terminal::TerminalId::alloc();
+        let terminal = match command {
+            Some(argv) => {
+                crate::terminal::TerminalState::new(terminal_id.clone(), cwd).with_launch_argv(argv)
+            }
+            None => crate::terminal::TerminalState::new(terminal_id.clone(), cwd),
+        };
+        self.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        self.state.remove_alias_shadowed_by_new_pane(pane_id);
+        self.state.terminals.insert(terminal_id.clone(), terminal);
+
+        let ws = &mut self.state.workspaces[ws_idx];
+        ws.register_new_pane_with_number(pane_id, pane_number);
+        ws.tabs[tab_idx]
+            .panes
+            .insert(pane_id, crate::pane::PaneState::new(terminal_id));
+
+        self.apply_layout_pane_label(ws_idx, pane_id, pane);
+        Ok(pane_id)
+    }
+
     fn rollback_layout_tab(&mut self, ws_idx: usize, root_pane: PaneId) {
         let Some(tab_idx) = self
             .state
@@ -519,6 +812,9 @@ fn first_layout_leaf(node: &LayoutNode) -> &LayoutPane {
     match node {
         LayoutNode::Pane { pane } => pane,
         LayoutNode::Split { first, .. } => first_layout_leaf(first),
+        // `validate_layout_tree` runs before this is called and rejects an
+        // empty stack, so `panes` is guaranteed non-empty here.
+        LayoutNode::Stack { panes, .. } => panes.first().expect("stack validated non-empty"),
     }
 }
 
@@ -530,12 +826,17 @@ fn layout_command(pane: &LayoutPane) -> Result<Option<Vec<String>>, String> {
     }
 }
 
-fn validate_layout_tree(root: &LayoutNode) -> Result<(), String> {
+/// Every root in one call shares a single pane budget: `layout.apply` spawns a
+/// PTY per pane across all of them, so validating them separately would let a
+/// tiled tree and a float tree each claim the cap.
+fn validate_layout_trees(roots: &[&LayoutNode]) -> Result<(), String> {
     let mut stats = LayoutTreeStats {
         panes: 0,
         max_depth: 0,
     };
-    validate_layout_node(root, 1, &mut stats)?;
+    for root in roots {
+        validate_layout_node(root, 1, &mut stats)?;
+    }
     if stats.panes > MAX_LAYOUT_PANES {
         return Err(format!(
             "layout has {} panes; maximum is {}",
@@ -591,6 +892,80 @@ fn validate_layout_node(
             validate_layout_node(first, depth + 1, stats)?;
             validate_layout_node(second, depth + 1, stats)
         }
+        LayoutNode::Stack { panes, active } => {
+            if panes.is_empty() {
+                return Err("stack must have at least one pane".into());
+            }
+            if *active >= panes.len() {
+                return Err(format!(
+                    "stack active index {active} is out of range for {} panes",
+                    panes.len()
+                ));
+            }
+            for pane in panes {
+                stats.panes += 1;
+                if stats.panes > MAX_LAYOUT_PANES {
+                    return Err(format!("layout has more than {} panes", MAX_LAYOUT_PANES));
+                }
+                layout_command(pane)?;
+                super::env::normalize_launch_env(pane.env.clone())
+                    .map_err(|(_, message)| message.to_string())?;
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Pane ids under `node`, in tree order.
+fn node_pane_ids(node: &Node) -> Vec<PaneId> {
+    match node {
+        Node::Pane(id) => vec![*id],
+        Node::Split { first, second, .. } => {
+            let mut ids = node_pane_ids(first);
+            ids.extend(node_pane_ids(second));
+            ids
+        }
+        Node::Stack { panes, .. } => panes.clone(),
+    }
+}
+
+/// Rebuild `node`, replacing the smallest subtree whose pane set exactly
+/// matches `members` with a flat `Node::Stack`. Pane ids are unique for the
+/// process lifetime, so that subtree is unambiguous.
+fn rebuild_layout_node_as_stack(node: &Node, members: &[PaneId], active: usize) -> Node {
+    let ids = node_pane_ids(node);
+    if ids.len() == members.len() && members.iter().all(|id| ids.contains(id)) {
+        return Node::Stack {
+            panes: members.to_vec(),
+            active,
+        };
+    }
+    match node {
+        Node::Pane(id) => Node::Pane(*id),
+        Node::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => Node::Split {
+            direction: *direction,
+            ratio: *ratio,
+            first: Box::new(rebuild_layout_node_as_stack(first, members, active)),
+            second: Box::new(rebuild_layout_node_as_stack(second, members, active)),
+        },
+        Node::Stack { panes, active } => Node::Stack {
+            panes: panes.clone(),
+            active: *active,
+        },
+    }
+}
+
+fn arrangement_schema(arrangement: Arrangement) -> ArrangementSchema {
+    match arrangement {
+        Arrangement::Vertical => ArrangementSchema::Vertical,
+        Arrangement::Horizontal => ArrangementSchema::Horizontal,
+        Arrangement::Grid => ArrangementSchema::Grid,
+        Arrangement::Stacked => ArrangementSchema::Stacked,
     }
 }
 
@@ -603,6 +978,7 @@ mod tests {
         config::{Config, ShellModeConfig},
         workspace::Workspace,
     };
+    use ratatui::layout::Rect;
 
     fn app_with_workspace() -> App {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -627,6 +1003,7 @@ mod tests {
         let mut app = app_with_workspace();
         let root = app.state.workspaces[0].tabs[0].root_pane;
         let right = app.state.workspaces[0].test_split(Direction::Horizontal);
+        app.state.workspaces[0].tabs[0].arrangement = Arrangement::Grid;
         app.state.ensure_test_terminals();
         app.state.workspaces[0].tabs[0].layout.focus_pane(root);
         app.state.workspaces[0].tabs[0]
@@ -672,6 +1049,463 @@ mod tests {
         };
         assert_eq!(pane.label.as_deref(), Some("tests"));
         assert_eq!(pane.pane_id, Some(app.public_pane_id(0, right).unwrap()));
+        assert_eq!(layout.arrangement, ArrangementSchema::Grid);
+    }
+
+    #[test]
+    fn layout_export_returns_a_stack_node_for_a_stacked_tab() {
+        let mut app = app_with_workspace();
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let second = app.state.workspaces[0].test_split(Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        {
+            let tab = &mut app.state.workspaces[0].tabs[0];
+            tab.layout = TileLayout::from_saved(
+                Node::Stack {
+                    panes: vec![root, second],
+                    active: 1,
+                },
+                second,
+            );
+            tab.arrangement = Arrangement::Stacked;
+        }
+
+        let response = app.handle_layout_export(
+            "req".into(),
+            LayoutExportParams {
+                tab_id: None,
+                pane_id: None,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::LayoutExport { layout } = success.result else {
+            panic!("expected layout export response");
+        };
+        assert_eq!(layout.arrangement, ArrangementSchema::Stacked);
+        let LayoutNode::Stack { panes, active } = layout.root else {
+            panic!("expected stack layout root");
+        };
+        assert_eq!(active, 1);
+        assert_eq!(
+            panes
+                .iter()
+                .map(|pane| pane.pane_id.clone())
+                .collect::<Vec<_>>(),
+            vec![app.public_pane_id(0, root), app.public_pane_id(0, second),]
+        );
+    }
+
+    #[tokio::test]
+    async fn layout_apply_installs_a_stack_of_panes() {
+        let mut app = app_with_workspace();
+        let original_tab_id = app.public_tab_id(0, 0).unwrap();
+
+        let response = app.handle_layout_apply(
+            "req".into(),
+            LayoutApplyParams {
+                workspace_id: None,
+                tab_id: Some(original_tab_id),
+                tab_label: Some("stack".into()),
+                focus: true,
+                root: LayoutNode::Stack {
+                    panes: vec![
+                        LayoutPane {
+                            label: Some("one".into()),
+                            ..Default::default()
+                        },
+                        LayoutPane {
+                            label: Some("two".into()),
+                            command: Some(vec!["sh".into(), "-c".into(), "true".into()]),
+                            ..Default::default()
+                        },
+                        LayoutPane {
+                            label: Some("three".into()),
+                            ..Default::default()
+                        },
+                    ],
+                    active: 1,
+                },
+                float_root: None,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::LayoutApply { layout } = success.result else {
+            panic!("expected layout apply response");
+        };
+        let LayoutNode::Stack { panes, active } = layout.root else {
+            panic!("expected stack layout root");
+        };
+        assert_eq!(active, 1);
+        assert_eq!(panes.len(), 3);
+        assert_eq!(panes[0].label.as_deref(), Some("one"));
+        assert_eq!(panes[1].label.as_deref(), Some("two"));
+        assert_eq!(panes[2].label.as_deref(), Some("three"));
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_count(), 3);
+        assert!(matches!(
+            app.state.workspaces[0].tabs[0].layout.root(),
+            Node::Stack { panes, .. } if panes.len() == 3
+        ));
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn layout_apply_stack_survives_the_next_render_reflow() {
+        let mut app = app_with_workspace();
+        let original_tab_id = app.public_tab_id(0, 0).unwrap();
+
+        app.handle_layout_apply(
+            "req".into(),
+            LayoutApplyParams {
+                workspace_id: None,
+                tab_id: Some(original_tab_id),
+                tab_label: Some("stack".into()),
+                focus: true,
+                root: LayoutNode::Stack {
+                    panes: vec![
+                        LayoutPane::default(),
+                        LayoutPane::default(),
+                        LayoutPane::default(),
+                    ],
+                    active: 1,
+                },
+                float_root: None,
+            },
+        );
+
+        let tab = &mut app.state.workspaces[0].tabs[0];
+        let members = tab.layout.pane_ids();
+        assert_eq!(members.len(), 3);
+
+        // A render tick reflows the active tab unconditionally
+        // (src/ui.rs's compute_view/compute_mobile_view); the tree
+        // layout.apply just built must survive it.
+        tab.reflow(Rect::new(0, 0, 80, 20), None);
+
+        assert!(matches!(
+            tab.layout.root(),
+            Node::Stack { panes, active } if *panes == members && *active == 1
+        ));
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn layout_apply_stack_makes_the_tab_report_the_stacked_arrangement() {
+        let mut app = app_with_workspace();
+        let original_tab_id = app.public_tab_id(0, 0).unwrap();
+
+        app.handle_layout_apply(
+            "req".into(),
+            LayoutApplyParams {
+                workspace_id: None,
+                tab_id: Some(original_tab_id),
+                tab_label: Some("stack".into()),
+                focus: true,
+                root: LayoutNode::Stack {
+                    panes: vec![LayoutPane::default(), LayoutPane::default()],
+                    active: 0,
+                },
+                float_root: None,
+            },
+        );
+
+        let response = app.handle_layout_export(
+            "req".into(),
+            LayoutExportParams {
+                tab_id: None,
+                pane_id: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::LayoutExport { layout } = success.result else {
+            panic!("expected layout export response");
+        };
+        assert!(matches!(layout.root, LayoutNode::Stack { .. }));
+        assert_eq!(layout.arrangement, ArrangementSchema::Stacked);
+
+        // A mismatched arrangement would survive the render re-flow guard only
+        // to be re-flowed away by the next pane create or close.
+        let tab = &mut app.state.workspaces[0].tabs[0];
+        let members = tab.layout.pane_ids();
+        tab.needs_reflow = true;
+        tab.reflow(Rect::new(0, 0, 80, 20), None);
+        assert!(matches!(
+            tab.layout.root(),
+            Node::Stack { panes, .. } if *panes == members
+        ));
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn layout_apply_rejects_stack_with_out_of_range_active() {
+        let mut app = app_with_workspace();
+        let original_tab_count = app.state.workspaces[0].tabs.len();
+
+        let response = app.handle_layout_apply(
+            "req".into(),
+            LayoutApplyParams {
+                workspace_id: None,
+                tab_id: None,
+                tab_label: Some("bad".into()),
+                focus: false,
+                root: LayoutNode::Stack {
+                    panes: vec![LayoutPane::default()],
+                    active: 5,
+                },
+                float_root: None,
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "invalid_layout");
+        assert_eq!(app.state.workspaces[0].tabs.len(), original_tab_count);
+    }
+
+    #[tokio::test]
+    async fn layout_apply_installs_a_float_layer() {
+        let mut app = app_with_workspace();
+        let original_tab_id = app.public_tab_id(0, 0).unwrap();
+
+        let response = app.handle_layout_apply(
+            "req".into(),
+            LayoutApplyParams {
+                workspace_id: None,
+                tab_id: Some(original_tab_id),
+                tab_label: Some("floats".into()),
+                focus: true,
+                root: LayoutNode::Pane {
+                    pane: LayoutPane::default(),
+                },
+                float_root: Some(LayoutNode::Stack {
+                    panes: vec![
+                        LayoutPane {
+                            label: Some("one".into()),
+                            ..Default::default()
+                        },
+                        LayoutPane {
+                            label: Some("two".into()),
+                            ..Default::default()
+                        },
+                    ],
+                    active: 1,
+                }),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::LayoutApply { layout } = success.result else {
+            panic!("expected layout apply response");
+        };
+        assert_eq!(layout.float_arrangement, ArrangementSchema::Stacked);
+        let LayoutNode::Stack { panes, active } = layout.float_root.expect("float root") else {
+            panic!("expected stack float root");
+        };
+        assert_eq!(active, 1);
+        assert_eq!(panes[0].label.as_deref(), Some("one"));
+        assert_eq!(panes[1].label.as_deref(), Some("two"));
+
+        let tab = &app.state.workspaces[0].tabs[0];
+        assert_eq!(tab.floats().len(), 2);
+        let float_layout = tab.float_layout.as_ref().expect("float layout");
+        assert!(matches!(
+            float_layout.root(),
+            Node::Stack { panes, .. } if panes.len() == 2
+        ));
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn layout_apply_float_layer_survives_the_next_render_reflow() {
+        let mut app = app_with_workspace();
+        let original_tab_id = app.public_tab_id(0, 0).unwrap();
+
+        // The tiled root is a `Split`, not a bare `Pane`: building it goes
+        // through the ordinary tiled split primitive, which marks the tab
+        // for a re-flow while it works. That is what makes this test able to
+        // detect a missing `needs_reflow` clear-up — with a single-pane tiled
+        // root, nothing ever sets the flag true, and a no-op `reflow()` call
+        // proves nothing either way.
+        app.handle_layout_apply(
+            "req".into(),
+            LayoutApplyParams {
+                workspace_id: None,
+                tab_id: Some(original_tab_id),
+                tab_label: Some("floats".into()),
+                focus: true,
+                root: LayoutNode::Split {
+                    direction: SplitDirection::Right,
+                    ratio: 0.7,
+                    first: Box::new(LayoutNode::Pane {
+                        pane: LayoutPane::default(),
+                    }),
+                    second: Box::new(LayoutNode::Pane {
+                        pane: LayoutPane::default(),
+                    }),
+                },
+                float_root: Some(LayoutNode::Stack {
+                    panes: vec![LayoutPane::default(), LayoutPane::default()],
+                    active: 0,
+                }),
+            },
+        );
+
+        let tab = &mut app.state.workspaces[0].tabs[0];
+        let float_members = tab.floats();
+        assert_eq!(float_members.len(), 2);
+        // Confirms the split primitive actually did mark the tab, so the
+        // next assertion is exercising the clear-up rather than a no-op.
+        assert!(!tab.needs_reflow);
+
+        // A render tick reflows the active tab unconditionally
+        // (src/ui.rs's compute_view/compute_mobile_view); both the split's
+        // ratio and the float stack layout.apply just built must survive it.
+        tab.reflow(Rect::new(0, 0, 80, 20), Some(Rect::new(0, 0, 40, 10)));
+
+        let Node::Split { ratio, .. } = tab.layout.root() else {
+            panic!("expected split tiled root");
+        };
+        assert!((*ratio - 0.7).abs() < f32::EPSILON);
+        let float_layout = tab.float_layout.as_ref().expect("float layout");
+        assert!(matches!(
+            float_layout.root(),
+            Node::Stack { panes, .. } if *panes == float_members
+        ));
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn layout_apply_rejects_float_root_with_out_of_range_active() {
+        let mut app = app_with_workspace();
+        let original_tab_count = app.state.workspaces[0].tabs.len();
+
+        let response = app.handle_layout_apply(
+            "req".into(),
+            LayoutApplyParams {
+                workspace_id: None,
+                tab_id: None,
+                tab_label: Some("bad".into()),
+                focus: false,
+                root: LayoutNode::Pane {
+                    pane: LayoutPane::default(),
+                },
+                float_root: Some(LayoutNode::Stack {
+                    panes: vec![LayoutPane::default()],
+                    active: 5,
+                }),
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "invalid_layout");
+        assert_eq!(app.state.workspaces[0].tabs.len(), original_tab_count);
+    }
+
+    #[tokio::test]
+    async fn layout_export_focused_pane_id_names_the_tiled_pane_when_the_tiled_layer_holds_focus() {
+        let mut app = app_with_workspace();
+        let original_tab_id = app.public_tab_id(0, 0).unwrap();
+
+        app.handle_layout_apply(
+            "req".into(),
+            LayoutApplyParams {
+                workspace_id: None,
+                tab_id: Some(original_tab_id),
+                tab_label: Some("floats".into()),
+                focus: true,
+                root: LayoutNode::Pane {
+                    pane: LayoutPane::default(),
+                },
+                float_root: Some(LayoutNode::Pane {
+                    pane: LayoutPane::default(),
+                }),
+            },
+        );
+
+        let tab = &app.state.workspaces[0].tabs[0];
+        assert!(!tab.float_focused);
+        let tiled_pane = tab.root_pane;
+
+        let response = app.handle_layout_export(
+            "req".into(),
+            LayoutExportParams {
+                tab_id: None,
+                pane_id: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::LayoutExport { layout } = success.result else {
+            panic!("expected layout export response");
+        };
+        assert_eq!(
+            layout.focused_pane_id,
+            app.public_pane_id(0, tiled_pane).unwrap()
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn layout_export_focused_pane_id_names_the_focused_float_when_the_float_layer_holds_focus(
+    ) {
+        let mut app = app_with_workspace();
+        let original_tab_id = app.public_tab_id(0, 0).unwrap();
+
+        app.handle_layout_apply(
+            "req".into(),
+            LayoutApplyParams {
+                workspace_id: None,
+                tab_id: Some(original_tab_id),
+                tab_label: Some("floats".into()),
+                focus: true,
+                root: LayoutNode::Pane {
+                    pane: LayoutPane::default(),
+                },
+                float_root: Some(LayoutNode::Pane {
+                    pane: LayoutPane::default(),
+                }),
+            },
+        );
+
+        let tab = &mut app.state.workspaces[0].tabs[0];
+        let tiled_pane = tab.root_pane;
+        let float_pane = tab.floats()[0];
+        // layout.apply installs the float layer but does not move focus onto
+        // it; simulate the layer already holding focus the way a real client
+        // interaction (e.g. pane.float or the toggle-float keybind) would.
+        tab.float_focused = true;
+
+        let response = app.handle_layout_export(
+            "req".into(),
+            LayoutExportParams {
+                tab_id: None,
+                pane_id: None,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::LayoutExport { layout } = success.result else {
+            panic!("expected layout export response");
+        };
+        assert_eq!(
+            layout.focused_pane_id,
+            app.public_pane_id(0, float_pane).unwrap()
+        );
+        assert_ne!(
+            layout.focused_pane_id,
+            app.public_pane_id(0, tiled_pane).unwrap()
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn layout_validation_rejects_an_empty_stack() {
+        let root = LayoutNode::Stack {
+            panes: vec![],
+            active: 0,
+        };
+
+        let err = validate_layout_trees(&[&root]).unwrap_err();
+        assert!(err.contains("at least one pane"));
     }
 
     #[test]
@@ -756,6 +1590,7 @@ mod tests {
                         },
                     }),
                 },
+                float_root: None,
             },
         );
 
@@ -801,6 +1636,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn layout_apply_split_survives_the_next_render_reflow() {
+        let mut app = app_with_workspace();
+        let original_tab_id = app.public_tab_id(0, 0).unwrap();
+
+        app.handle_layout_apply(
+            "req".into(),
+            LayoutApplyParams {
+                workspace_id: None,
+                tab_id: Some(original_tab_id),
+                tab_label: Some("dev".into()),
+                focus: true,
+                root: LayoutNode::Split {
+                    direction: SplitDirection::Right,
+                    ratio: 0.7,
+                    first: Box::new(LayoutNode::Pane {
+                        pane: LayoutPane::default(),
+                    }),
+                    second: Box::new(LayoutNode::Pane {
+                        pane: LayoutPane::default(),
+                    }),
+                },
+                float_root: None,
+            },
+        );
+
+        let tab = &mut app.state.workspaces[0].tabs[0];
+
+        // A render tick reflows the active tab unconditionally
+        // (src/ui.rs's compute_view/compute_mobile_view); the split
+        // layout.apply just built, including its ratio, must survive it.
+        tab.reflow(Rect::new(0, 0, 80, 20), None);
+
+        assert!(matches!(
+            tab.layout.root(),
+            Node::Split { ratio, .. } if (*ratio - 0.7).abs() < f32::EPSILON
+        ));
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
     async fn layout_apply_new_tab_follows_cached_focused_pane_cwd_without_runtime() {
         let mut app = app_with_workspace();
         let focused_pane = app.state.workspaces[0].tabs[0].root_pane;
@@ -821,6 +1696,7 @@ mod tests {
                 root: LayoutNode::Pane {
                     pane: LayoutPane::default(),
                 },
+                float_root: None,
             },
         );
 
@@ -862,6 +1738,7 @@ mod tests {
                         ..Default::default()
                     },
                 },
+                float_root: None,
             },
         );
 
@@ -899,6 +1776,7 @@ mod tests {
                         },
                     }),
                 },
+                float_root: None,
             },
         );
 
@@ -923,7 +1801,43 @@ mod tests {
             };
         }
 
-        let err = validate_layout_tree(&root).unwrap_err();
+        let err = validate_layout_trees(&[&root]).unwrap_err();
         assert!(err.contains("maximum"));
+    }
+
+    #[tokio::test]
+    async fn layout_apply_rejects_a_combined_tree_over_the_pane_cap() {
+        let flat_stack = |count: usize| LayoutNode::Stack {
+            panes: (0..count).map(|_| LayoutPane::default()).collect(),
+            active: 0,
+        };
+        // Each half fits on its own; together they exceed the cap, and
+        // `layout.apply` spawns a PTY for every pane in both.
+        let half = MAX_LAYOUT_PANES / 2 + 1;
+        assert!(validate_layout_trees(&[&flat_stack(half)]).is_ok());
+
+        let mut app = app_with_workspace();
+        let original_tab_count = app.state.workspaces[0].tabs.len();
+
+        let response = app.handle_layout_apply(
+            "req".into(),
+            LayoutApplyParams {
+                workspace_id: None,
+                tab_id: None,
+                tab_label: Some("too big".into()),
+                focus: false,
+                root: flat_stack(half),
+                float_root: Some(flat_stack(half)),
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "invalid_layout");
+        assert!(
+            error.error.message.contains("more than 24 panes"),
+            "{}",
+            error.error.message
+        );
+        assert_eq!(app.state.workspaces[0].tabs.len(), original_tab_count);
     }
 }

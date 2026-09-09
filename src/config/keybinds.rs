@@ -328,6 +328,8 @@ pub struct Keybinds {
     pub close_workspace: ActionKeybinds,
     pub workspace_picker: ActionKeybinds,
     pub goto: ActionKeybinds,
+    pub pin_workspace_path: ActionKeybinds,
+    pub toggle_declared_repo: ActionKeybinds,
     pub detach: ActionKeybinds,
     pub reload_config: ActionKeybinds,
     pub open_notification_target: ActionKeybinds,
@@ -361,8 +363,14 @@ pub struct Keybinds {
     pub last_pane: ActionKeybinds,
     pub split_vertical: ActionKeybinds,
     pub split_horizontal: ActionKeybinds,
+    pub arrangement_next: ActionKeybinds,
+    pub arrangement_previous: ActionKeybinds,
+    pub new_pane: ActionKeybinds,
     pub close_pane: ActionKeybinds,
     pub zoom: ActionKeybinds,
+    pub new_float: ActionKeybinds,
+    pub toggle_float: ActionKeybinds,
+    pub toggle_floats: ActionKeybinds,
     pub resize_mode: ActionKeybinds,
     pub resize_pane_left: ActionKeybinds,
     pub resize_pane_down: ActionKeybinds,
@@ -496,6 +504,8 @@ impl Config {
             close_workspace: empty_action!(),
             workspace_picker: empty_action!(),
             goto: empty_action!(),
+            pin_workspace_path: empty_action!(),
+            toggle_declared_repo: empty_action!(),
             detach: empty_action!(),
             reload_config: empty_action!(),
             open_notification_target: empty_action!(),
@@ -529,8 +539,14 @@ impl Config {
             last_pane: empty_action!(),
             split_vertical: empty_action!(),
             split_horizontal: empty_action!(),
+            arrangement_next: empty_action!(),
+            arrangement_previous: empty_action!(),
+            new_pane: empty_action!(),
             close_pane: empty_action!(),
             zoom: empty_action!(),
+            new_float: empty_action!(),
+            toggle_float: empty_action!(),
+            toggle_floats: empty_action!(),
             resize_mode: empty_action!(),
             resize_pane_left: empty_action!(),
             resize_pane_down: empty_action!(),
@@ -624,6 +640,8 @@ impl Config {
             apply_action!(keybinds.close_workspace, close_workspace, source);
             apply_action!(keybinds.workspace_picker, workspace_picker, source);
             apply_action!(keybinds.goto, goto, source);
+            apply_action!(keybinds.pin_workspace_path, pin_workspace_path, source);
+            apply_action!(keybinds.toggle_declared_repo, toggle_declared_repo, source);
             apply_action!(keybinds.detach, detach, source);
             apply_action!(keybinds.reload_config, reload_config, source);
             apply_action!(
@@ -676,8 +694,14 @@ impl Config {
             apply_action!(keybinds.cycle_pane_previous, cycle_pane_previous, source);
             apply_action!(keybinds.split_vertical, split_vertical, source);
             apply_action!(keybinds.split_horizontal, split_horizontal, source);
+            apply_action!(keybinds.arrangement_next, arrangement_next, source);
+            apply_action!(keybinds.arrangement_previous, arrangement_previous, source);
+            apply_action!(keybinds.new_pane, new_pane, source);
             apply_action!(keybinds.close_pane, close_pane, source);
             apply_action!(keybinds.zoom, zoom, source);
+            apply_action!(keybinds.new_float, new_float, source);
+            apply_action!(keybinds.toggle_float, toggle_float, source);
+            apply_action!(keybinds.toggle_floats, toggle_floats, source);
             apply_action!(keybinds.resize_mode, resize_mode, source);
             apply_action!(keybinds.resize_pane_left, resize_pane_left, source);
             apply_action!(keybinds.resize_pane_down, resize_pane_down, source);
@@ -1603,19 +1627,43 @@ next_tab = "prefix+n"
     }
 
     #[test]
+    fn toggle_declared_repo_defaults_to_the_shifted_period_glyph() {
+        let kb = Config::default().keybinds();
+        assert_eq!(
+            binding_triggers(&kb.toggle_declared_repo),
+            vec![BindingTrigger::Prefix((
+                KeyCode::Char('>'),
+                KeyModifiers::empty()
+            ))]
+        );
+        assert!(kb.toggle_declared_repo.matches_prefix_key(
+            &TerminalKey::new(KeyCode::Char('.'), KeyModifiers::SHIFT)
+                .with_shifted_codepoint('>' as u32)
+        ));
+        assert!(kb
+            .toggle_declared_repo
+            .matches_prefix_key(&TerminalKey::new(KeyCode::Char('>'), KeyModifiers::SHIFT)));
+        assert!(!kb
+            .pin_workspace_path
+            .matches_prefix_key(&TerminalKey::new(KeyCode::Char('>'), KeyModifiers::SHIFT)));
+    }
+
+    #[test]
     fn open_and_remove_worktree_keybinds_are_unset_by_default() {
         let kb = Config::default().keybinds();
         assert!(kb.open_worktree.bindings.is_empty());
         assert!(kb.remove_worktree.bindings.is_empty());
     }
 
+    // Copy mode sat on the tmux-conventional `prefix+[` until arrangement
+    // cycling claimed the bracket pair, which only reads right as a pair.
     #[test]
-    fn copy_mode_uses_tmux_prefix_bracket_by_default() {
+    fn copy_mode_uses_prefix_u_by_default() {
         let kb = Config::default().keybinds();
         assert_eq!(
             binding_triggers(&kb.copy_mode),
             vec![BindingTrigger::Prefix((
-                KeyCode::Char('['),
+                KeyCode::Char('u'),
                 KeyModifiers::empty()
             ))]
         );
@@ -1625,6 +1673,30 @@ next_tab = "prefix+n"
     fn back_and_forth_keybinds_are_unset_by_default() {
         let kb = Config::default().keybinds();
         assert!(kb.last_pane.bindings.is_empty());
+    }
+
+    #[test]
+    fn arrangement_keybinds_have_defaults() {
+        let config = Config::default();
+        assert_eq!(config.keys.arrangement_next, BindingConfig::one("prefix+]"));
+        assert_eq!(
+            config.keys.arrangement_previous,
+            BindingConfig::one("prefix+[")
+        );
+        assert_eq!(config.keys.new_pane, BindingConfig::one("prefix+enter"));
+    }
+
+    #[test]
+    fn the_new_arrangement_bindings_parse() {
+        // parse_key_combo parses the body after "prefix+"; the prefix token
+        // itself is stripped by parse_binding_string before this is called.
+        for combo in ["prefix+]", "prefix+[", "prefix+enter"] {
+            let body = combo.strip_prefix("prefix+").unwrap_or(combo);
+            assert!(
+                parse_key_combo(body).is_some(),
+                "{combo} should parse as a key combo"
+            );
+        }
     }
 
     #[test]

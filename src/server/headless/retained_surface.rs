@@ -210,6 +210,24 @@ struct RetainedRecipientUpdate {
 }
 
 impl HeadlessServer {
+    /// Only the full render path composites floats over their neighbours, so a
+    /// row patch aimed at a covered pane would paint straight through the float.
+    fn tab_has_visible_floats(
+        &self,
+        workspace_index: usize,
+        pane_id: crate::layout::PaneId,
+    ) -> bool {
+        self.app
+            .state
+            .workspaces
+            .get(workspace_index)
+            .and_then(|workspace| {
+                let tab_index = workspace.find_tab_index_for_pane(pane_id)?;
+                workspace.tabs.get(tab_index)
+            })
+            .is_some_and(|tab| tab.float_layout.is_some() && !tab.floats_hidden)
+    }
+
     /// Applies terminal dirty rows to the committed origin-relative pane surface.
     /// Any presentation or geometry uncertainty falls back to the complete renderer.
     pub(super) fn render_retained_pane_surface_and_stream(
@@ -313,6 +331,9 @@ impl HeadlessServer {
             let Some((workspace_index, pane_id)) = self.app.parse_pane_id(&public_pane_id) else {
                 fallback!("pane_missing");
             };
+            if self.tab_has_visible_floats(workspace_index, pane_id) {
+                fallback!("float_visible");
+            }
             let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
                 &self.app.terminal_runtimes,
                 workspace_index,
