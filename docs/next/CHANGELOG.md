@@ -8,6 +8,7 @@
 - A new `activity` sidebar token resolves to the first of `terminal_title_stripped`, `pane`, or `agent` that is set, and replaces `agent` in the default agent rows, so the second row shows the pane's own context instead of repeating the agent name.
 
 ### Fixed
+- Floating panes now draw their own thick, opaque frame instead of borrowing a thin line from the tiled border grid, so a float reads as sitting above the panes it covers.
 - Collapsed panes in a stacked tab now draw as a titled bar with corners facing the expanded pane, instead of a bare horizontal rule. Members that do not fit fold into a `+N more` bar. Clicking a bar focuses that pane.
 - Panes without an agent or a manual name now show a border title, falling back through the foreground process, the terminal title, the working directory, and finally the pane number, so a stacked shell is never nameless.
 - The keyboard documentation listed `prefix+[` for copy mode, which now cycles the pane arrangement backwards. Copy mode is `prefix+u`.

@@ -458,11 +458,23 @@ pub(super) fn render_panes(
         return;
     };
 
+    // The lookup is skipped entirely for a tab with no floating layer, which is
+    // the common case in this pane-scaled path.
+    let floats = target
+        .map(|target| target.tab_index)
+        .and_then(|tab_index| ws.tabs.get(tab_index))
+        .filter(|tab| tab.float_layout.is_some())
+        .map(|tab| tab.floats())
+        .unwrap_or_default();
+
     for info in pane_infos {
         // A collapsed or folded stack member has no content rows; it is drawn
         // as a stack bar below.
         if info.rect.height <= 1 {
             continue;
+        }
+        if floats.contains(&info.id) {
+            render_float_chrome(app, ws, frame, info);
         }
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
             let show_cursor = info.is_focused
@@ -473,27 +485,44 @@ pub(super) fn render_panes(
         }
     }
 
-    render_pane_borders(app, ws, pane_infos, split_borders, frame);
+    render_pane_borders(app, ws, pane_infos, split_borders, &floats, frame);
 
     // After the borders and titles, so a bar overwrites the junction-table row
     // and any label already drawn on its own rect. Outside `render_pane_borders`
     // so turning borders off does not make collapsed members invisible again.
-    // Only a stack collapses a member to a single row, so the scan costs one
-    // comparison per pane and the float lookup never runs for the common tab.
     if !pane_infos.iter().any(|info| info.rect.height <= 1) {
         return;
     }
-    let floats = target
-        .map(|target| target.tab_index)
-        .and_then(|tab_index| ws.tabs.get(tab_index))
-        .map(|tab| tab.floats())
-        .unwrap_or_default();
     for bar in stack_bars_for(pane_infos.iter().filter(|info| !floats.contains(&info.id))) {
         render_stack_bar(app, ws, frame, &bar);
     }
     for bar in stack_bars_for(pane_infos.iter().filter(|info| floats.contains(&info.id))) {
         render_stack_bar(app, ws, frame, &bar);
     }
+}
+
+/// A float overlaps the tiled panes behind it, so it draws its own frame rather
+/// than taking a line from the shared junction table: a thick border and an
+/// opaque fill are what separate it from the panes it covers.
+fn render_float_chrome(
+    app: &AppState,
+    ws: &crate::workspace::Workspace,
+    frame: &mut Frame,
+    info: &PaneInfo,
+) {
+    let title = pane_label(app, ws, info.id);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Thick)
+        .border_style(Style::default().fg(if info.is_focused {
+            app.palette.accent
+        } else {
+            app.palette.overlay1
+        }))
+        .title(pane_border_title(&title, info.rect.width, info.is_focused).unwrap_or_default())
+        .style(Style::default().bg(app.palette.panel_bg));
+    frame.render_widget(Clear, info.rect);
+    frame.render_widget(block, info.rect);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -720,6 +749,7 @@ fn render_pane_borders(
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
     split_borders: &[crate::layout::SplitBorder],
+    floats: &[crate::layout::PaneId],
     frame: &mut Frame,
 ) {
     if !app.pane_borders.draws_borders() || pane_infos.iter().all(|info| info.borders.is_empty()) {
@@ -728,6 +758,11 @@ fn render_pane_borders(
 
     let mut cells = std::collections::HashMap::<(u16, u16), LineCell>::new();
     for info in pane_infos {
+        // Floats draw their own frame in `render_float_chrome`; a junction line
+        // here would be drawn over it.
+        if floats.contains(&info.id) {
+            continue;
+        }
         add_pane_border_cells(&mut cells, info);
     }
     add_split_border_cells(app.pane_gaps, split_borders, &mut cells);
@@ -759,7 +794,7 @@ fn render_pane_borders(
         cell.set_style(Style::default().fg(color));
     }
 
-    render_pane_border_titles(app, ws, pane_infos, frame);
+    render_pane_border_titles(app, ws, pane_infos, floats, frame);
 }
 
 fn add_split_border_cells(
@@ -888,12 +923,17 @@ fn render_pane_border_titles(
     app: &AppState,
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
+    floats: &[crate::layout::PaneId],
     frame: &mut Frame,
 ) {
     let buf = frame.buffer_mut();
     let area = buf.area;
     for info in pane_infos {
         if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
+            continue;
+        }
+        // A float's title comes from its own block.
+        if floats.contains(&info.id) {
             continue;
         }
         let Some(title) = ws
@@ -1108,7 +1148,7 @@ mod tests {
         split_borders: &[crate::layout::SplitBorder],
         frame: &mut Frame,
     ) {
-        render_pane_borders(app, ws, &app.view.pane_infos, split_borders, frame);
+        render_pane_borders(app, ws, &app.view.pane_infos, split_borders, &[], frame);
     }
 
     #[test]
@@ -1502,6 +1542,69 @@ mod tests {
         (0..area.height)
             .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect()
+    }
+
+    #[tokio::test]
+    async fn a_float_draws_its_own_thick_frame_over_the_tiled_panes() {
+        let area = Rect::new(0, 0, 40, 12);
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("test");
+        let float_id = crate::layout::PaneId::alloc();
+        let number = ws.next_public_pane_number;
+        ws.register_new_pane_with_number(float_id, number);
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(20, 6, 1024, b"floating\n"),
+        );
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let float = pane_infos
+            .iter()
+            .find(|info| info.id == float_id)
+            .expect("float info");
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    Some(super::super::tab_surface::TabSurfaceTarget {
+                        workspace_index: 0,
+                        tab_index: 0,
+                    }),
+                    &pane_infos,
+                    &[],
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let corner = buffer[(float.rect.x, float.rect.y)].symbol().to_string();
+        assert_eq!(
+            corner, "\u{250f}",
+            "a float takes a thick corner, not a junction-table line"
+        );
+        assert_eq!(
+            buffer[(float.rect.x, float.rect.y)].bg,
+            app.palette.panel_bg,
+            "the frame is opaque over whatever it covers"
+        );
     }
 
     #[test]
