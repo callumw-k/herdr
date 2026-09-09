@@ -191,6 +191,13 @@ struct RetainedRecipient {
     surface: protocol::PaneSurfaceFrame,
 }
 
+fn surface_rects_overlap(a: protocol::SurfaceRect, b: protocol::SurfaceRect) -> bool {
+    a.x < b.x.saturating_add(b.width)
+        && b.x < a.x.saturating_add(a.width)
+        && a.y < b.y.saturating_add(b.height)
+        && b.y < a.y.saturating_add(a.height)
+}
+
 struct CollectedPanePatch {
     pane_id: String,
     patch: crate::pane::TerminalDirtyPatch,
@@ -210,14 +217,19 @@ struct RetainedRecipientUpdate {
 }
 
 impl HeadlessServer {
-    /// Only the full render path composites floats over their neighbours, so a
-    /// row patch aimed at a covered pane would paint straight through the float.
-    fn tab_has_visible_floats(
+    /// Only the full render path composites floats over their neighbours, so a row
+    /// patch aimed at a covered pane would paint straight through the float. Panes
+    /// the float does not overlap, and the float itself, keep the fast path: a
+    /// blanket refusal makes every keystroke in the session pay a full render for
+    /// as long as a float is open.
+    fn covered_by_visible_float(
         &self,
+        recipients: &[RetainedRecipient],
         workspace_index: usize,
         pane_id: crate::layout::PaneId,
     ) -> bool {
-        self.app
+        let Some(tab) = self
+            .app
             .state
             .workspaces
             .get(workspace_index)
@@ -225,7 +237,33 @@ impl HeadlessServer {
                 let tab_index = workspace.find_tab_index_for_pane(pane_id)?;
                 workspace.tabs.get(tab_index)
             })
-            .is_some_and(|tab| tab.float_layout.is_some() && !tab.floats_hidden)
+            .filter(|tab| tab.float_layout.is_some() && !tab.floats_hidden)
+        else {
+            return false;
+        };
+        let floats = tab.floats();
+        if floats.contains(&pane_id) {
+            return false;
+        }
+        recipients.iter().any(|recipient| {
+            let mut source = None;
+            let mut float_rects = Vec::new();
+            for pane in &recipient.surface.panes {
+                let Some((_, id)) = self.app.parse_pane_id(&pane.pane_id) else {
+                    continue;
+                };
+                if id == pane_id {
+                    source = Some(pane.rect);
+                } else if floats.contains(&id) {
+                    float_rects.push(pane.rect);
+                }
+            }
+            source.is_some_and(|source| {
+                float_rects
+                    .iter()
+                    .any(|float| surface_rects_overlap(*float, source))
+            })
+        })
     }
 
     /// Applies terminal dirty rows to the committed origin-relative pane surface.
@@ -331,8 +369,8 @@ impl HeadlessServer {
             let Some((workspace_index, pane_id)) = self.app.parse_pane_id(&public_pane_id) else {
                 fallback!("pane_missing");
             };
-            if self.tab_has_visible_floats(workspace_index, pane_id) {
-                fallback!("float_visible");
+            if self.covered_by_visible_float(&recipients, workspace_index, pane_id) {
+                fallback!("float_covers_pane");
             }
             let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
                 &self.app.terminal_runtimes,

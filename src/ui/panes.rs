@@ -510,6 +510,10 @@ fn render_float_chrome(
     frame: &mut Frame,
     info: &PaneInfo,
 ) {
+    let rect = info.rect.intersection(frame.area());
+    if rect.is_empty() {
+        return;
+    }
     let title = pane_label(app, ws, info.id);
     let block = Block::default()
         .borders(Borders::ALL)
@@ -519,10 +523,10 @@ fn render_float_chrome(
         } else {
             app.palette.overlay1
         }))
-        .title(pane_border_title(&title, info.rect.width, info.is_focused).unwrap_or_default())
+        .title(pane_border_title(&title, rect.width, info.is_focused).unwrap_or_default())
         .style(Style::default().bg(app.palette.panel_bg));
-    frame.render_widget(Clear, info.rect);
-    frame.render_widget(block, info.rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block, rect);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -676,7 +680,13 @@ fn render_stack_bar(
         StackBarKind::Pane(pane_id) => pane_label(app, ws, pane_id),
         StackBarKind::Summary { count } => format!("+{count} more"),
     };
-    let text = pane_border_title(&label, bar.rect.width, false).unwrap_or_default();
+    // `Clear` and `Paragraph` index the buffer across the whole rect without
+    // clamping, so anything outside the frame panics the render.
+    let rect = bar.rect.intersection(frame.area());
+    if rect.is_empty() {
+        return;
+    }
+    let text = pane_border_title(&label, rect.width, false).unwrap_or_default();
     let border_style = Style::default().fg(app.palette.overlay0);
     let label_style = Style::default()
         .fg(app.palette.subtext0)
@@ -691,8 +701,8 @@ fn render_stack_bar(
     } else {
         ("\u{250c}", "\u{2510}")
     };
-    let fill = (bar.rect.width as usize).saturating_sub(2 + display_width(text.as_str()));
-    frame.render_widget(Clear, bar.rect);
+    let fill = (rect.width as usize).saturating_sub(2 + display_width(text.as_str()));
+    frame.render_widget(Clear, rect);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(left, border_style),
@@ -701,7 +711,7 @@ fn render_stack_bar(
             Span::styled(right, border_style),
         ]))
         .style(Style::default().bg(app.palette.panel_bg)),
-        bar.rect,
+        rect,
     );
 }
 
@@ -1605,6 +1615,38 @@ mod tests {
             app.palette.panel_bg,
             "the frame is opaque over whatever it covers"
         );
+    }
+
+    #[test]
+    fn drawing_outside_the_frame_clips_instead_of_panicking() {
+        let app = AppState::test_new();
+        let ws = Workspace::test_new("test");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 10)).unwrap();
+
+        // A rect one row past the bottom, and one starting beyond the right edge.
+        for rect in [Rect::new(0, 10, 20, 1), Rect::new(24, 2, 8, 1)] {
+            let bar = StackBar {
+                rect,
+                kind: StackBarKind::Summary { count: 2 },
+                below_active: false,
+            };
+            terminal
+                .draw(|frame| render_stack_bar(&app, &ws, frame, &bar))
+                .expect("a bar outside the frame must not panic the render");
+        }
+
+        let info = PaneInfo {
+            id: crate::layout::PaneId::from_raw(1),
+            rect: Rect::new(4, 4, 40, 20),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused: false,
+        };
+        terminal
+            .draw(|frame| render_float_chrome(&app, &ws, frame, &info))
+            .expect("a float larger than the frame must not panic the render");
     }
 
     #[test]

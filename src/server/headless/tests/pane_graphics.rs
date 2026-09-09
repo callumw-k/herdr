@@ -1478,6 +1478,42 @@ fn timeout_retires_stream_without_producer_ack() {
 }
 
 #[tokio::test]
+async fn a_float_keeps_the_fast_path_for_its_own_pane() {
+    let (mut server, client_rx, _tiled_pane) = retained_test_server(b"tiled-aaaa");
+    let client = server.clients.get_mut(&1).unwrap();
+    client.mode = ClientConnectionMode::ClientShell;
+    client.render_state =
+        crate::server::render_stream::ClientRenderState::new(RenderEncoding::SemanticFrame);
+    server.render_and_stream();
+    let _ = recv_pane_surface(&client_rx, "baseline surface");
+
+    let workspace = &mut server.app.state.workspaces[0];
+    let float = crate::layout::PaneId::alloc();
+    let number = workspace.next_public_pane_number;
+    workspace.register_new_pane_with_number(float, number);
+    workspace.tabs[0].push_float(
+        float,
+        crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+    );
+    workspace.insert_test_runtime(
+        float,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(40, 12, b"float-aaaa"),
+    );
+    server.render_and_stream();
+    let _ = recv_pane_surface(&client_rx, "surface with the float");
+
+    // Nothing is drawn over a float, so typing in one must not force every
+    // render in the session down the full path for as long as it stays open.
+    write_shared_test_pane(&mut server, float, b"\rF");
+    assert!(
+        server.render_retained_pane_surface_and_stream(&HashSet::from([float])),
+        "a float's own pane is never painted over, so it keeps the fast path"
+    );
+    let patch = recv_pane_surface_patch(&client_rx, "float patch");
+    assert!(!patch.panes.is_empty());
+}
+
+#[tokio::test]
 async fn a_visible_float_declines_the_retained_pane_surface_patch() {
     let (mut server, client_rx, tiled_pane) = retained_test_server(b"tiled-aaaa");
     let client = server.clients.get_mut(&1).unwrap();
