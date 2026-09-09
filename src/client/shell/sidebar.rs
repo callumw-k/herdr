@@ -370,20 +370,6 @@ pub(crate) fn render_sidebar(
             dragged,
             palette,
         );
-        let (ribbon_color, ribbon_weight) = workspace_ribbon(
-            palette,
-            status_color(status, palette),
-            selected || dragged,
-            workspace.focused,
-        );
-        render_status_ribbon(
-            buffer,
-            rect.x,
-            rect.y,
-            row_height,
-            ribbon_color,
-            ribbon_weight,
-        );
         let group_toggle = parent_group_key(snapshot, entry.index).map(|key| {
             let rect = Rect::new(rect.right().saturating_sub(1), rect.y, 1, 1);
             put_text(
@@ -860,6 +846,23 @@ pub(in crate::client::shell) fn render_workspace_rows(
             }
         }
     }
+
+    // Drawn last so the row background does not paint over the gutter this
+    // function already reserves in column 0.
+    let (ribbon_color, ribbon_weight) = workspace_ribbon(
+        palette,
+        status_color(status, palette),
+        selected || dragged,
+        endpoint_active && workspace.focused,
+    );
+    render_status_ribbon(
+        buffer,
+        area.x,
+        area.y,
+        area.height,
+        ribbon_color,
+        ribbon_weight,
+    );
 }
 
 #[cfg(test)]
