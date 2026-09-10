@@ -221,6 +221,8 @@ Right-clicking the pane frame still opens Herdr's menu. `pane split
 
 After `pane move`, use `.result.move_result.pane.pane_id` for later commands. A cross-workspace move changes the workspace-qualified pane ID; the prior value remains at `.result.move_result.previous_pane_id`. The running process keeps its launch-time `HERDR_PANE_ID`, `HERDR_TAB_ID`, and `HERDR_WORKSPACE_ID`; Herdr retains the old pane ID as an alias for that terminal, so pane commands using `--current` still resolve it. A live agent name follows the terminal and continues to resolve after the move.
 
+Under a tab arrangement (see [Concepts](/docs/concepts/)), `--split` and `--ratio` on `pane move` and `--ratio` on `pane split` only decide where the pane lands in pane order. The tab is reflowed under its arrangement on the next frame, so the ratio is not kept. Use `layout apply` when you need an exact tree.
+
 Read output:
 
 ```bash

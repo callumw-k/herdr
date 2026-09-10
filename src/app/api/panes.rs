@@ -5491,4 +5491,41 @@ mod tests {
             crate::layout::Arrangement::Grid
         );
     }
+
+    #[test]
+    fn a_moved_panes_ratio_is_replaced_by_the_arrangement_on_reflow() {
+        let (mut app, _) = app_with_test_workspace();
+        seed_terminal_states(&mut app);
+        let ws = &mut app.state.workspaces[0];
+        let target = ws.tabs[0].root_pane;
+        let target_tab = ws.test_add_tab(Some("target"));
+        let source = ws.tabs[target_tab].root_pane;
+        ws.tabs[0].arrangement = crate::layout::Arrangement::Vertical;
+        let source_public = app.public_pane_id(0, source).unwrap();
+        let target_public = app.public_pane_id(0, target).unwrap();
+        let target_tab_public = app.public_tab_id(0, 0).unwrap();
+
+        app.handle_pane_move(
+            "req".into(),
+            PaneMoveParams {
+                pane_id: source_public,
+                destination: PaneMoveDestination::Tab {
+                    tab_id: target_tab_public,
+                    target_pane_id: Some(target_public),
+                    split: SplitDirection::Down,
+                    ratio: Some(0.3),
+                },
+                focus: true,
+            },
+        );
+        let area = ratatui::layout::Rect::new(0, 0, 100, 40);
+        app.state.workspaces[0].tabs[0].reflow(area, None);
+
+        let infos = app.state.workspaces[0].tabs[0].layout.panes(area);
+        assert_eq!(infos.len(), 2);
+        assert!(
+            infos.iter().all(|info| info.rect.height == area.height),
+            "a Vertical tab reflows the moved pane into an even column"
+        );
+    }
 }

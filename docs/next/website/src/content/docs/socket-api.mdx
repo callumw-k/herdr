@@ -342,6 +342,11 @@ public pane id in the destination workspace. Subscribers can listen for
 `pane.moved`; Herdr does not emit fake pane close/create events for the moved
 terminal process.
 
+`pane.split` and `pane.move` accept `ratio` (and `split` for a move) for pane
+ordering only. A tab reflows under its arrangement after every pane create,
+close or move, so the response's `target_layout` shows the tree before that
+reflow. `layout.apply` keeps an exact tree until the next create or close.
+
 `pane.zoom` toggles, enables, or disables zoom for the target pane's tab:
 
 ```json
