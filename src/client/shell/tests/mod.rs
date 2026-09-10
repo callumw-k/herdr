@@ -87,7 +87,7 @@ fn worktree_list_result(open_workspace_id: Option<&str>) -> crate::api::schema::
     }
 }
 
-fn surface() -> PaneSurfaceFrame {
+pub(super) fn surface() -> PaneSurfaceFrame {
     let surface_buffer = Buffer::with_lines(["LIVE", "PANE"]);
     PaneSurfaceFrame {
         boot_id: "boot-1".into(),
@@ -214,6 +214,7 @@ mod chrome_context;
 mod copy;
 mod endpoint_requests;
 mod endpoints;
+mod floats;
 #[path = "input.rs"]
 mod input_domain;
 mod keybindings_settings;
