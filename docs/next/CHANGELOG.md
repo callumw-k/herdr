@@ -28,6 +28,7 @@
 
 ### Changed
 - The collapsed sidebar sizes its workspace and agent sections to their contents, so the divider follows the workspace list instead of splitting the column in half. Workspace numbers appear only in Navigate mode where digits switch workspaces, and a section with more entries than rows ends in a `+N` count instead of cutting off.
+- The session navigator's row shortcuts (`a`, `b`/`w`/`i`/`d`, `space`, `j`/`k`, `p`, `ctrl+o`) now need `esc` pressed once to leave search focus first, since the navigator opens with search focused by default.
 
 ## [0.9.0] - 2026-09-07
 
