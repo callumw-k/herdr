@@ -2,13 +2,12 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear},
     Frame,
 };
 
 use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
-use super::text::{display_width, truncate_end};
+use super::text::truncate_end;
 use super::widgets::panel_contrast_fg;
 use crate::app::state::Palette;
 use crate::app::AppState;
@@ -742,39 +741,41 @@ fn render_stack_bar(
         StackBarKind::Pane(pane_id) => pane_label(app, ws, pane_id),
         StackBarKind::Summary { count } => format!("+{count} more"),
     };
-    // `Clear` and `Paragraph` index the buffer across the whole rect without
-    // clamping, so anything outside the frame panics the render.
+    // why: direct buffer indexing below panics outside the frame, so clamp first
     let rect = bar.rect.intersection(frame.area());
     if rect.is_empty() {
         return;
     }
     let text = pane_border_title(&label, rect.width, false).unwrap_or_default();
-    let border_style = Style::default().fg(app.palette.overlay0);
+    let border_style = Style::default()
+        .fg(app.palette.overlay0)
+        .bg(app.palette.panel_bg);
     let label_style = Style::default()
         .fg(app.palette.subtext0)
+        .bg(app.palette.panel_bg)
         .add_modifier(Modifier::BOLD);
-    // A collapsed member is one row tall, so its top and bottom borders share
-    // that row. Closing both ends with corners keeps a hidden pane readable as a
-    // box rather than a bare label, which matters most for floats with no
-    // neighbouring pane border to sit against. The corners face the expanded
-    // member so a bar below it does not read as a box opening off-screen.
+    // why: a collapsed member is one row tall, so its top and bottom borders
+    // why: share that row; closing both ends with corners keeps a hidden pane
+    // why: readable as a box rather than a bare label, which matters most for
+    // why: floats with no neighbouring pane border to sit against; the corners
+    // why: face the expanded member so a bar below it does not read as a box
+    // why: opening off-screen
     let (left, right) = if bar.below_active {
         ("\u{2514}", "\u{2518}")
     } else {
         ("\u{250c}", "\u{2510}")
     };
-    let fill = (rect.width as usize).saturating_sub(2 + display_width(text.as_str()));
-    frame.render_widget(Clear, rect);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(left, border_style),
-            Span::styled(text, label_style),
-            Span::styled("\u{2500}".repeat(fill), border_style),
-            Span::styled(right, border_style),
-        ]))
-        .style(Style::default().bg(app.palette.panel_bg)),
-        rect,
-    );
+    let buf = frame.buffer_mut();
+    let y = rect.y;
+    let last_x = rect.right() - 1;
+    for x in rect.x..=last_x {
+        buf[(x, y)].set_symbol("\u{2500}").set_style(border_style);
+    }
+    buf[(rect.x, y)].set_symbol(left);
+    buf[(last_x, y)].set_symbol(right);
+    if rect.width > 2 {
+        buf.set_stringn(rect.x + 1, y, &text, (rect.width - 2) as usize, label_style);
+    }
 }
 
 pub(crate) fn popup_pane_rects(app: &AppState, area: Rect) -> Option<(Rect, Rect)> {
@@ -1195,6 +1196,7 @@ fn color_to_rgb(color: Color) -> Option<Rgb> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::text::display_width;
     use super::*;
     use crate::config::PaneBordersConfig;
     use crate::layout::PaneId;
