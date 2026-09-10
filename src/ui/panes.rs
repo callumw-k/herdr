@@ -535,10 +535,17 @@ pub(super) fn render_panes(
         }
         render_float_chrome(app, ws, frame, info);
         render_content(frame, info);
-        // why: unwritten terminal cells render transparent (Color::Reset) and would punch through the float's opaque fill, so reassert its background without touching the glyphs content just drew.
-        frame
-            .buffer_mut()
-            .set_style(info.inner_rect, Style::default().bg(app.palette.panel_bg));
+        // why: content leaves untouched cells at Color::Reset, which would show through the float's opaque fill; only backfill cells still Reset, so a background the pane's own content painted survives.
+        let buf = frame.buffer_mut();
+        let rect = info.inner_rect.intersection(buf.area);
+        for y in rect.y..rect.y.saturating_add(rect.height) {
+            for x in rect.x..rect.x.saturating_add(rect.width) {
+                let cell = &mut buf[(x, y)];
+                if cell.bg == Color::Reset {
+                    cell.set_bg(app.palette.panel_bg);
+                }
+            }
+        }
     }
     if floating.iter().any(|info| info.rect.height <= 1) {
         for bar in stack_bars_for(floating.iter()) {
@@ -2236,5 +2243,65 @@ mod tests {
             "a tiled split line must not bleed through the float"
         );
         assert_eq!(buffer[(column, inside)].bg, app.palette.panel_bg);
+    }
+
+    #[tokio::test]
+    async fn a_floats_painted_background_survives_the_transparent_cell_backfill() {
+        let area = Rect::new(0, 0, 40, 12);
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("test");
+        let float_id = crate::layout::PaneId::alloc();
+        let number = ws.next_public_pane_number;
+        ws.register_new_pane_with_number(float_id, number);
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(20, 6, 1024, b"\x1b[48;5;4m\x1b[K"),
+        );
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let float = pane_infos
+            .iter()
+            .find(|info| info.id == float_id)
+            .expect("float info");
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    Some(super::super::tab_surface::TabSurfaceTarget {
+                        workspace_index: 0,
+                        tab_index: 0,
+                    }),
+                    &pane_infos,
+                    &[],
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let painted = buffer[(float.inner_rect.x, float.inner_rect.y)].bg;
+        assert_eq!(
+            painted,
+            Color::Indexed(4),
+            "a float's own explicit background must survive the transparent-cell backfill"
+        );
+        assert_ne!(painted, app.palette.panel_bg);
     }
 }
