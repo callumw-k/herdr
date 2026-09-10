@@ -3239,6 +3239,47 @@ fn direct_terminal_observer_keeps_hidden_pty_source_renderable_with_client_shell
     assert!(server.app.render_dirty.request_pty(hidden_pane));
 }
 
+#[tokio::test]
+async fn pty_source_visibility_recognises_a_focused_float_on_a_zoomed_tab() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("zoomed-float");
+    let tiled = workspace.tabs[0].root_pane;
+    let float = crate::layout::PaneId::alloc();
+    workspace.register_new_pane_with_number(float, workspace.next_public_pane_number);
+    workspace.tabs[0].push_float(
+        float,
+        crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+    );
+    workspace.tabs[0].zoomed = true;
+    workspace.tabs[0].layout.focus_pane(tiled);
+    workspace.insert_test_runtime(
+        float,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(40, 12, b"FLOAT"),
+    );
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    server.app.state.ensure_test_terminals();
+
+    let (shell_writer, _control_rx, _render_rx) = test_client_writer();
+    server.clients.insert(
+        1,
+        ClientConnection::new(
+            (80, 24),
+            crate::kitty_graphics::HostCellSize::default(),
+            1,
+            RenderEncoding::SemanticFrame,
+            Some(shell_writer),
+        ),
+    );
+
+    assert!(
+        server.pty_sources_visible_to_any_render_target(&HashSet::from([float])),
+        "a focused float stays a visible pty source even while its tab is zoomed"
+    );
+}
+
 #[test]
 fn terminal_observe_resolves_public_pane_id() {
     with_terminal_session_test_server(|server, terminal_id, _, public_pane_id| {
