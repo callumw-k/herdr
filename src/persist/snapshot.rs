@@ -165,6 +165,11 @@ pub enum DirectionSnapshot {
 /// Mirrors `Arrangement` for the on-disk format so a session snapshot round
 /// trips the tab's arrangement without depending on the layout module's enum
 /// representation.
+///
+/// A snapshot written before arrangements existed carries a hand-built BSP
+/// tree. Grid is the arrangement that keeps every one of those panes visible
+/// when the tab is next reflowed, so it is the legacy default even though a
+/// tab created today starts Stacked (`Arrangement::default`).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArrangementSnapshot {
     Vertical,
@@ -174,7 +179,7 @@ pub enum ArrangementSnapshot {
     Stacked,
 }
 
-/// The float layer defaults to Stacked, unlike the tiled layer's Grid.
+/// The float layer has no legacy tree to preserve, so it takes the live default.
 fn stacked_arrangement() -> ArrangementSnapshot {
     ArrangementSnapshot::Stacked
 }
@@ -1411,7 +1416,7 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_without_an_arrangement_restores_as_grid() {
+    fn a_legacy_snapshot_restores_as_grid_to_keep_its_panes_visible() {
         let json = r#"{
             "layout": {"Pane": 1},
             "panes": {},
