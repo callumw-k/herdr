@@ -126,6 +126,14 @@ pub(crate) fn keybind_help_groups(
                     binding_label(&keybinds.rename_workspace),
                     "rename workspace",
                 ),
+                entry(
+                    binding_label(&keybinds.pin_workspace_path),
+                    "pin workspace path",
+                ),
+                entry(
+                    binding_label(&keybinds.toggle_declared_repo),
+                    "declare / undeclare repo",
+                ),
                 entry(binding_label(&keybinds.close_workspace), "close workspace"),
                 entry(
                     binding_label(&keybinds.previous_workspace),
@@ -157,6 +165,18 @@ pub(crate) fn keybind_help_groups(
                     binding_label(&keybinds.split_horizontal),
                     "split horizontal",
                 ),
+                entry(
+                    binding_label(&keybinds.arrangement_next),
+                    "next arrangement",
+                ),
+                entry(
+                    binding_label(&keybinds.arrangement_previous),
+                    "previous arrangement",
+                ),
+                entry(binding_label(&keybinds.new_pane), "new pane"),
+                entry(binding_label(&keybinds.new_float), "new floating pane"),
+                entry(binding_label(&keybinds.toggle_float), "focus / hide floats"),
+                entry(binding_label(&keybinds.toggle_floats), "show / hide floats"),
                 entry(binding_label(&keybinds.close_pane), "close pane"),
                 entry(binding_label(&keybinds.rename_pane), "rename pane"),
                 entry(binding_label(&keybinds.edit_scrollback), "edit scrollback"),
@@ -265,5 +285,31 @@ mod tests {
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].1[0].1, "close pane");
         assert!(filter_keybind_help_groups(groups(), "panes").is_empty());
+    }
+
+    #[test]
+    fn help_lists_every_arrangement_float_and_pin_binding() {
+        let keybinds = crate::config::Keybinds::default();
+        let prefix = (
+            crossterm::event::KeyCode::Char('b'),
+            crossterm::event::KeyModifiers::CONTROL,
+        );
+        let groups = keybind_help_groups(&keybinds, prefix);
+        let labels: Vec<&str> = groups
+            .iter()
+            .flat_map(|(_, entries)| entries.iter().map(|(_, label)| label.as_ref()))
+            .collect();
+        for expected in [
+            "next arrangement",
+            "previous arrangement",
+            "new pane",
+            "new floating pane",
+            "focus / hide floats",
+            "show / hide floats",
+            "pin workspace path",
+            "declare / undeclare repo",
+        ] {
+            assert!(labels.contains(&expected), "missing help entry {expected}");
+        }
     }
 }
