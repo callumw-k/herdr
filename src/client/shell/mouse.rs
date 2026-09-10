@@ -1631,10 +1631,7 @@ impl ClientShellState {
                 }
             } else if super::contains(self.hits.overlay_clear, point) {
                 if let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() {
-                    match rename.field {
-                        ClientRenameField::Name => rename.input.clear(),
-                        ClientRenameField::Path => rename.path_input.clear(),
-                    }
+                    super::overlay_field_input(rename).clear();
                     rename.replace_on_type = false;
                     outcome.repaint = true;
                 }

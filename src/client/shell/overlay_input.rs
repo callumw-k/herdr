@@ -322,20 +322,40 @@ impl ClientShellState {
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
         let target = super::aggregate_navigation::selected_navigator_target(&rows, navigator)?;
         let snapshot = self.snapshot.as_deref()?;
-        match target {
-            ClientNavigatorTarget::Workspace { workspace_id, .. } => Some(workspace_id),
-            ClientNavigatorTarget::Tab { tab_id, .. } => snapshot
-                .tabs
-                .iter()
-                .find(|tab| tab.tab_id == tab_id)
-                .map(|tab| tab.workspace_id.clone()),
-            ClientNavigatorTarget::Pane { pane_id, .. } => snapshot
-                .panes
-                .iter()
-                .find(|pane| pane.pane_id == pane_id)
-                .map(|pane| pane.workspace_id.clone()),
-            ClientNavigatorTarget::Machine { .. } => None,
+        let (endpoint_id, workspace_id) = match target {
+            ClientNavigatorTarget::Workspace {
+                endpoint_id,
+                workspace_id,
+            } => (endpoint_id, Some(workspace_id)),
+            ClientNavigatorTarget::Tab {
+                endpoint_id,
+                tab_id,
+            } => (
+                endpoint_id,
+                snapshot
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.tab_id == tab_id)
+                    .map(|tab| tab.workspace_id.clone()),
+            ),
+            ClientNavigatorTarget::Pane {
+                endpoint_id,
+                pane_id,
+            } => (
+                endpoint_id,
+                snapshot
+                    .panes
+                    .iter()
+                    .find(|pane| pane.pane_id == pane_id)
+                    .map(|pane| pane.workspace_id.clone()),
+            ),
+            ClientNavigatorTarget::Machine { .. } => return None,
+        };
+        // why: workspace ids are per-server counters, so another machine's row would resolve against the active endpoint's snapshot and repin the wrong workspace
+        if endpoint_id != self.active_endpoint_id {
+            return None;
         }
+        workspace_id
     }
 
     pub(super) fn workspace_action_id(&self) -> Option<String> {
@@ -398,6 +418,12 @@ impl ClientShellState {
         }) else {
             return;
         };
+        let lookup =
+            crate::api::schema::Method::WorkspaceGet(crate::api::schema::WorkspaceTarget {
+                workspace_id: workspace_id.clone(),
+            });
+        // why: a server too old for workspace.get still accepts workspace.set_path, so leave the field editable instead of raising a notice on every open
+        let can_look_up = self.supports_endpoint_method(&lookup);
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             title: "workspace",
             input: label,
@@ -408,15 +434,19 @@ impl ClientShellState {
             field,
             path_input: String::new(),
             original_path: String::new(),
-            path_loaded: false,
+            path_loaded: !can_look_up,
         }));
-        self.push_endpoint_method_with_kind(
-            crate::api::schema::Method::WorkspaceGet(crate::api::schema::WorkspaceTarget {
-                workspace_id: workspace_id.clone(),
-            }),
-            PendingEndpointKind::WorkspacePathLookup { workspace_id },
-            outcome,
-        );
+        if can_look_up
+            && !self.push_endpoint_method_with_kind(
+                lookup,
+                PendingEndpointKind::WorkspacePathLookup { workspace_id },
+                outcome,
+            )
+        {
+            if let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() {
+                rename.path_loaded = true;
+            }
+        }
         outcome.repaint = true;
     }
 
@@ -836,9 +866,8 @@ impl ClientShellState {
                 return;
             }
             if code == KeyCode::Char('p') && modifiers.is_empty() {
-                let workspace_id = self.selected_navigator_workspace_id();
-                if let Some(workspace_id) = workspace_id {
-                    self.overlay = None;
+                // why: both openers install their own overlay, so clearing the navigator first would leave nothing on screen when one bails out
+                if let Some(workspace_id) = self.selected_navigator_workspace_id() {
                     self.open_rename_workspace_overlay_for(
                         workspace_id,
                         ClientRenameField::Path,
@@ -849,7 +878,6 @@ impl ClientShellState {
                 return;
             }
             if code == KeyCode::Char('o') && modifiers.contains(KeyModifiers::CONTROL) {
-                self.overlay = None;
                 self.open_new_workspace_overlay();
                 outcome.repaint = true;
                 return;

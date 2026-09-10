@@ -50,6 +50,7 @@ const CLIENT_SHELL_METHODS: &[&str] = &[
     "workspace.create",
     "workspace.declared_repo_toggle",
     "workspace.focus",
+    "workspace.get",
     "workspace.move",
     "workspace.move_block",
     "workspace.path_pin_toggle",

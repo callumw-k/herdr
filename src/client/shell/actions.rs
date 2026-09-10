@@ -573,8 +573,12 @@ impl ClientShellState {
                     if matches!(&rename.target, ClientRenameTarget::Workspace { workspace_id: id } if *id == workspace_id)
                         && !rename.path_loaded
                     {
-                        rename.path_input = workspace.path.clone().unwrap_or_default();
-                        rename.original_path = rename.path_input.clone();
+                        // why: the lookup can land after the user has started typing, and the answer is the change baseline, not a replacement for their edit
+                        let pinned = workspace.path.clone().unwrap_or_default();
+                        if rename.path_input.is_empty() {
+                            rename.path_input = pinned.clone();
+                        }
+                        rename.original_path = pinned;
                         rename.path_loaded = true;
                         return (true, Vec::new());
                     }

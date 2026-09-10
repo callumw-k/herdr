@@ -645,7 +645,7 @@ fn render_rename_overlay(
         let rect = Rect::new(i.x, i.y + offset, i.width, 1);
         let focused = v.field == field || !two_fields;
         let text = if two_fields {
-            format!(" {label:<5}{value}")
+            format!(" {label:<5} {value}")
         } else {
             format!(" {value}")
         };
