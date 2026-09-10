@@ -216,56 +216,78 @@ struct RetainedRecipientUpdate {
     graphics_delivery: Option<crate::kitty_graphics::surface::DeliveryCache>,
 }
 
+/// Rects of the visible floats on each recipient's surface, keyed by the
+/// recipient's position in `recipients`. Built once per retained update so
+/// the per-source check is a rect scan, not a tree walk and id parse.
+struct VisibleFloatCover {
+    floats: HashSet<crate::layout::PaneId>,
+    rects: Vec<Vec<(crate::layout::PaneId, protocol::SurfaceRect)>>,
+}
+
 impl HeadlessServer {
-    /// Only the full render path composites floats over their neighbours, so a row
-    /// patch aimed at a covered pane would paint straight through the float. Panes
-    /// the float does not overlap, and the float itself, keep the fast path: a
-    /// blanket refusal makes every keystroke in the session pay a full render for
-    /// as long as a float is open.
-    fn covered_by_visible_float(
-        &self,
-        recipients: &[RetainedRecipient],
-        workspace_index: usize,
-        pane_id: crate::layout::PaneId,
-    ) -> bool {
-        let Some(tab) = self
-            .app
-            .state
-            .workspaces
-            .get(workspace_index)
-            .and_then(|workspace| {
-                let tab_index = workspace.find_tab_index_for_pane(pane_id)?;
-                workspace.tabs.get(tab_index)
+    /// `None` when no recipient's tab shows a float layer, which is the common
+    /// case and costs one lookup per recipient.
+    fn visible_float_cover(&self, recipients: &[RetainedRecipient]) -> Option<VisibleFloatCover> {
+        let mut floats = HashSet::new();
+        for recipient in recipients {
+            let Some(target) = self.shell_target_for_client(recipient.client_id) else {
+                continue;
+            };
+            let Some(tab) = self
+                .app
+                .state
+                .workspaces
+                .get(target.workspace_index)
+                .and_then(|workspace| workspace.tabs.get(target.tab_index))
+            else {
+                continue;
+            };
+            if tab.float_layout.is_some() && !tab.floats_hidden {
+                floats.extend(tab.floats());
+            }
+        }
+        if floats.is_empty() {
+            return None;
+        }
+        let rects = recipients
+            .iter()
+            .map(|recipient| {
+                recipient
+                    .surface
+                    .panes
+                    .iter()
+                    .filter_map(|pane| {
+                        let (_, id) = self.app.parse_pane_id(&pane.pane_id)?;
+                        Some((id, pane.rect))
+                    })
+                    .collect()
             })
-            .filter(|tab| tab.float_layout.is_some() && !tab.floats_hidden)
-        else {
-            return false;
-        };
-        let floats = tab.floats();
-        if floats.contains(&pane_id) {
+            .collect();
+        Some(VisibleFloatCover { floats, rects })
+    }
+}
+
+impl VisibleFloatCover {
+    /// Only the full render path composites floats over their neighbours, so a
+    /// row patch aimed at a covered pane would paint straight through the float.
+    /// The float itself and panes outside every float keep the fast path.
+    fn covers(&self, pane_id: crate::layout::PaneId) -> bool {
+        if self.floats.contains(&pane_id) {
             return false;
         }
-        recipients.iter().any(|recipient| {
-            let mut source = None;
-            let mut float_rects = Vec::new();
-            for pane in &recipient.surface.panes {
-                let Some((_, id)) = self.app.parse_pane_id(&pane.pane_id) else {
-                    continue;
-                };
-                if id == pane_id {
-                    source = Some(pane.rect);
-                } else if floats.contains(&id) {
-                    float_rects.push(pane.rect);
-                }
-            }
-            source.is_some_and(|source| {
-                float_rects
-                    .iter()
-                    .any(|float| surface_rects_overlap(*float, source))
-            })
+        self.rects.iter().any(|panes| {
+            let Some((_, source)) = panes.iter().find(|(id, _)| *id == pane_id) else {
+                return false;
+            };
+            panes
+                .iter()
+                .filter(|(id, _)| self.floats.contains(id))
+                .any(|(_, float)| surface_rects_overlap(*float, *source))
         })
     }
+}
 
+impl HeadlessServer {
     /// Applies terminal dirty rows to the committed origin-relative pane surface.
     /// Any presentation or geometry uncertainty falls back to the complete renderer.
     pub(super) fn render_retained_pane_surface_and_stream(
@@ -345,6 +367,7 @@ impl HeadlessServer {
         if recipients.is_empty() {
             success!("all_recipients_deferred");
         }
+        let float_cover = self.visible_float_cover(&recipients);
 
         let mut collected = Vec::with_capacity(pty_sources.len());
         for source in pty_sources {
@@ -369,7 +392,7 @@ impl HeadlessServer {
             let Some((workspace_index, pane_id)) = self.app.parse_pane_id(&public_pane_id) else {
                 fallback!("pane_missing");
             };
-            if self.covered_by_visible_float(&recipients, workspace_index, pane_id) {
+            if float_cover.as_ref().is_some_and(|cover| cover.covers(pane_id)) {
                 fallback!("float_covers_pane");
             }
             let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
