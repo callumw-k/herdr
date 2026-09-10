@@ -112,6 +112,9 @@ pub(super) fn navigator_rows(
         None => true,
     };
     let text = |value: &str| crate::fuzzy::fuzzy_score(&query, value).is_some();
+    if !query.is_empty() {
+        return flat_query_rows(endpoints, active_endpoint_id, navigator, &query, &filter);
+    }
     let filtering = navigator.filter.is_some() || !query.is_empty();
     let federated = endpoints.len() > 1;
     let depth_offset = u8::from(federated);
@@ -242,6 +245,102 @@ pub(super) fn navigator_rows(
         }
     }
     rows
+}
+
+/// why: a text query drops the tree so every matching pane becomes one row,
+/// with a breadcrumb in `meta` saying where it lives. A pane whose own label
+/// or cwd matches ranks above one that only matched through its breadcrumb,
+/// and within each group the better fuzzy score wins.
+fn flat_query_rows(
+    endpoints: &[ClientShellEndpoint],
+    active_endpoint_id: &ClientEndpointId,
+    navigator: &ClientNavigatorOverlay,
+    query: &str,
+    filter: &dyn Fn(crate::api::schema::AgentStatus) -> bool,
+) -> Vec<ClientNavigatorRow> {
+    let federated = endpoints.len() > 1;
+    let mut scored: Vec<(bool, i32, ClientNavigatorRow)> = Vec::new();
+    for endpoint in endpoints {
+        let Some(snapshot) = endpoint.snapshot.as_deref() else {
+            continue;
+        };
+        let stale = endpoint.status != ClientEndpointStatus::Online;
+        for workspace in &snapshot.workspaces {
+            for tab in snapshot
+                .tabs
+                .iter()
+                .filter(|tab| tab.workspace_id == workspace.workspace_id)
+            {
+                for (index, pane) in snapshot
+                    .panes
+                    .iter()
+                    .filter(|pane| pane.tab_id == tab.tab_id)
+                    .enumerate()
+                {
+                    let agent = snapshot
+                        .agents
+                        .iter()
+                        .find(|agent| agent.pane_id == pane.pane_id);
+                    let status = agent.map_or(crate::api::schema::AgentStatus::Unknown, |agent| {
+                        agent.agent_status
+                    });
+                    if !filter(status) {
+                        continue;
+                    }
+                    let label = pane
+                        .label
+                        .clone()
+                        .or_else(|| agent.and_then(|agent| agent.name.clone()))
+                        .or_else(|| agent.and_then(|agent| agent.display_agent.clone()))
+                        .or_else(|| agent.and_then(|agent| agent.title.clone()))
+                        .unwrap_or_else(|| format!("pane {}", index + 1));
+                    let cwd = pane
+                        .foreground_cwd
+                        .clone()
+                        .or_else(|| pane.cwd.clone())
+                        .unwrap_or_default();
+                    let mut breadcrumb = format!("{} › {}", workspace.label, tab.label);
+                    if federated {
+                        breadcrumb = format!("{} › {breadcrumb}", endpoint.label);
+                    }
+                    let own = crate::fuzzy::fuzzy_score(query, &label)
+                        .into_iter()
+                        .chain(crate::fuzzy::fuzzy_score(query, &cwd))
+                        .max();
+                    let crumb = crate::fuzzy::fuzzy_score(query, &breadcrumb);
+                    let Some(score) = own.or(crumb) else {
+                        continue;
+                    };
+                    scored.push((
+                        own.is_some(),
+                        score,
+                        ClientNavigatorRow {
+                            depth: 0,
+                            label,
+                            meta: format!("{breadcrumb} · {cwd}"),
+                            status: Some(status),
+                            stale,
+                            current: endpoint.endpoint_id == *active_endpoint_id
+                                && snapshot.focused_pane_id.as_deref() == Some(&pane.pane_id),
+                            target: ClientNavigatorTarget::Pane {
+                                endpoint_id: endpoint.endpoint_id.clone(),
+                                pane_id: pane.pane_id.clone(),
+                            },
+                        },
+                    ));
+                }
+            }
+        }
+    }
+    scored.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then(right.1.cmp(&left.1))
+            .then(left.2.stale.cmp(&right.2.stale))
+    });
+    let _ = navigator;
+    scored.into_iter().map(|(_, _, row)| row).collect()
 }
 
 pub(super) fn navigator_selected_index(

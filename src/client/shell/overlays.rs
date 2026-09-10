@@ -776,40 +776,44 @@ fn render_navigator_overlay(
                 .bg(p.panel_bg)
         };
         b.set_style(rect, st);
-        let tree = match &r.target {
-            ClientNavigatorTarget::Machine { .. } => "▾",
-            ClientNavigatorTarget::Workspace {
-                endpoint_id,
-                workspace_id,
-            } if n
-                .expanded_workspaces
-                .contains(&(endpoint_id.clone(), workspace_id.clone())) =>
-            {
-                if r.depth == 0 {
-                    "▾"
-                } else {
-                    "  ▾"
+        let tree = if !n.query.trim().is_empty() {
+            ""
+        } else {
+            match &r.target {
+                ClientNavigatorTarget::Machine { .. } => "▾",
+                ClientNavigatorTarget::Workspace {
+                    endpoint_id,
+                    workspace_id,
+                } if n
+                    .expanded_workspaces
+                    .contains(&(endpoint_id.clone(), workspace_id.clone())) =>
+                {
+                    if r.depth == 0 {
+                        "▾"
+                    } else {
+                        "  ▾"
+                    }
                 }
-            }
-            ClientNavigatorTarget::Workspace { .. } => {
-                if r.depth == 0 {
-                    "▸"
-                } else {
-                    "  ▸"
+                ClientNavigatorTarget::Workspace { .. } => {
+                    if r.depth == 0 {
+                        "▸"
+                    } else {
+                        "  ▸"
+                    }
                 }
-            }
-            ClientNavigatorTarget::Tab { .. } => {
-                if r.depth == 1 {
-                    "└──"
-                } else {
-                    "    └──"
+                ClientNavigatorTarget::Tab { .. } => {
+                    if r.depth == 1 {
+                        "└──"
+                    } else {
+                        "    └──"
+                    }
                 }
-            }
-            ClientNavigatorTarget::Pane { .. } => {
-                if r.depth == 2 {
-                    "   └──"
-                } else {
-                    "        └──"
+                ClientNavigatorTarget::Pane { .. } => {
+                    if r.depth == 2 {
+                        "   └──"
+                    } else {
+                        "        └──"
+                    }
                 }
             }
         };

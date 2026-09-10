@@ -220,5 +220,6 @@ mod input_domain;
 mod keybindings_settings;
 mod mobile;
 mod mouse_selection;
+mod navigator;
 mod popup_focus_projection;
 mod startup_overlays;

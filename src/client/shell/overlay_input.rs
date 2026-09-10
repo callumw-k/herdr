@@ -201,7 +201,7 @@ impl ClientShellState {
                 .collect();
         let mut navigator = ClientNavigatorOverlay {
             query: String::new(),
-            search_focused: false,
+            search_focused: true,
             selected: None,
             scroll: 0,
             filter: None,
