@@ -100,10 +100,10 @@ Raw socket method names use dot notation:
 | Notification | `notification.show` |
 | Client | `client.window_title.set`, `client.window_title.clear` |
 | Session | `session.snapshot` |
-| Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.close` |
+| Workspace | `workspace.create`, `workspace.list`, `workspace.get`, `workspace.focus`, `workspace.rename`, `workspace.set_path`, `workspace.move`, `workspace.move_block`, `workspace.report_metadata`, `workspace.path_pin_toggle`, `workspace.declared_repo_toggle`, `workspace.close` |
 | Worktree | `worktree.list`, `worktree.create`, `worktree.open`, `worktree.remove` |
-| Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close` |
-| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.graphics.info`, `pane.graphics.set`, `pane.graphics.clear`, `pane.graphics.stream`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
+| Tab | `tab.create`, `tab.list`, `tab.get`, `tab.focus`, `tab.rename`, `tab.move`, `tab.close`, `tab.pane_add`, `tab.arrangement`, `tab.float_activate`, `tab.floats_toggle` |
+| Pane | `pane.split`, `pane.swap`, `pane.move`, `pane.zoom`, `pane.float`, `pane.layout`, `pane.process_info`, `pane.neighbor`, `pane.edges`, `pane.focus_direction`, `pane.resize`, `pane.list`, `pane.current`, `pane.get`, `pane.rename`, `pane.send_text`, `pane.send_keys`, `pane.send_input`, `pane.read`, `pane.graphics.info`, `pane.graphics.set`, `pane.graphics.clear`, `pane.graphics.stream`, `pane.report_agent`, `pane.report_agent_session`, `pane.report_metadata`, `pane.clear_agent_authority`, `pane.release_agent`, `pane.close`, `pane.wait_for_output` |
 | Popup | `popup.close` |
 | Layout | `layout.export`, `layout.apply`, `layout.set_split_ratio` |
 | Agent | `agent.list`, `agent.get`, `agent.read`, `agent.explain`, `agent.send_keys`, `agent.prompt`, `agent.wait`, `agent.rename`, `agent.focus`, `agent.start`, `agent.view.set`, `agent.view.clear` |
@@ -114,6 +114,8 @@ Raw socket method names use dot notation:
 `agent.wait` is server-owned and event-driven. It pins the resolved pane occupant so a replacement cannot satisfy the wait. `agent.prompt` accepts an optional `wait` object with `until` and `timeout_ms`; this submits the prompt and starts the wait in one request, avoiding a race between separate calls. If the resolved agent is already `blocked`, `agent.prompt` returns `agent_blocked` without sending input or starting the wait.
 
 `workspace.move_block` atomically moves the ordered `workspace_ids` before `before_workspace_id`; omit the anchor to move the block to the end. The ids must be unique and the anchor cannot be part of the block. The response contains the authoritative ordered workspace list.
+
+`workspace.set_path` sets the workspace's pinned path, the directory it claims for pane routing. Pass `path: null` to clear the pin. The path expands a leading `~` and resolves relative to the server's working directory, and it does not have to exist yet. Every `WorkspaceInfo` carries the resolved absolute `path`, or omits the field when nothing is pinned. `workspace.path_pin_toggle` pins or unpins the focused pane's directory and `workspace.declared_repo_toggle` adds or removes a `[[repos]]` entry in `config.toml`. See [Concepts](/docs/concepts/) for what Herdr does with a pinned path.
 
 `session.snapshot` returns a one-time bootstrap snapshot for clients that keep
 their own local runtime cache. The response includes version/protocol metadata,
@@ -252,15 +254,28 @@ export the tab containing that pane.
 {"id":"req_export","method":"layout.export","params":{"tab_id":"w1:t1"}}
 ```
 
-The response includes `workspace_id`, `tab_id`, `zoomed`, `focused_pane_id`, and
-`root`. `root` is a BSP tree of `pane` and `split` nodes. Pane nodes can include
-`pane_id`, `label`, `cwd`, and argv `command`. Split nodes use
-`direction` (`right` or `down`), `ratio`, `first`, and `second`.
+The response includes `workspace_id`, `tab_id`, `zoomed`, `focused_pane_id`,
+`arrangement`, and `root`. `arrangement` is the tab's pane arrangement:
+`vertical`, `horizontal`, `grid`, or `stacked`. `root` is a BSP tree of `pane`,
+`split`, and `stack` nodes. Pane nodes can include `pane_id`, `label`, `cwd`,
+and argv `command`. Split nodes use `direction` (`right` or `down`), `ratio`,
+`first`, and `second`. Stack nodes use `panes`, a flat list of pane nodes, and
+`active`, the index of the expanded member. Stacks do not nest and cannot
+contain a split. `arrangement` describes how the tab will be reflowed; after a
+`layout.apply` call with a `Split` root, the tab retains its existing arrangement value until the next pane is created or closed.
+
+The response also includes `float_arrangement` and `float_root` for the tab's
+floating layer, a second independent tree of the same `pane`/`split`/`stack`
+shape. `float_arrangement` defaults to `stacked` rather than `grid`, and
+`float_root` is omitted when the tab has no floats.
 
 `layout.apply` creates a fresh tab from a declarative tree. If `tab_id` is
 provided, Herdr creates the replacement tab first and then closes the old tab.
 This restores structure, labels, cwd, env, and optional argv commands; it does
-not preserve live PTYs, scrollback, or running processes.
+not preserve live PTYs, scrollback, or running processes. An optional
+`float_root` alongside `root` installs the tab's floating layer the same way;
+a `Stack` float root sets `float_arrangement` to `stacked`, matching the rule
+for `root`.
 
 ```json
 {

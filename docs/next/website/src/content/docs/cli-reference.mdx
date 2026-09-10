@@ -142,6 +142,7 @@ herdr workspace create [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [
 herdr workspace get <workspace_id>
 herdr workspace focus <workspace_id>
 herdr workspace rename <workspace_id> <label>
+herdr workspace set-path <workspace_id> [PATH | --clear]
 herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]
 herdr workspace close <workspace_id> [--group]
 ```
@@ -153,6 +154,13 @@ herdr workspace create --cwd ~/project --label api --no-focus
 ```
 
 A workspace is a top-level project or work context. Creating one also creates its first tab and root pane. The JSON response exposes their IDs as `.result.workspace.workspace_id`, `.result.tab.tab_id`, and `.result.root_pane.pane_id`.
+
+Pin the workspace to a directory with `set-path`. A pinned workspace claims new panes opened under that directory, described in [Concepts](/docs/concepts/). Pass a path to set it, or `--clear` to remove it:
+
+```bash
+herdr workspace set-path w1 ~/code/herdr
+herdr workspace set-path w1 --clear
+```
 
 ## Worktrees
 
@@ -178,11 +186,14 @@ herdr tab get <tab_id>
 herdr tab focus <tab_id>
 herdr tab rename <tab_id> <label>
 herdr tab close <tab_id>
+herdr tab floats-toggle [--workspace <workspace_id>] [--toggle|--on|--off]
 ```
 
 A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action. If `confirm_close` is enabled and closing the tab would also close a whole worktree group, `tab close` returns a `confirmation_required` error instead.
 
 Workspace and tab creation, and pane splitting, leave focus unchanged by default. `--focus` selects the new layout; `--no-focus` states the default explicitly. Without `--cwd`, new terminals follow the configured `terminal.new_cwd` policy, which follows the source pane or workspace by default. Each `--env KEY=VALUE` adds or replaces that variable in the new root shell.
+
+`tab floats-toggle` shows or hides the active tab's floating pane layer without closing any float; `--toggle` is the default mode.
 
 ## Panes
 
@@ -206,6 +217,7 @@ herdr pane move <pane_id> --tab <tab_id> --split right|down [--target-pane ID] [
 herdr pane move <pane_id> --new-tab [--workspace ID] [--label TEXT] [--focus|--no-focus]
 herdr pane move <pane_id> --new-workspace [--label TEXT] [--tab-label TEXT] [--focus|--no-focus]
 herdr pane close <pane_id>
+herdr pane float [--workspace <workspace_id>] [--cwd PATH] [--focus] [--no-focus]
 ```
 
 For pane commands that accept `--current`, Herdr uses the calling pane's
@@ -220,6 +232,8 @@ Right-clicking the pane frame still opens Herdr's menu. `pane split
 --right-click pane` applies the same policy to the new pane at creation.
 
 After `pane move`, use `.result.move_result.pane.pane_id` for later commands. A cross-workspace move changes the workspace-qualified pane ID; the prior value remains at `.result.move_result.previous_pane_id`. The running process keeps its launch-time `HERDR_PANE_ID`, `HERDR_TAB_ID`, and `HERDR_WORKSPACE_ID`; Herdr retains the old pane ID as an alias for that terminal, so pane commands using `--current` still resolve it. A live agent name follows the terminal and continues to resolve after the move.
+
+`pane float` opens a new floating pane on the active tab of the target (or active) workspace; without `--workspace` it fails if no workspace is active. A tab's floats share one region and are laid out inside it under the floating layer's own arrangement, so more than one can be visible at once. `pane split` aimed at a float adds another float. Use `pane focus` to move between floats, the same way you would between tiled panes.
 
 Under a tab arrangement (see [Concepts](/docs/concepts/)), `--split` and `--ratio` on `pane move` and `--ratio` on `pane split` only decide where the pane lands in pane order. The tab is reflowed under its arrangement on the next frame, so the ratio is not kept. Use `layout apply` when you need an exact tree.
 
