@@ -605,7 +605,8 @@ fn pane_created_without_client_uses_configured_headless_size() {
         Duration::from_secs(5),
     );
 
-    assert_eq!(size, (41, 132));
+    // why: one row goes to the lone pane's title strip
+    assert_eq!(size, (40, 132));
 
     cleanup_spawned_herdr(spawned, base);
 }
@@ -648,7 +649,8 @@ fn pane_created_after_detach_uses_configured_headless_size() {
         "ATTACHED_SIZE",
         Duration::from_secs(5),
     );
-    assert_eq!(attached_size, (50, 160));
+    // why: one row goes to the lone pane's title strip
+    assert_eq!(attached_size, (49, 160));
 
     send_detach(&mut stream).expect("send detach");
     assert!(
@@ -675,7 +677,8 @@ fn pane_created_after_detach_uses_configured_headless_size() {
         Duration::from_secs(5),
     );
 
-    assert_eq!(headless_size, (41, 132));
+    // why: one row goes to the lone pane's title strip
+    assert_eq!(headless_size, (40, 132));
     assert_eq!(preserved_size, attached_size);
 
     cleanup_spawned_herdr(spawned, base);

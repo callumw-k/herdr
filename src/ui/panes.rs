@@ -16,6 +16,11 @@ use crate::layout::PaneInfo;
 use crate::popup_size::resolve_popup_geometry;
 use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
 
+/// A lone pane in `auto` mode gives up one row to a title strip. The resize
+/// path and the render path both read this: they must agree, or the PTY is
+/// sized to a box the pane never gets.
+pub(crate) const LONE_PANE_BORDERS: Borders = Borders::TOP;
+
 pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
     rt.scroll_metrics()
         .is_some_and(|metrics| metrics.offset_from_bottom > 0)
@@ -143,7 +148,11 @@ pub(crate) fn apply_pane_chrome(
             }
 
             info.borders = if !bordered {
-                Borders::NONE
+                if !multi_pane && pane_borders == crate::config::PaneBordersConfig::Auto {
+                    LONE_PANE_BORDERS
+                } else {
+                    Borders::NONE
+                }
             } else {
                 let mut borders = Borders::ALL;
                 if !pane_gaps {
@@ -1399,7 +1408,7 @@ mod tests {
             false,
             true,
         );
-        assert_eq!(default_infos[0].borders, Borders::NONE);
+        assert_eq!(default_infos[0].borders, LONE_PANE_BORDERS);
 
         let framed_infos = apply_pane_chrome(
             workspace.tabs[0].layout.panes(area),
@@ -1416,6 +1425,35 @@ mod tests {
             false,
         );
         assert_eq!(no_outer_infos[0].borders, Borders::NONE);
+    }
+
+    #[test]
+    fn a_lone_pane_gets_a_title_strip_in_auto_mode() {
+        let area = Rect::new(0, 0, 40, 12);
+        let lone = vec![PaneInfo {
+            id: crate::layout::PaneId::from_raw(1),
+            rect: area,
+            inner_rect: area,
+            scrollbar_rect: None,
+            borders: Borders::NONE,
+            is_focused: true,
+        }];
+        let auto = apply_pane_chrome(
+            lone.clone(),
+            crate::config::PaneBordersConfig::Auto,
+            false,
+            true,
+        );
+        assert_eq!(auto[0].borders, LONE_PANE_BORDERS);
+        let off = apply_pane_chrome(
+            lone.clone(),
+            crate::config::PaneBordersConfig::Off,
+            false,
+            true,
+        );
+        assert_eq!(off[0].borders, Borders::NONE);
+        let always = apply_pane_chrome(lone, crate::config::PaneBordersConfig::Always, false, true);
+        assert_eq!(always[0].borders, Borders::ALL);
     }
 
     #[test]
@@ -1548,7 +1586,8 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
+        // why: one row goes to the lone pane's title strip
+        assert_eq!(info.inner_rect, Rect::new(10, 4, 39, 7));
     }
 
     fn stacked_pane_infos(
@@ -1884,14 +1923,15 @@ mod tests {
                 true,
                 crate::kitty_graphics::HostCellSize::default(),
             );
+            // why: one row goes to the lone pane's title strip
             assert_eq!(
                 infos[0].inner_rect,
-                Rect::new(area.x, area.y, expected_width, area.height)
+                Rect::new(area.x, area.y + 1, expected_width, area.height - 1)
             );
             assert_eq!(infos[0].scrollbar_rect.is_some(), has_scrollbar);
             assert_eq!(
                 app.workspaces[0].tabs[0].runtimes[&root_pane].current_size(),
-                (area.height, expected_width)
+                (area.height - 1, expected_width)
             );
         };
 
@@ -1986,7 +2026,8 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, area);
+        // why: one row goes to the lone pane's title strip
+        assert_eq!(info.inner_rect, Rect::new(10, 4, 4, 7));
     }
 
     #[tokio::test]
@@ -2018,8 +2059,9 @@ mod tests {
         let info = &infos[0];
 
         assert_eq!(info.rect, area);
-        assert_eq!(info.scrollbar_rect, Some(Rect::new(49, 3, 1, 8)));
-        assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
+        // why: one row goes to the lone pane's title strip
+        assert_eq!(info.scrollbar_rect, Some(Rect::new(49, 4, 1, 7)));
+        assert_eq!(info.inner_rect, Rect::new(10, 4, 39, 7));
 
         app.pane_scrollbars = false;
         let infos = compute_pane_infos(
@@ -2033,7 +2075,8 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, area);
+        // why: one row goes to the lone pane's title strip
+        assert_eq!(info.inner_rect, Rect::new(10, 4, 40, 7));
     }
 
     #[test]
