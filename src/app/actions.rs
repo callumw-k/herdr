@@ -379,17 +379,33 @@ impl AppState {
     }
 
     pub(crate) fn set_tab_arrangement(&mut self, arrangement: Arrangement) {
-        let float_focused = self.float_layer_has_focus();
+        let float_layer = self.float_layer_has_focus();
         let Some(ws_idx) = self.active else {
             return;
         };
-        let Some(ws) = self.workspaces.get_mut(ws_idx) else {
+        let Some(tab_idx) = self.workspaces.get(ws_idx).map(|ws| ws.active_tab_index()) else {
             return;
         };
-        let Some(tab) = ws.active_tab_mut() else {
+        self.set_layer_arrangement(ws_idx, tab_idx, float_layer, arrangement);
+    }
+
+    /// Set one layer's arrangement on one tab. API handlers use this because
+    /// their target tab need not be the active one.
+    pub(crate) fn set_layer_arrangement(
+        &mut self,
+        ws_idx: usize,
+        tab_idx: usize,
+        float_layer: bool,
+        arrangement: Arrangement,
+    ) {
+        let Some(tab) = self
+            .workspaces
+            .get_mut(ws_idx)
+            .and_then(|ws| ws.tabs.get_mut(tab_idx))
+        else {
             return;
         };
-        if float_focused {
+        if float_layer {
             tab.float_arrangement = arrangement;
             tab.float_needs_reflow = true;
         } else {

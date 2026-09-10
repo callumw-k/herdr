@@ -33,6 +33,15 @@ use super::responses::{encode_error, encode_success};
 
 impl App {
     pub(super) fn handle_pane_split(&mut self, id: String, params: PaneSplitParams) -> String {
+        self.split_pane_request(id, params, true)
+    }
+
+    fn split_pane_request(
+        &mut self,
+        id: String,
+        params: PaneSplitParams,
+        follow_direction: bool,
+    ) -> String {
         let target = if let Some(target_pane_id) = params.target_pane_id.as_deref() {
             self.parse_pane_id(target_pane_id)
         } else if let Some(workspace_id) = params.workspace_id.as_deref() {
@@ -49,6 +58,31 @@ impl App {
         let Some((ws_idx, target_pane_id)) = target else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
+        let arrangement = match params.direction {
+            crate::api::schema::SplitDirection::Right => crate::layout::Arrangement::Vertical,
+            crate::api::schema::SplitDirection::Down => crate::layout::Arrangement::Horizontal,
+        };
+        let target_tab_idx = self.state.workspaces[ws_idx].find_tab_index_for_pane(target_pane_id);
+        let target_is_float = target_tab_idx.is_some_and(|tab_idx| {
+            self.state.workspaces[ws_idx].tabs[tab_idx].is_float(target_pane_id)
+        });
+        if target_is_float {
+            // why: the tiled tree cannot split a float; creation follows focus, so a split aimed at the float layer adds a float to it instead.
+            let response = self.handle_pane_float(
+                id,
+                PaneFloatParams {
+                    workspace_id: Some(self.public_workspace_id(ws_idx)),
+                    cwd: params.cwd,
+                    focus: params.focus,
+                },
+            );
+            if let (true, true, Some(tab_idx)) =
+                (follow_direction, params.ratio.is_none(), target_tab_idx)
+            {
+                self.state.set_layer_arrangement(ws_idx, tab_idx, true, arrangement);
+            }
+            return response;
+        }
         let extra_env = match super::env::normalize_launch_env(params.env) {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
@@ -128,6 +162,11 @@ impl App {
             .terminals
             .insert(new_pane.terminal.id.clone(), new_pane.terminal);
         self.schedule_session_save();
+        // why: without a ratio the tree is reflowed anyway, so the direction would otherwise be ignored; a ratio is a manual placement and leaves the arrangement alone.
+        if follow_direction && params.ratio.is_none() {
+            self.state
+                .set_layer_arrangement(ws_idx, target_tab_idx, false, arrangement);
+        }
         let pane = self.pane_info(ws_idx, new_pane.pane_id).unwrap();
         self.emit_event(EventEnvelope {
             event: EventKind::PaneCreated,
@@ -321,7 +360,7 @@ impl App {
             crate::layout::Arrangement::Vertical => crate::api::schema::SplitDirection::Right,
             _ => crate::api::schema::SplitDirection::Down,
         };
-        self.handle_pane_split(
+        self.split_pane_request(
             id,
             PaneSplitParams {
                 workspace_id: Some(self.public_workspace_id(ws_idx)),
@@ -333,6 +372,7 @@ impl App {
                 right_click: Default::default(),
                 env: Default::default(),
             },
+            false,
         )
     }
 
@@ -5364,5 +5404,91 @@ mod tests {
             .all(|ws| ws.pinned_path.is_none()));
         shutdown_test_runtimes(&mut app);
         let _ = std::fs::remove_dir_all(&declared);
+    }
+
+    #[tokio::test]
+    async fn splitting_with_a_float_focused_adds_a_float_to_the_layer() {
+        let (mut app, _) = app_with_test_workspace();
+        app.state.active = Some(0);
+        let float = app
+            .open_float_pane(0, Some("/tmp".into()))
+            .expect("first float");
+        let float_public = app.public_pane_id(0, float).unwrap();
+
+        let response = app.handle_pane_split(
+            "req".into(),
+            PaneSplitParams {
+                workspace_id: None,
+                target_pane_id: Some(float_public),
+                direction: SplitDirection::Right,
+                ratio: None,
+                cwd: Some("/tmp".into()),
+                focus: true,
+                right_click: Default::default(),
+                env: Default::default(),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneInfo { pane } = success.result else {
+            panic!("expected pane info, got {response}");
+        };
+        assert!(pane.floating);
+        let tab = &app.state.workspaces[0].tabs[0];
+        assert_eq!(tab.floats().len(), 2);
+        assert_eq!(tab.layout.pane_count(), 1, "the tiled layer is untouched");
+        assert_eq!(tab.float_arrangement, crate::layout::Arrangement::Vertical);
+    }
+
+    #[tokio::test]
+    async fn a_split_without_a_ratio_sets_the_tab_arrangement_from_its_direction() {
+        let (mut app, root) = app_with_test_workspace();
+        app.state.active = Some(0);
+        let split = |app: &mut App, direction, ratio| {
+            app.handle_pane_split(
+                "req".into(),
+                PaneSplitParams {
+                    workspace_id: None,
+                    target_pane_id: Some(root.clone()),
+                    direction,
+                    ratio,
+                    cwd: Some("/tmp".into()),
+                    focus: true,
+                    right_click: Default::default(),
+                    env: Default::default(),
+                },
+            )
+        };
+
+        split(&mut app, SplitDirection::Right, None);
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].arrangement,
+            crate::layout::Arrangement::Vertical
+        );
+        split(&mut app, SplitDirection::Down, None);
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].arrangement,
+            crate::layout::Arrangement::Horizontal
+        );
+        split(&mut app, SplitDirection::Right, Some(0.3));
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].arrangement,
+            crate::layout::Arrangement::Horizontal,
+            "an explicit ratio is a manual placement, not an arrangement change"
+        );
+    }
+
+    #[tokio::test]
+    async fn tab_pane_add_keeps_the_current_arrangement() {
+        let (mut app, _) = app_with_test_workspace();
+        app.state.active = Some(0);
+        app.state.workspaces[0].tabs[0].arrangement = crate::layout::Arrangement::Grid;
+
+        app.handle_tab_pane_add("req".into(), TabPaneAddParams { workspace_id: None });
+
+        assert_eq!(
+            app.state.workspaces[0].tabs[0].arrangement,
+            crate::layout::Arrangement::Grid
+        );
     }
 }

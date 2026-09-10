@@ -587,6 +587,14 @@ impl App {
         let Some((ws_idx, pane)) = self.find_pane(pane_id) else {
             return;
         };
+        // why: floats never move between workspaces, and take_pane_for_move refuses them, so asking would only log a failure.
+        let ws = &self.state.workspaces[ws_idx];
+        if ws
+            .find_tab_index_for_pane(pane_id)
+            .is_some_and(|tab_idx| ws.tabs[tab_idx].is_float(pane_id))
+        {
+            return;
+        }
         let terminal_id = pane.attached_terminal_id.clone();
         let Some(terminal) = self.state.terminals.get(&terminal_id) else {
             return;
