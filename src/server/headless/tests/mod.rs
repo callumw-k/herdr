@@ -6306,3 +6306,51 @@ fn no_handle_internal_event_bypass_in_module() {
         bypass_lines.join("\n  ")
     );
 }
+
+#[tokio::test]
+async fn client_shell_input_reaches_a_focused_float() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("floats");
+    let tiled = workspace.tabs[0].root_pane;
+    workspace.insert_test_runtime(
+        tiled,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"TILED"),
+    );
+    let float = crate::layout::PaneId::alloc();
+    workspace.register_new_pane_with_number(float, workspace.next_public_pane_number);
+    workspace.tabs[0].push_float(
+        float,
+        crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+    );
+    let (float_runtime, mut float_input) =
+        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+            60, 12, 0, b"FLOAT", 4,
+        );
+    workspace.insert_test_runtime(float, float_runtime);
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    server.app.state.ensure_test_terminals();
+    let float_id = server.app.public_pane_id(0, float).unwrap();
+
+    let (control, _render) = connect_test_shell(&mut server, 31, 100, 30);
+    let snapshot = client_shell_snapshot(read_server_message(control.recv().expect("snapshot")));
+    assert_eq!(
+        snapshot.focused_pane_id.as_deref(),
+        Some(float_id.as_str()),
+        "a focused float is the snapshot's focused pane"
+    );
+
+    server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        client_id: 31,
+        pane_id: float_id,
+        events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+            "typed".into(),
+        )],
+    });
+    assert_eq!(
+        float_input.try_recv().expect("float receives input"),
+        Bytes::from_static(b"typed")
+    );
+}

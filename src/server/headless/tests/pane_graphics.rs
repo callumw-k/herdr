@@ -1479,7 +1479,8 @@ fn timeout_retires_stream_without_producer_ack() {
 
 #[tokio::test]
 async fn a_float_keeps_the_fast_path_for_its_own_pane() {
-    let (mut server, client_rx, _tiled_pane) = retained_test_server(b"tiled-aaaa");
+    let (mut server, _control_rx, client_rx, _tiled_pane) =
+        retained_test_server_with_control(b"tiled-aaaa");
     let client = server.clients.get_mut(&1).unwrap();
     client.mode = ClientConnectionMode::ClientShell;
     client.render_state =
@@ -1515,7 +1516,8 @@ async fn a_float_keeps_the_fast_path_for_its_own_pane() {
 
 #[tokio::test]
 async fn a_visible_float_declines_the_retained_pane_surface_patch() {
-    let (mut server, client_rx, tiled_pane) = retained_test_server(b"tiled-aaaa");
+    let (mut server, _control_rx, client_rx, tiled_pane) =
+        retained_test_server_with_control(b"tiled-aaaa");
     let client = server.clients.get_mut(&1).unwrap();
     client.mode = ClientConnectionMode::ClientShell;
     client.render_state =

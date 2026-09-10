@@ -27,8 +27,7 @@ pub(super) fn snapshot(
                 .get(workspace_index)?
                 .tabs
                 .get(tab_index)?
-                .layout
-                .focused();
+                .focused_pane();
             app.public_pane_id(workspace_index, pane_id)
         })
         .or_else(|| snapshot.focused_pane_id.clone());

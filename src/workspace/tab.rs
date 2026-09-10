@@ -278,6 +278,22 @@ impl Tab {
             .unwrap_or_else(|| self.layout.focused())
     }
 
+    /// Every pane a client can currently see on this tab: the zoomed pane or
+    /// the whole tiled layer, plus the float layer while it is shown. Input
+    /// routing, immediate PTY sources and graphics visibility all read this
+    /// so no single path can forget the float layer.
+    pub fn visible_pane_ids(&self) -> Vec<PaneId> {
+        let mut ids = if self.zoomed {
+            vec![self.layout.focused()]
+        } else {
+            self.layout.pane_ids()
+        };
+        if !self.floats_hidden {
+            ids.extend(self.floats());
+        }
+        ids
+    }
+
     pub fn push_float(&mut self, pane_id: PaneId, pane_state: PaneState) {
         match self.float_layout.as_mut() {
             Some(layout) => {

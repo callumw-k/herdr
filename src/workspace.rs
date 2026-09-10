@@ -1838,4 +1838,29 @@ mod tests {
         assert!(ws.tabs[0].panes.contains_key(&tiled));
         ws.assert_invariants_for_test();
     }
+
+    #[test]
+    fn visible_pane_ids_cover_the_float_layer_and_zoom() {
+        let mut ws = Workspace::test_new("visible");
+        let tiled = ws.tabs[0].root_pane;
+        let other = ws.test_split(ratatui::layout::Direction::Horizontal);
+        let float = PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
+
+        let visible = ws.tabs[0].visible_pane_ids();
+        assert!(visible.contains(&tiled) && visible.contains(&other) && visible.contains(&float));
+
+        ws.tabs[0].zoomed = true;
+        ws.tabs[0].layout.focus_pane(tiled);
+        let zoomed = ws.tabs[0].visible_pane_ids();
+        assert_eq!(
+            zoomed,
+            vec![tiled, float],
+            "zoom keeps the shown float layer"
+        );
+
+        ws.tabs[0].set_floats_hidden(true);
+        assert_eq!(ws.tabs[0].visible_pane_ids(), vec![tiled]);
+    }
 }
