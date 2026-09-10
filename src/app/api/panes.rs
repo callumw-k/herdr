@@ -79,7 +79,8 @@ impl App {
             if let (true, true, Some(tab_idx)) =
                 (follow_direction, params.ratio.is_none(), target_tab_idx)
             {
-                self.state.set_layer_arrangement(ws_idx, tab_idx, true, arrangement);
+                self.state
+                    .set_layer_arrangement(ws_idx, tab_idx, true, arrangement);
             }
             return response;
         }
@@ -1622,7 +1623,8 @@ impl App {
         self.emit_layout_updated_snapshot((*move_result.target_layout).clone());
 
         // A source tab removed with the moved pane takes its floats with it.
-        self.state.remove_unattached_terminal_ids(source_terminal_ids);
+        self.state
+            .remove_unattached_terminal_ids(source_terminal_ids);
         self.shutdown_detached_terminal_runtimes();
         encode_success(id, ResponseResult::PaneMove { move_result })
     }
@@ -2156,7 +2158,11 @@ impl App {
         let workspace_terminal_ids = self.state.terminal_ids_for_workspace(ws_idx);
         let tab_pane_ids: Vec<PaneId> = self.state.workspaces[ws_idx]
             .find_tab_index_for_pane(pane_id)
-            .map(|tab_idx| self.state.workspaces[ws_idx].tabs[tab_idx].all_pane_ids().collect())
+            .map(|tab_idx| {
+                self.state.workspaces[ws_idx].tabs[tab_idx]
+                    .all_pane_ids()
+                    .collect()
+            })
             .unwrap_or_default();
         let should_close_workspace = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
@@ -2184,10 +2190,16 @@ impl App {
                 },
             });
         } else {
-            self.state.remove_unattached_terminal_ids(workspace_terminal_ids);
+            self.state
+                .remove_unattached_terminal_ids(workspace_terminal_ids);
             let orphaned: Vec<PaneId> = tab_pane_ids
                 .into_iter()
-                .filter(|id| self.state.workspaces.iter().all(|ws| ws.pane_state(*id).is_none()))
+                .filter(|id| {
+                    self.state
+                        .workspaces
+                        .iter()
+                        .all(|ws| ws.pane_state(*id).is_none())
+                })
                 .collect();
             self.state.remove_plugin_pane_records(orphaned);
             self.shutdown_detached_terminal_runtimes();

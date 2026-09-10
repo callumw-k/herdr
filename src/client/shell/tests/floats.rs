@@ -6,7 +6,12 @@ fn surface_pane(pane_id: &str, x: u16, y: u16, width: u16, height: u16) -> PaneS
     PaneSurfacePane {
         pane_id: pane_id.into(),
         content_revision: 0,
-        rect: SurfaceRect { x, y, width, height },
+        rect: SurfaceRect {
+            x,
+            y,
+            width,
+            height,
+        },
         inner_rect: SurfaceRect {
             x: x + 1,
             y: y + 1,
@@ -43,7 +48,12 @@ fn a_click_inside_a_float_focuses_the_float_not_the_pane_beneath() {
     state.set_pane_surface(surface);
     state.compose(106, 28).expect("composed frame");
 
-    let pane_2 = state.hits.panes.iter().find(|h| h.pane_id == "pane_2").expect("pane_2");
+    let pane_2 = state
+        .hits
+        .panes
+        .iter()
+        .find(|h| h.pane_id == "pane_2")
+        .expect("pane_2");
     let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: pane_2.inner_rect.x + 5,

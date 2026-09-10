@@ -2628,8 +2628,7 @@ impl PaneRuntime {
                     // publish_reported_cwd dedupes, so a shell that does emit
                     // OSC 7 gets here first and this costs nothing.
                     #[cfg(unix)]
-                    if let Some(cwd) =
-                        polled_shell_cwd(pid, foreground_pgid, &mut last_polled_cwd)
+                    if let Some(cwd) = polled_shell_cwd(pid, foreground_pgid, &mut last_polled_cwd)
                     {
                         publish_reported_cwd(
                             pane_id,

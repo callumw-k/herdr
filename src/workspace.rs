@@ -1882,7 +1882,10 @@ mod tests {
         ws.register_new_pane_with_number(float, ws.next_public_pane_number);
         ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
 
-        assert!(!ws.remove_pane(tiled), "another tab remains, so the workspace stays");
+        assert!(
+            !ws.remove_pane(tiled),
+            "another tab remains, so the workspace stays"
+        );
 
         assert_eq!(ws.tabs.len(), 1);
         assert!(ws.pane_state(float).is_none());

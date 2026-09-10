@@ -2343,7 +2343,11 @@ impl AppState {
         let workspace_terminal_ids = self.terminal_ids_for_workspace(ws_idx);
         let tab_pane_ids: Vec<PaneId> = self.workspaces[ws_idx]
             .find_tab_index_for_pane(pane_id)
-            .map(|tab_idx| self.workspaces[ws_idx].tabs[tab_idx].all_pane_ids().collect())
+            .map(|tab_idx| {
+                self.workspaces[ws_idx].tabs[tab_idx]
+                    .all_pane_ids()
+                    .collect()
+            })
             .unwrap_or_default();
         self.pane_id_aliases.retain(|_, alias| *alias != pane_id);
         self.public_pane_id_aliases
@@ -2395,7 +2399,11 @@ impl AppState {
             self.remove_unattached_terminal_ids(workspace_terminal_ids);
             let orphaned: Vec<PaneId> = tab_pane_ids
                 .into_iter()
-                .filter(|id| self.workspaces.iter().all(|ws| ws.pane_state(*id).is_none()))
+                .filter(|id| {
+                    self.workspaces
+                        .iter()
+                        .all(|ws| ws.pane_state(*id).is_none())
+                })
                 .collect();
             self.remove_plugin_pane_records(orphaned);
         }

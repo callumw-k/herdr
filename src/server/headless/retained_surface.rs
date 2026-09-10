@@ -392,7 +392,10 @@ impl HeadlessServer {
             let Some((workspace_index, pane_id)) = self.app.parse_pane_id(&public_pane_id) else {
                 fallback!("pane_missing");
             };
-            if float_cover.as_ref().is_some_and(|cover| cover.covers(pane_id)) {
+            if float_cover
+                .as_ref()
+                .is_some_and(|cover| cover.covers(pane_id))
+            {
                 fallback!("float_covers_pane");
             }
             let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
