@@ -630,6 +630,13 @@ fn sanitized_osc_debug_payload(payload: &[u8]) -> String {
 /// Whether a `file://` authority names this machine. Shells emit the real
 /// hostname rather than an empty authority, so accepting only `localhost`
 /// would discard every report they send.
+///
+/// Accepted risk: a shell on another host with the same short name (a
+/// `--net=host` container, a cloned VM) also passes. The report only updates
+/// the pane's recorded cwd when that path exists here, and pinned-path
+/// auto-move additionally requires the pane to be sitting at an idle shell
+/// (`App::reclaim_pane_after_cwd_change`), so a remote session running under
+/// `ssh` or `docker` cannot drag the pane into another workspace.
 fn host_is_local(host: &str) -> bool {
     if host.is_empty() || host.eq_ignore_ascii_case("localhost") {
         return true;
