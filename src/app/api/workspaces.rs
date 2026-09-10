@@ -166,16 +166,25 @@ impl App {
         };
 
         let mut declared = false;
+        let mut unsupported = None;
         if let Err(error) = crate::config::update_file_at(
             &crate::config::config_path(),
             "declared repos",
-            |content| {
-                let (updated, now_declared) = crate::config::toggle_repo_path(content, &path);
-                declared = now_declared;
-                updated
+            |content| match crate::config::toggle_repo_path(content, &path) {
+                Ok((updated, now_declared)) => {
+                    declared = now_declared;
+                    updated
+                }
+                Err(message) => {
+                    unsupported = Some(message);
+                    content.to_string()
+                }
             },
         ) {
             return encode_error(id, "config_write_failed", error);
+        }
+        if let Some(message) = unsupported {
+            return encode_error(id, "config_unsupported", message);
         }
         self.apply_config_from_disk(false);
 
