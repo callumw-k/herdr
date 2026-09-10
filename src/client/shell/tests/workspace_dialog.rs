@@ -50,6 +50,48 @@ fn opening_the_workspace_editor_looks_up_the_pinned_path() {
 }
 
 #[test]
+fn a_failed_path_lookup_still_unlocks_the_field_and_keeps_typed_text() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut outcome = ClientShellInput::default();
+
+    state.open_rename_workspace_overlay_for("ws_1".into(), ClientRenameField::Path, &mut outcome);
+    let request_id = match &outcome.actions[0] {
+        ClientShellAction::Endpoint { request, .. } => request.id.clone(),
+        _ => unreachable!(),
+    };
+
+    for character in "/tmp/typed".chars() {
+        state.handle_raw_events(vec![key(KeyCode::Char(character), KeyModifiers::NONE)]);
+    }
+
+    state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Err(ClientShellEndpointError {
+            code: Some("endpoint_timeout".into()),
+            message: "timed out".into(),
+        }),
+    );
+
+    let Some(ClientShellOverlay::Rename(rename)) = state.overlay.as_ref() else {
+        panic!("editor open");
+    };
+    assert!(
+        rename.path_loaded,
+        "a failed lookup must still unlock the field instead of leaving it stuck on the placeholder"
+    );
+    assert_eq!(rename.path_input, "/tmp/typed");
+
+    let saved = state.handle_raw_events(vec![key(KeyCode::Enter, KeyModifiers::NONE)]);
+    assert!(matches!(
+        endpoint_methods(&saved.actions)[..],
+        [crate::api::schema::Method::WorkspaceSetPath(params)]
+            if params.path.as_deref() == Some("/tmp/typed")
+    ));
+}
+
+#[test]
 fn saving_sends_rename_and_set_path_only_for_changed_fields() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));

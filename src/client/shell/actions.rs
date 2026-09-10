@@ -565,15 +565,18 @@ impl ClientShellState {
         match pending.kind {
             PendingEndpointKind::Generic => {}
             PendingEndpointKind::WorkspacePathLookup { workspace_id } => {
-                if let (
-                    Ok(crate::api::schema::ResponseResult::WorkspaceInfo { workspace }),
-                    Some(ClientShellOverlay::Rename(rename)),
-                ) = (&result, self.overlay.as_mut())
+                let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() else {
+                    return (false, Vec::new());
+                };
+                if !matches!(&rename.target, ClientRenameTarget::Workspace { workspace_id: id } if *id == workspace_id)
+                    || rename.path_loaded
                 {
-                    if matches!(&rename.target, ClientRenameTarget::Workspace { workspace_id: id } if *id == workspace_id)
-                        && !rename.path_loaded
-                    {
-                        // why: the lookup can land after the user has started typing, and the answer is the change baseline, not a replacement for their edit
+                    return (false, Vec::new());
+                }
+                match &result {
+                    Ok(crate::api::schema::ResponseResult::WorkspaceInfo { workspace }) => {
+                        // The lookup can land after the user has started typing, and the
+                        // answer is the change baseline, not a replacement for their edit.
                         let pinned = workspace.path.clone().unwrap_or_default();
                         if rename.path_input.is_empty() {
                             rename.path_input = pinned.clone();
@@ -582,6 +585,14 @@ impl ClientShellState {
                         rename.path_loaded = true;
                         return (true, Vec::new());
                     }
+                    Err(_) => {
+                        // A failed lookup must still unstick the field: without this,
+                        // path_loaded stays false forever, the placeholder never clears,
+                        // and save_rename_overlay silently discards anything typed.
+                        rename.path_loaded = true;
+                        return (true, Vec::new());
+                    }
+                    Ok(_) => {}
                 }
                 return (false, Vec::new());
             }
