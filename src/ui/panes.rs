@@ -253,28 +253,55 @@ pub(super) fn resize_tab_panes(
                 );
             }
         }
-        return;
+    } else {
+        for info in apply_pane_chrome(
+            tab.layout.panes(area),
+            app.pane_borders,
+            app.pane_gaps,
+            app.pane_outer_borders,
+        ) {
+            let pane_inner = pane_inner_rect(info.rect, info.borders);
+
+            if let Some((terminal_id, rt)) =
+                runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, info.id)
+            {
+                let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
+                if info.rect.height > 1 && !app.direct_attach_resize_locks.contains(terminal_id) {
+                    rt.resize(
+                        inner_rect.height,
+                        inner_rect.width,
+                        cell_size.width_px,
+                        cell_size.height_px,
+                    );
+                }
+            }
+        }
     }
 
-    for info in apply_pane_chrome(
-        tab.layout.panes(area),
-        app.pane_borders,
-        app.pane_gaps,
-        app.pane_outer_borders,
-    ) {
-        let pane_inner = pane_inner_rect(info.rect, info.borders);
-
-        if let Some((terminal_id, rt)) =
-            runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, info.id)
+    // A background tab's floats otherwise keep a stale size until the tab is
+    // activated. Same box rule as compute_pane_infos_for_tab: no scrollbar
+    // lane, and collapsed members are not reflowed.
+    if let Some(layout) = tab.float_layout.as_ref().filter(|_| !tab.floats_hidden) {
+        if let Some(geometry) =
+            resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
         {
-            let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
-            if info.rect.height > 1 && !app.direct_attach_resize_locks.contains(terminal_id) {
-                rt.resize(
-                    inner_rect.height,
-                    inner_rect.width,
-                    cell_size.width_px,
-                    cell_size.height_px,
-                );
+            for info in layout.panes(geometry.outer) {
+                if info.rect.height <= 1 {
+                    continue;
+                }
+                let inner_rect = pane_inner_rect(info.rect, Borders::ALL);
+                if let Some((terminal_id, rt)) =
+                    runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, info.id)
+                {
+                    if !app.direct_attach_resize_locks.contains(terminal_id) {
+                        rt.resize(
+                            inner_rect.height,
+                            inner_rect.width,
+                            cell_size.width_px,
+                            cell_size.height_px,
+                        );
+                    }
+                }
             }
         }
     }
@@ -300,7 +327,7 @@ pub(super) fn compute_pane_infos_for_tab(
 
     let multi_pane = tab.layout.pane_count() > 1;
 
-    if tab.zoomed {
+    let mut pane_infos = if tab.zoomed {
         let focused_id = tab.layout.focused();
         let borders = if app.pane_borders.shows_borders(multi_pane) && app.pane_outer_borders {
             Borders::ALL
@@ -326,51 +353,53 @@ pub(super) fn compute_pane_infos_for_tab(
                 );
             }
         }
-        return vec![PaneInfo {
+        vec![PaneInfo {
             id: focused_id,
             rect: area,
             inner_rect,
             scrollbar_rect,
             borders,
             is_focused: !tab.float_focused,
-        }];
-    }
+        }]
+    } else {
+        let mut pane_infos = apply_pane_chrome(
+            tab.layout.panes(area),
+            app.pane_borders,
+            app.pane_gaps,
+            app.pane_outer_borders,
+        );
 
-    let mut pane_infos = apply_pane_chrome(
-        tab.layout.panes(area),
-        app.pane_borders,
-        app.pane_gaps,
-        app.pane_outer_borders,
-    );
+        for info in &mut pane_infos {
+            let pane_inner = pane_inner_rect(info.rect, info.borders);
 
-    for info in &mut pane_infos {
-        let pane_inner = pane_inner_rect(info.rect, info.borders);
-
-        let mut inner_rect = pane_inner;
-        let mut scrollbar_rect = None;
-        if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
-            (inner_rect, scrollbar_rect) =
-                stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
-            // Reflowing a collapsed member wrecks an alt screen for no visible gain.
-            if resize_panes
-                && info.rect.height > 1
-                && tab.terminal_id(info.id).is_some_and(|terminal_id| {
-                    !app.direct_attach_resize_locks.contains(terminal_id)
-                })
+            let mut inner_rect = pane_inner;
+            let mut scrollbar_rect = None;
+            if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
             {
-                rt.resize(
-                    inner_rect.height,
-                    inner_rect.width,
-                    cell_size.width_px,
-                    cell_size.height_px,
-                );
+                (inner_rect, scrollbar_rect) =
+                    stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
+                // Reflowing a collapsed member wrecks an alt screen for no visible gain.
+                if resize_panes
+                    && info.rect.height > 1
+                    && tab.terminal_id(info.id).is_some_and(|terminal_id| {
+                        !app.direct_attach_resize_locks.contains(terminal_id)
+                    })
+                {
+                    rt.resize(
+                        inner_rect.height,
+                        inner_rect.width,
+                        cell_size.width_px,
+                        cell_size.height_px,
+                    );
+                }
             }
-        }
 
-        info.inner_rect = inner_rect;
-        info.scrollbar_rect = scrollbar_rect;
-        info.is_focused = !tab.float_focused && info.is_focused;
-    }
+            info.inner_rect = inner_rect;
+            info.scrollbar_rect = scrollbar_rect;
+            info.is_focused = !tab.float_focused && info.is_focused;
+        }
+        pane_infos
+    };
 
     // A hidden layer emits nothing at all. Drawing, PTY resizing, mouse
     // hit-testing, hyperlink scanning and graphics all key off this list, so
@@ -1614,6 +1643,50 @@ mod tests {
             buffer[(float.rect.x, float.rect.y)].bg,
             app.palette.panel_bg,
             "the frame is opaque over whatever it covers"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zoomed_tab_still_lays_out_and_sizes_its_floats() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("zoom");
+        let tiled = ws.tabs[0].root_pane;
+        let float_id = crate::layout::PaneId::alloc();
+        let number = ws.next_public_pane_number;
+        ws.register_new_pane_with_number(float_id, number);
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(10, 3, 1024, b"floating\n"),
+        );
+        ws.tabs[0].zoomed = true;
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let ids: Vec<_> = pane_infos.iter().map(|info| info.id).collect();
+        assert_eq!(
+            ids,
+            vec![tiled, float_id],
+            "zoomed tiled pane, then the float"
+        );
+        let float = &pane_infos[1];
+        assert!(float.is_focused, "the pushed float holds focus");
+        let size = app.workspaces[0].tabs[0].runtimes[&float_id].current_size();
+        assert_eq!(
+            size,
+            (float.inner_rect.height, float.inner_rect.width),
+            "the float PTY follows its box even while the tab is zoomed"
         );
     }
 
