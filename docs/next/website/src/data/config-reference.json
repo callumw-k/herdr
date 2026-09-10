@@ -1033,7 +1033,7 @@
           "key": "ui.show_agent_labels_on_pane_borders",
           "type": "boolean",
           "default": "false",
-          "description": "Show agent labels in split pane borders when no manual pane label is set."
+          "description": "Use a detected or reported agent name as a pane's border title. Off by default; an agent pane then falls back to its own terminal title, then the working directory, then the pane number, so borders are never blank."
         },
         {
           "key": "ui.hide_tab_bar_when_single_tab",

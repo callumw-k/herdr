@@ -302,7 +302,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Keep split panes visually separated instead of sharing divider borders.
 # pane_gaps = true
 
-# Show detected/reported agent labels in split pane borders when no manual pane name is set.
+# Use detected/reported agent names as pane border titles. Off, an agent pane
+# still shows its own terminal title, then its directory, then its number.
 # show_agent_labels_on_pane_borders = false
 
 # Hide the tab row when a workspace has exactly one tab.

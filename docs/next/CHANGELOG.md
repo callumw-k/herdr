@@ -11,7 +11,7 @@
 - Opening a floating pane no longer slows down the whole session. Only panes a float actually covers fall back to a full redraw; the float itself and panes outside its region keep the fast path.
 - Floating panes now draw their own thick, opaque frame instead of borrowing a thin line from the tiled border grid, so a float reads as sitting above the panes it covers.
 - Collapsed panes in a stacked tab now draw as a titled bar with corners facing the expanded pane, instead of a bare horizontal rule. Members that do not fit fold into a `+N more` bar. Clicking a bar focuses that pane.
-- Panes without an agent or a manual name now show a border title, falling back through the foreground process, the terminal title, the working directory, and finally the pane number, so a stacked shell is never nameless.
+- Every pane now shows a border title. A manual name wins; otherwise an agent pane shows its own terminal title, then (with `ui.show_agent_labels_on_pane_borders`) the agent name, and every pane falls back through the foreground process, the working directory and finally the pane number, so a stacked shell is never nameless.
 - The keyboard documentation listed `prefix+[` for copy mode, which now cycles the pane arrangement backwards. Copy mode is `prefix+u`.
 
 ### Changed
