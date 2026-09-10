@@ -325,6 +325,10 @@ impl AppState {
                 tab.floats_hidden = false;
                 tab.float_focused = true;
             } else {
+                // why: a visible float layer sits over the tiled panes, so leaving
+                // why: it up would focus a pane the user may not be able to see.
+                // why: hidden, not closed: toggle_floats brings it straight back.
+                tab.set_floats_hidden(true);
                 tab.float_focused = false;
                 tab.layout.focus_pane(pane_id);
             }
@@ -2684,19 +2688,32 @@ mod tests {
     }
 
     #[test]
-    fn directional_navigation_off_a_float_leaves_the_layer_visible() {
-        let (mut state, _) = app_with_float_stack(1);
+    fn focusing_a_tiled_pane_hides_the_visible_float_layer() {
+        let (mut state, floats) = app_with_float_stack(1);
         let tiled = state.workspaces[0].tabs[0].root_pane;
 
+        assert!(state.focus_pane_in_workspace(0, tiled));
+
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert!(
+            tab.floats_hidden,
+            "a float over the target would hide what the user focused"
+        );
+        assert!(!tab.float_focused);
+        assert_eq!(tab.floats(), floats, "nothing is closed");
+    }
+
+    #[test]
+    fn focusing_a_float_shows_the_layer_again() {
+        let (mut state, floats) = app_with_float_stack(1);
+        let tiled = state.workspaces[0].tabs[0].root_pane;
         state.focus_pane_in_workspace(0, tiled);
 
-        assert!(
-            !state.workspaces[0]
-                .active_tab()
-                .expect("a tab")
-                .floats_hidden,
-            "focus_pane_in_workspace must not hide floats"
-        );
+        assert!(state.focus_pane_in_workspace(0, floats[0]));
+
+        let tab = state.workspaces[0].active_tab().expect("a tab");
+        assert!(!tab.floats_hidden);
+        assert!(tab.float_focused);
     }
 
     #[test]
