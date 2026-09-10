@@ -2513,6 +2513,7 @@ impl PaneRuntime {
                 #[cfg(windows)]
                 let mut last_observation = (Instant::now(), Some(0));
                 let mut last_foreground_pgid = None;
+                #[cfg(unix)]
                 let mut last_polled_cwd: Option<std::path::PathBuf> = None;
                 let mut has_process_probe = false;
                 let mut last_reported_process_name: Option<String> = None;
