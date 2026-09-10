@@ -325,11 +325,24 @@ fn usable_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
 /// The pane shell's own directory, read only while the shell is the foreground
 /// process. Restricting it to an idle prompt makes a polled report mean the
 /// same thing as an OSC 7 one, which shells emit when they draw the prompt.
+///
+/// `last` remembers the raw link target so an idle prompt costs one readlink
+/// per tick and no stat until the directory actually changes.
 #[cfg(unix)]
-fn polled_shell_cwd(pid: u32, foreground_pgid: Option<u32>) -> Option<std::path::PathBuf> {
-    (pid > 0 && foreground_pgid == Some(pid))
-        .then(|| usable_process_cwd(pid))
-        .flatten()
+fn polled_shell_cwd(
+    pid: u32,
+    foreground_pgid: Option<u32>,
+    last: &mut Option<std::path::PathBuf>,
+) -> Option<std::path::PathBuf> {
+    if !(pid > 0 && foreground_pgid == Some(pid)) {
+        return None;
+    }
+    let raw = crate::platform::process_cwd(pid)?;
+    if last.as_ref() == Some(&raw) {
+        return None;
+    }
+    *last = Some(raw.clone());
+    (raw.is_absolute() && raw.is_dir()).then_some(raw)
 }
 
 #[cfg(unix)]
@@ -768,6 +781,7 @@ fn spawn_basic_detection_task(
         let mut last_visible_signal_refresh = None;
         let mut last_process_check = std::time::Instant::now();
         let mut last_foreground_pgid = None;
+        let mut last_polled_cwd: Option<std::path::PathBuf> = None;
         let mut has_process_probe = false;
         let mut last_reported_process_name: Option<String> = None;
         let mut acquisition_started_at = None;
@@ -834,7 +848,7 @@ fn spawn_basic_detection_task(
             // dedupes, so a shell that does emit OSC 7 gets here first and this
             // costs nothing.
             #[cfg(unix)]
-            if let Some(cwd) = polled_shell_cwd(pid, foreground_pgid) {
+            if let Some(cwd) = polled_shell_cwd(pid, foreground_pgid, &mut last_polled_cwd) {
                 publish_reported_cwd(pane_id, cwd, &reported_cwd, &state_events);
             }
             let should_check_process = pid > 0 && {
@@ -2499,6 +2513,7 @@ impl PaneRuntime {
                 #[cfg(windows)]
                 let mut last_observation = (Instant::now(), Some(0));
                 let mut last_foreground_pgid = None;
+                let mut last_polled_cwd: Option<std::path::PathBuf> = None;
                 let mut has_process_probe = false;
                 let mut last_reported_process_name: Option<String> = None;
                 let mut acquisition_started_at = None;
@@ -2613,7 +2628,9 @@ impl PaneRuntime {
                     // publish_reported_cwd dedupes, so a shell that does emit
                     // OSC 7 gets here first and this costs nothing.
                     #[cfg(unix)]
-                    if let Some(cwd) = polled_shell_cwd(pid, foreground_pgid) {
+                    if let Some(cwd) =
+                        polled_shell_cwd(pid, foreground_pgid, &mut last_polled_cwd)
+                    {
                         publish_reported_cwd(
                             pane_id,
                             cwd,
@@ -3647,13 +3664,19 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn polled_shell_cwd_reads_the_shell_at_an_idle_prompt() {
+    fn polled_shell_cwd_reads_the_shell_at_an_idle_prompt_once() {
         let pid = std::process::id();
+        let mut last = None;
 
         assert_eq!(
-            polled_shell_cwd(pid, Some(pid)),
+            polled_shell_cwd(pid, Some(pid), &mut last),
             std::env::current_dir().ok(),
             "the shell being its own foreground group is an idle prompt"
+        );
+        assert_eq!(
+            polled_shell_cwd(pid, Some(pid), &mut last),
+            None,
+            "an unchanged directory is not re-published"
         );
     }
 
@@ -3663,12 +3686,16 @@ mod tests {
         let pid = std::process::id();
 
         assert_eq!(
-            polled_shell_cwd(pid, Some(pid.wrapping_add(1))),
+            polled_shell_cwd(pid, Some(pid.wrapping_add(1)), &mut None),
             None,
             "another foreground group means a process is running, not a prompt"
         );
-        assert_eq!(polled_shell_cwd(pid, None), None);
-        assert_eq!(polled_shell_cwd(0, Some(0)), None, "no child pid yet");
+        assert_eq!(polled_shell_cwd(pid, None, &mut None), None);
+        assert_eq!(
+            polled_shell_cwd(0, Some(0), &mut None),
+            None,
+            "no child pid yet"
+        );
     }
 
     #[cfg(unix)]
