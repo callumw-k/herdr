@@ -312,7 +312,7 @@ impl ClientShellState {
         }
     }
 
-    /// why: navigator rows can be a workspace, tab or pane, and the path
+    /// Navigator rows can be a workspace, tab or pane, and the path
     /// editor always belongs to the workspace the row sits under.
     fn selected_navigator_workspace_id(&self) -> Option<String> {
         let ClientShellOverlay::Navigator(navigator) = self.overlay.as_ref()? else {
@@ -351,7 +351,9 @@ impl ClientShellState {
             ),
             ClientNavigatorTarget::Machine { .. } => return None,
         };
-        // why: workspace ids are per-server counters, so another machine's row would resolve against the active endpoint's snapshot and repin the wrong workspace
+        // Workspace ids are per-server counters, so another machine's row would
+        // resolve against the active endpoint's snapshot and repin the wrong
+        // workspace
         if endpoint_id != self.active_endpoint_id {
             return None;
         }
@@ -422,7 +424,8 @@ impl ClientShellState {
             crate::api::schema::Method::WorkspaceGet(crate::api::schema::WorkspaceTarget {
                 workspace_id: workspace_id.clone(),
             });
-        // why: a server too old for workspace.get still accepts workspace.set_path, so leave the field editable instead of raising a notice on every open
+        // A server too old for workspace.get still accepts workspace.set_path, so
+        // leave the field editable instead of raising a notice on every open
         let can_look_up = self.supports_endpoint_method(&lookup);
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             title: "workspace",
@@ -866,7 +869,8 @@ impl ClientShellState {
                 return;
             }
             if code == KeyCode::Char('p') && modifiers.is_empty() {
-                // why: both openers install their own overlay, so clearing the navigator first would leave nothing on screen when one bails out
+                // Both openers install their own overlay, so clearing the navigator
+                // first would leave nothing on screen when one bails out
                 if let Some(workspace_id) = self.selected_navigator_workspace_id() {
                     self.open_rename_workspace_overlay_for(
                         workspace_id,

@@ -504,7 +504,8 @@ pub(super) fn render_panes(
         .map(|tab| tab.floats())
         .unwrap_or_default();
 
-    // why: floats are appended after the tiled panes, so one boundary index splits the list without a per-pane membership scan.
+    // Floats are appended after the tiled panes, so one boundary index splits
+    // the list without a per-pane membership scan.
     let tiled_end = pane_infos
         .iter()
         .position(|info| floats.contains(&info.id))
@@ -521,7 +522,8 @@ pub(super) fn render_panes(
         }
     };
 
-    // why: tiled draws first, in full, so the float layer drawn over it afterwards never needs to know where the floats are.
+    // Tiled draws first, in full, so the float layer drawn over it afterwards
+    // never needs to know where the floats are.
     for info in tiled {
         // A collapsed or folded stack member has no content rows; it is drawn
         // as a stack bar below.
@@ -543,7 +545,9 @@ pub(super) fn render_panes(
         }
         render_float_chrome(app, ws, frame, info);
         render_content(frame, info);
-        // why: content leaves untouched cells at Color::Reset, which would show through the float's opaque fill; only backfill cells still Reset, so a background the pane's own content painted survives.
+        // Content leaves untouched cells at Color::Reset, which would show
+        // through the float's opaque fill; only backfill cells still Reset, so a
+        // background the pane's own content painted survives.
         let buf = frame.buffer_mut();
         let rect = info.inner_rect.intersection(buf.area);
         for y in rect.y..rect.y.saturating_add(rect.height) {
@@ -741,7 +745,7 @@ fn render_stack_bar(
         StackBarKind::Pane(pane_id) => pane_label(app, ws, pane_id),
         StackBarKind::Summary { count } => format!("+{count} more"),
     };
-    // why: direct buffer indexing below panics outside the frame, so clamp first
+    // Direct buffer indexing below panics outside the frame, so clamp first
     let rect = bar.rect.intersection(frame.area());
     if rect.is_empty() {
         return;
@@ -754,12 +758,11 @@ fn render_stack_bar(
         .fg(app.palette.subtext0)
         .bg(app.palette.panel_bg)
         .add_modifier(Modifier::BOLD);
-    // why: a collapsed member is one row tall, so its top and bottom borders
-    // why: share that row; closing both ends with corners keeps a hidden pane
-    // why: readable as a box rather than a bare label, which matters most for
-    // why: floats with no neighbouring pane border to sit against; the corners
-    // why: face the expanded member so a bar below it does not read as a box
-    // why: opening off-screen
+    // A collapsed member is one row tall, so its top and bottom borders share
+    // that row; closing both ends with corners keeps a hidden pane readable as
+    // a box rather than a bare label, which matters most for floats with no
+    // neighbouring pane border to sit against; the corners face the expanded
+    // member so a bar below it does not read as a box opening off-screen
     let (left, right) = if bar.below_active {
         ("\u{2514}", "\u{2518}")
     } else {
@@ -1588,7 +1591,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        // why: one row goes to the lone pane's title strip
+        // One row goes to the lone pane's title strip
         assert_eq!(info.inner_rect, Rect::new(10, 4, 39, 7));
     }
 
@@ -1925,7 +1928,7 @@ mod tests {
                 true,
                 crate::kitty_graphics::HostCellSize::default(),
             );
-            // why: one row goes to the lone pane's title strip
+            // One row goes to the lone pane's title strip
             assert_eq!(
                 infos[0].inner_rect,
                 Rect::new(area.x, area.y + 1, expected_width, area.height - 1)
@@ -2028,7 +2031,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        // why: one row goes to the lone pane's title strip
+        // One row goes to the lone pane's title strip
         assert_eq!(info.inner_rect, Rect::new(10, 4, 4, 7));
     }
 
@@ -2061,7 +2064,7 @@ mod tests {
         let info = &infos[0];
 
         assert_eq!(info.rect, area);
-        // why: one row goes to the lone pane's title strip
+        // One row goes to the lone pane's title strip
         assert_eq!(info.scrollbar_rect, Some(Rect::new(49, 4, 1, 7)));
         assert_eq!(info.inner_rect, Rect::new(10, 4, 39, 7));
 
@@ -2077,7 +2080,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        // why: one row goes to the lone pane's title strip
+        // One row goes to the lone pane's title strip
         assert_eq!(info.inner_rect, Rect::new(10, 4, 40, 7));
     }
 

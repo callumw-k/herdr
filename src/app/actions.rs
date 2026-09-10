@@ -325,9 +325,9 @@ impl AppState {
                 tab.floats_hidden = false;
                 tab.float_focused = true;
             } else {
-                // why: a visible float layer sits over the tiled panes, so leaving
-                // why: it up would focus a pane the user may not be able to see.
-                // why: hidden, not closed: toggle_floats brings it straight back.
+                // A visible float layer sits over the tiled panes, so leaving it up
+                // would focus a pane the user may not be able to see. Hidden, not
+                // closed: toggle_floats brings it straight back.
                 tab.set_floats_hidden(true);
                 tab.float_focused = false;
                 tab.layout.focus_pane(pane_id);

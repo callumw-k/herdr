@@ -67,7 +67,8 @@ impl App {
             self.state.workspaces[ws_idx].tabs[tab_idx].is_float(target_pane_id)
         });
         if target_is_float {
-            // why: the tiled tree cannot split a float; creation follows focus, so a split aimed at the float layer adds a float to it instead.
+            // The tiled tree cannot split a float; creation follows focus, so a
+            // split aimed at the float layer adds a float to it instead.
             let response = self.handle_pane_float(
                 id,
                 PaneFloatParams {
@@ -163,7 +164,9 @@ impl App {
             .terminals
             .insert(new_pane.terminal.id.clone(), new_pane.terminal);
         self.schedule_session_save();
-        // why: without a ratio the tree is reflowed anyway, so the direction would otherwise be ignored; a ratio is a manual placement and leaves the arrangement alone.
+        // Without a ratio the tree is reflowed anyway, so the direction would
+        // otherwise be ignored; a ratio is a manual placement and leaves the
+        // arrangement alone.
         if follow_direction && params.ratio.is_none() {
             self.state
                 .set_layer_arrangement(ws_idx, target_tab_idx, false, arrangement);

@@ -197,7 +197,8 @@ impl ClientShellState {
                 pixel_height: pane.pixel_height,
             })
             .collect();
-        // why: search back-to-front so clicks on floats (listed last) hit the float, not the pane beneath
+        // Search back-to-front so clicks on floats (listed last) hit the float,
+        // not the pane beneath
         self.hits.panes.reverse();
         let topology_signature = pane_surface_topology_signature(surface);
         self.hits.pane_splits = surface

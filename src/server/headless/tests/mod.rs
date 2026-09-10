@@ -2126,7 +2126,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
             runtime_pane_id,
         )
         .expect("focused runtime");
-    // why: one row goes to the lone pane's title strip
+    // One row goes to the lone pane's title strip
     assert_eq!(runtime.current_size(), (23, 79));
     assert!(input_rx.try_recv().is_err(), "legacy release emitted bytes");
     shutdown_test_runtimes(&mut server);
@@ -4995,7 +4995,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
                 .get(&terminal_id)
                 .expect("focused runtime")
                 .current_size(),
-            // why: one row goes to the lone pane's title strip
+            // One row goes to the lone pane's title strip
             (29, 99)
         );
 
@@ -5012,7 +5012,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
                 .get(&terminal_id)
                 .expect("focused runtime")
                 .current_size(),
-            // why: one row goes to the lone pane's title strip
+            // One row goes to the lone pane's title strip
             (23, 79)
         );
         assert_eq!(

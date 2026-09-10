@@ -247,7 +247,7 @@ pub(super) fn navigator_rows(
     rows
 }
 
-/// why: a text query drops the tree so every matching pane becomes one row,
+/// A text query drops the tree so every matching pane becomes one row,
 /// with a breadcrumb in `meta` saying where it lives. A pane whose own label
 /// or cwd matches ranks above one that only matched through its breadcrumb,
 /// and within each group the better fuzzy score wins.

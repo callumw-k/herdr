@@ -384,7 +384,7 @@ pub(super) struct ClientRenameOverlay {
     pub(super) field: ClientRenameField,
     pub(super) path_input: String,
     pub(super) original_path: String,
-    /// why: false until `workspace.get` answers, so saving during a slow
+    /// False until `workspace.get` answers, so saving during a slow
     /// lookup never sends `set_path` and cannot clear an existing pin.
     pub(super) path_loaded: bool,
 }
