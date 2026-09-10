@@ -2320,8 +2320,11 @@ impl AppState {
             return;
         };
 
-        let pane_terminal_id = self.terminal_id_for_pane(ws_idx, pane_id);
         let workspace_terminal_ids = self.terminal_ids_for_workspace(ws_idx);
+        let tab_pane_ids: Vec<PaneId> = self.workspaces[ws_idx]
+            .find_tab_index_for_pane(pane_id)
+            .map(|tab_idx| self.workspaces[ws_idx].tabs[tab_idx].all_pane_ids().collect())
+            .unwrap_or_default();
         self.pane_id_aliases.retain(|_, alias| *alias != pane_id);
         self.public_pane_id_aliases
             .retain(|_, alias| *alias != pane_id);
@@ -2367,7 +2370,14 @@ impl AppState {
                 }
             }
         } else {
-            self.remove_unattached_terminal_ids(pane_terminal_id);
+            // The tab may have gone with the pane, taking its floats. Every id
+            // still attached is skipped, so sweeping the workspace is safe.
+            self.remove_unattached_terminal_ids(workspace_terminal_ids);
+            let orphaned: Vec<PaneId> = tab_pane_ids
+                .into_iter()
+                .filter(|id| self.workspaces.iter().all(|ws| ws.pane_state(*id).is_none()))
+                .collect();
+            self.remove_plugin_pane_records(orphaned);
         }
     }
 }
@@ -2397,6 +2407,24 @@ mod tests {
             ids.push(id);
         }
         (state, ids)
+    }
+
+    #[test]
+    fn a_dying_last_tiled_pane_shuts_down_the_tabs_float_terminals() {
+        let (mut state, floats) = app_with_float_stack(1);
+        let ws = &mut state.workspaces[0];
+        let _second = ws.test_add_tab(Some("second"));
+        let tiled = ws.tabs[0].root_pane;
+        let float_terminal = ws.tabs[0].panes[&floats[0]].attached_terminal_id.clone();
+        state.terminals.insert(
+            float_terminal.clone(),
+            crate::terminal::TerminalState::new(float_terminal.clone(), "/tmp".into()),
+        );
+
+        state.handle_pane_died(tiled);
+
+        assert!(!state.terminals.contains_key(&float_terminal));
+        assert!(state.terminal_runtime_shutdowns.contains(&float_terminal));
     }
 
     fn app_with_workspaces(names: &[&str]) -> AppState {

@@ -896,8 +896,11 @@ impl Workspace {
             if tab_count <= 1 {
                 return true;
             }
-            self.tabs.remove(tab_idx);
-            self.unregister_pane(pane_id);
+            // The tab goes with its last tiled pane, floats included.
+            let tab = self.tabs.remove(tab_idx);
+            for orphan in tab.panes.keys() {
+                self.unregister_pane(*orphan);
+            }
             if self.active_tab >= self.tabs.len() {
                 self.active_tab = self.tabs.len() - 1;
             } else if tab_idx <= self.active_tab && self.active_tab > 0 {
@@ -921,6 +924,9 @@ impl Workspace {
         if pane_count <= 1 {
             let mut tab = self.tabs.remove(tab_idx);
             let moved = tab.take_pane_for_move(pane_id)?;
+            for orphan in tab.panes.keys() {
+                self.unregister_pane(*orphan);
+            }
             self.adjust_active_tab_after_removal(tab_idx);
             return Some(TakenPane {
                 moved,
@@ -1149,8 +1155,11 @@ impl Workspace {
             if tab_count <= 1 {
                 return true;
             }
-            self.tabs.remove(tab_idx);
-            self.unregister_pane(pane_id);
+            // The tab goes with its last tiled pane, floats included.
+            let tab = self.tabs.remove(tab_idx);
+            for orphan in tab.panes.keys() {
+                self.unregister_pane(*orphan);
+            }
             if self.active_tab >= self.tabs.len() {
                 self.active_tab = self.tabs.len() - 1;
             } else if tab_idx <= self.active_tab && self.active_tab > 0 {
@@ -1862,5 +1871,36 @@ mod tests {
 
         ws.tabs[0].set_floats_hidden(true);
         assert_eq!(ws.tabs[0].visible_pane_ids(), vec![tiled]);
+    }
+
+    #[test]
+    fn removing_the_last_tiled_pane_unregisters_the_tabs_floats() {
+        let mut ws = Workspace::test_new("float-orphan");
+        let _second = ws.test_add_tab(Some("second"));
+        let tiled = ws.tabs[0].root_pane;
+        let float = PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
+
+        assert!(!ws.remove_pane(tiled), "another tab remains, so the workspace stays");
+
+        assert_eq!(ws.tabs.len(), 1);
+        assert!(ws.pane_state(float).is_none());
+        assert!(!ws.public_pane_numbers.contains_key(&float));
+        ws.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn moving_the_last_tiled_pane_out_unregisters_the_tabs_floats() {
+        let mut ws = Workspace::test_new("float-orphan-move");
+        let _second = ws.test_add_tab(Some("second"));
+        let tiled = ws.tabs[0].root_pane;
+        let float = PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.tabs[0].push_float(float, PaneState::new(TerminalId::alloc()));
+
+        let taken = ws.take_pane_for_move(tiled).expect("tiled pane moves");
+        assert_eq!(taken.removed_tab_idx, Some(0));
+        assert!(!ws.public_pane_numbers.contains_key(&float));
     }
 }

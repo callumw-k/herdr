@@ -1340,6 +1340,7 @@ impl App {
             }
         };
 
+        let source_terminal_ids = self.state.terminal_ids_for_workspace(source_ws_idx);
         let previous_focus = self.state.current_pane_focus_target();
         let taken = match self
             .state
@@ -1407,6 +1408,9 @@ impl App {
             } => {
                 let Some((target_ws_idx, target_tab_idx)) = self.parse_tab_id(&tab_id) else {
                     self.recover_failed_pane_move(recovery_context, moved);
+                    self.state
+                        .remove_unattached_terminal_ids(source_terminal_ids.clone());
+                    self.shutdown_detached_terminal_runtimes();
                     return encode_error(id, "pane_move_failed", "target tab disappeared");
                 };
                 let direction = split_direction_to_layout(split);
@@ -1422,6 +1426,9 @@ impl App {
                     Ok(pane_id) => pane_id,
                     Err(moved) => {
                         self.recover_failed_pane_move(recovery_context, moved);
+                        self.state
+                            .remove_unattached_terminal_ids(source_terminal_ids.clone());
+                        self.shutdown_detached_terminal_runtimes();
                         return encode_error(
                             id,
                             "pane_move_failed",
@@ -1437,6 +1444,9 @@ impl App {
             } => {
                 let Some(target_ws_idx) = self.parse_workspace_id(&workspace_id) else {
                     self.recover_failed_pane_move(recovery_context, moved);
+                    self.state
+                        .remove_unattached_terminal_ids(source_terminal_ids.clone());
+                    self.shutdown_detached_terminal_runtimes();
                     return encode_error(id, "pane_move_failed", "target workspace disappeared");
                 };
                 let moved_pane_id = moved.pane_id;
@@ -1571,6 +1581,9 @@ impl App {
         }
         self.emit_layout_updated_snapshot((*move_result.target_layout).clone());
 
+        // A source tab removed with the moved pane takes its floats with it.
+        self.state.remove_unattached_terminal_ids(source_terminal_ids);
+        self.shutdown_detached_terminal_runtimes();
         encode_success(id, ResponseResult::PaneMove { move_result })
     }
 
@@ -2100,7 +2113,11 @@ impl App {
             ));
         }
         let workspace_snapshot = self.workspace_info(ws_idx);
-        let terminal_id = self.state.terminal_id_for_pane(ws_idx, pane_id);
+        let workspace_terminal_ids = self.state.terminal_ids_for_workspace(ws_idx);
+        let tab_pane_ids: Vec<PaneId> = self.state.workspaces[ws_idx]
+            .find_tab_index_for_pane(pane_id)
+            .map(|tab_idx| self.state.workspaces[ws_idx].tabs[tab_idx].all_pane_ids().collect())
+            .unwrap_or_default();
         let should_close_workspace = {
             let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
                 return Err(pane_not_found(id, &target.pane_id));
@@ -2127,7 +2144,12 @@ impl App {
                 },
             });
         } else {
-            self.state.remove_unattached_terminal_ids(terminal_id);
+            self.state.remove_unattached_terminal_ids(workspace_terminal_ids);
+            let orphaned: Vec<PaneId> = tab_pane_ids
+                .into_iter()
+                .filter(|id| self.state.workspaces.iter().all(|ws| ws.pane_state(*id).is_none()))
+                .collect();
+            self.state.remove_plugin_pane_records(orphaned);
             self.shutdown_detached_terminal_runtimes();
             self.schedule_session_save();
             self.emit_event(EventEnvelope {
