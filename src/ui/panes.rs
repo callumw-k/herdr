@@ -496,15 +496,14 @@ pub(super) fn render_panes(
         .map(|tab| tab.floats())
         .unwrap_or_default();
 
-    for info in pane_infos {
-        // A collapsed or folded stack member has no content rows; it is drawn
-        // as a stack bar below.
-        if info.rect.height <= 1 {
-            continue;
-        }
-        if floats.contains(&info.id) {
-            render_float_chrome(app, ws, frame, info);
-        }
+    // why: floats are appended after the tiled panes, so one boundary index splits the list without a per-pane membership scan.
+    let tiled_end = pane_infos
+        .iter()
+        .position(|info| floats.contains(&info.id))
+        .unwrap_or(pane_infos.len());
+    let (tiled, floating) = pane_infos.split_at(tiled_end);
+
+    let render_content = |frame: &mut Frame, info: &PaneInfo| {
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
             let show_cursor = info.is_focused
                 && !pane_is_scrolled_back(rt)
@@ -512,21 +511,39 @@ pub(super) fn render_panes(
             rt.render(frame, info.inner_rect, show_cursor);
             render_pane_scrollbar(app, frame, info, rt);
         }
+    };
+
+    // why: tiled draws first, in full, so the float layer drawn over it afterwards never needs to know where the floats are.
+    for info in tiled {
+        // A collapsed or folded stack member has no content rows; it is drawn
+        // as a stack bar below.
+        if info.rect.height <= 1 {
+            continue;
+        }
+        render_content(frame, info);
+    }
+    render_pane_borders(app, ws, tiled, split_borders, frame);
+    if tiled.iter().any(|info| info.rect.height <= 1) {
+        for bar in stack_bars_for(tiled.iter()) {
+            render_stack_bar(app, ws, frame, &bar);
+        }
     }
 
-    render_pane_borders(app, ws, pane_infos, split_borders, &floats, frame);
-
-    // After the borders and titles, so a bar overwrites the junction-table row
-    // and any label already drawn on its own rect. Outside `render_pane_borders`
-    // so turning borders off does not make collapsed members invisible again.
-    if !pane_infos.iter().any(|info| info.rect.height <= 1) {
-        return;
+    for info in floating {
+        if info.rect.height <= 1 {
+            continue;
+        }
+        render_float_chrome(app, ws, frame, info);
+        render_content(frame, info);
+        // why: unwritten terminal cells render transparent (Color::Reset) and would punch through the float's opaque fill, so reassert its background without touching the glyphs content just drew.
+        frame
+            .buffer_mut()
+            .set_style(info.inner_rect, Style::default().bg(app.palette.panel_bg));
     }
-    for bar in stack_bars_for(pane_infos.iter().filter(|info| !floats.contains(&info.id))) {
-        render_stack_bar(app, ws, frame, &bar);
-    }
-    for bar in stack_bars_for(pane_infos.iter().filter(|info| floats.contains(&info.id))) {
-        render_stack_bar(app, ws, frame, &bar);
+    if floating.iter().any(|info| info.rect.height <= 1) {
+        for bar in stack_bars_for(floating.iter()) {
+            render_stack_bar(app, ws, frame, &bar);
+        }
     }
 }
 
@@ -788,7 +805,6 @@ fn render_pane_borders(
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
     split_borders: &[crate::layout::SplitBorder],
-    floats: &[crate::layout::PaneId],
     frame: &mut Frame,
 ) {
     if !app.pane_borders.draws_borders() || pane_infos.iter().all(|info| info.borders.is_empty()) {
@@ -797,11 +813,6 @@ fn render_pane_borders(
 
     let mut cells = std::collections::HashMap::<(u16, u16), LineCell>::new();
     for info in pane_infos {
-        // Floats draw their own frame in `render_float_chrome`; a junction line
-        // here would be drawn over it.
-        if floats.contains(&info.id) {
-            continue;
-        }
         add_pane_border_cells(&mut cells, info);
     }
     add_split_border_cells(app.pane_gaps, split_borders, &mut cells);
@@ -833,7 +844,7 @@ fn render_pane_borders(
         cell.set_style(Style::default().fg(color));
     }
 
-    render_pane_border_titles(app, ws, pane_infos, floats, frame);
+    render_pane_border_titles(app, ws, pane_infos, frame);
 }
 
 fn add_split_border_cells(
@@ -962,17 +973,12 @@ fn render_pane_border_titles(
     app: &AppState,
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
-    floats: &[crate::layout::PaneId],
     frame: &mut Frame,
 ) {
     let buf = frame.buffer_mut();
     let area = buf.area;
     for info in pane_infos {
         if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
-            continue;
-        }
-        // A float's title comes from its own block.
-        if floats.contains(&info.id) {
             continue;
         }
         let Some(title) = ws
@@ -1187,7 +1193,7 @@ mod tests {
         split_borders: &[crate::layout::SplitBorder],
         frame: &mut Frame,
     ) {
-        render_pane_borders(app, ws, &app.view.pane_infos, split_borders, &[], frame);
+        render_pane_borders(app, ws, &app.view.pane_infos, split_borders, frame);
     }
 
     #[test]
@@ -2158,5 +2164,77 @@ mod tests {
                 fallback
             );
         }
+    }
+
+    #[tokio::test]
+    async fn tiled_split_lines_do_not_draw_through_a_float() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("split-under-float");
+        let _right = ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.tabs[0].arrangement = crate::layout::Arrangement::Vertical;
+        ws.tabs[0].needs_reflow = true;
+        ws.tabs[0].reflow(area, None);
+        let float_id = crate::layout::PaneId::alloc();
+        let number = ws.next_public_pane_number;
+        ws.register_new_pane_with_number(float_id, number);
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(20, 6, 1024, b"floating\n"),
+        );
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let surface = super::super::tab_surface::compute_tab_surface(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let float = surface
+            .pane_infos
+            .iter()
+            .find(|info| info.id == float_id)
+            .expect("float info")
+            .clone();
+        let split = surface.split_borders.first().expect("one vertical split");
+        let column = split.pos;
+        assert!(
+            column > float.rect.x && column < float.rect.right() - 1,
+            "the split column must run under the float for this test to mean anything"
+        );
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    Some(super::super::tab_surface::TabSurfaceTarget {
+                        workspace_index: 0,
+                        tab_index: 0,
+                    }),
+                    &surface.pane_infos,
+                    &surface.split_borders,
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let inside = float.inner_rect.y + 1;
+        assert_ne!(
+            buffer[(column, inside)].symbol(),
+            "│",
+            "a tiled split line must not bleed through the float"
+        );
+        assert_eq!(buffer[(column, inside)].bg, app.palette.panel_bg);
     }
 }
