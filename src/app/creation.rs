@@ -46,6 +46,19 @@ pub(super) fn launch_cwd_for_terminal(
         })
 }
 
+pub(crate) fn identity_launch_env(
+    workspace_id: &str,
+    tab_number: usize,
+    pane_number: usize,
+    extra: Vec<(String, String)>,
+) -> crate::pane::PaneLaunchEnv {
+    crate::pane::PaneLaunchEnv::from_extra(extra).with_identity(
+        workspace_id.to_owned(),
+        crate::workspace::public_tab_id_for_number(workspace_id, tab_number),
+        crate::workspace::public_pane_id_for_number(workspace_id, pane_number),
+    )
+}
+
 impl App {
     pub(super) fn seed_cwd_from_workspace(&self, ws_idx: usize) -> Option<PathBuf> {
         self.state
@@ -191,9 +204,9 @@ impl App {
 
         let pane_id = crate::layout::PaneId::alloc();
         let pane_number = self.state.workspaces[ws_idx].next_public_pane_number;
-        let launch_env = self
-            .pane_launch_env(ws_idx, pane_id, Vec::new())
-            .unwrap_or_else(|| crate::pane::PaneLaunchEnv::from_extra(Vec::new()));
+        let workspace_id = self.public_workspace_id(ws_idx);
+        let tab_number = self.state.workspaces[ws_idx].tabs[tab_idx].number;
+        let launch_env = identity_launch_env(&workspace_id, tab_number, pane_number, Vec::new());
 
         let runtime = crate::terminal::TerminalRuntime::spawn(
             pane_id,
@@ -870,6 +883,19 @@ mod tests {
         assert_eq!(
             app.claiming_workspace(std::path::Path::new("/ws/src"), 0),
             None
+        );
+    }
+
+    #[test]
+    fn identity_launch_env_names_the_ids_the_pane_will_be_registered_under() {
+        let env = super::identity_launch_env("w1", 2, 7, vec![("K".into(), "v".into())]);
+        assert_eq!(
+            env,
+            crate::pane::PaneLaunchEnv::from_extra(vec![("K".into(), "v".into())]).with_identity(
+                "w1".into(),
+                crate::workspace::public_tab_id_for_number("w1", 2),
+                crate::workspace::public_pane_id_for_number("w1", 7),
+            )
         );
     }
 }

@@ -719,11 +719,8 @@ impl App {
         let pane_number = self.state.workspaces[ws_idx].next_public_pane_number;
         let workspace_id = self.public_workspace_id(ws_idx);
         let tab_number = self.state.workspaces[ws_idx].tabs[tab_idx].number;
-        let launch_env = crate::pane::PaneLaunchEnv::from_extra(extra_env).with_identity(
-            workspace_id.clone(),
-            crate::workspace::public_tab_id_for_number(&workspace_id, tab_number),
-            crate::workspace::public_pane_id_for_number(&workspace_id, pane_number),
-        );
+        let launch_env =
+            crate::app::creation::identity_launch_env(&workspace_id, tab_number, pane_number, extra_env);
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
