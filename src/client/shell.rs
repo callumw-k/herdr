@@ -59,27 +59,34 @@ use crate::protocol::{
 #[cfg(test)]
 use crate::raw_input::RawInputEvent;
 
+fn overlay_field_input(rename: &mut ClientRenameOverlay) -> &mut String {
+    match rename.field {
+        ClientRenameField::Name => &mut rename.input,
+        ClientRenameField::Path => &mut rename.path_input,
+    }
+}
+
 fn delete_overlay_word(rename: &mut ClientRenameOverlay) {
-    if rename.replace_on_type {
+    if rename.replace_on_type && rename.field == ClientRenameField::Name {
         rename.input.clear();
         rename.replace_on_type = false;
         return;
     }
-    while rename.input.chars().last().is_some_and(char::is_whitespace) {
-        rename.input.pop();
+    let input = overlay_field_input(rename);
+    while input.chars().last().is_some_and(char::is_whitespace) {
+        input.pop();
     }
-    let Some(word) = rename
-        .input
+    let Some(word) = input
         .chars()
         .last()
         .map(|character| character.is_alphanumeric() || character == '_')
     else {
         return;
     };
-    while rename.input.chars().last().is_some_and(|character| {
+    while input.chars().last().is_some_and(|character| {
         !character.is_whitespace() && (character.is_alphanumeric() || character == '_') == word
     }) {
-        rename.input.pop();
+        input.pop();
     }
 }
 

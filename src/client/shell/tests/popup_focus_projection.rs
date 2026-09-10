@@ -42,6 +42,10 @@ fn modal_paste_target_requires_a_focused_editable_client_field() {
         target: ClientRenameTarget::Pane {
             pane_id: "pane_1".into(),
         },
+        field: ClientRenameField::Name,
+        path_input: String::new(),
+        original_path: String::new(),
+        path_loaded: true,
     }));
     assert!(state.modal_paste_target_active());
 

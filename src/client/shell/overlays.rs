@@ -8,6 +8,7 @@ pub(crate) struct OverlayRender {
     pub(crate) primary: Rect,
     pub(crate) clear: Rect,
     pub(crate) cancel: Rect,
+    pub(crate) rename_fields: Vec<(Rect, ClientRenameField)>,
     pub(crate) navigator_popup: Rect,
     pub(crate) navigator_search: Rect,
     pub(crate) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
@@ -612,7 +613,11 @@ fn render_rename_overlay(
     v: &ClientRenameOverlay,
     p: &Palette,
 ) -> Option<OverlayRender> {
-    let q = popup(b.area, 56, 7)?;
+    let two_fields = matches!(
+        v.target,
+        ClientRenameTarget::Workspace { .. } | ClientRenameTarget::NewWorkspace { .. }
+    );
+    let q = popup(b.area, 56, if two_fields { 9 } else { 7 })?;
     let i = panel(b, q, p.accent, p.panel_bg)?;
     put_text(
         b,
@@ -625,17 +630,48 @@ fn render_rename_overlay(
             .bg(p.panel_bg)
             .add_modifier(Modifier::BOLD),
     );
-    let input = Rect::new(i.x, i.y + 2, i.width, 1);
-    b.set_style(input, Style::default().fg(p.text).bg(p.surface0));
-    put_text(
-        b,
-        input.x,
-        input.y,
-        input.width.saturating_sub(1),
-        &format!(" {}", v.input),
-        Style::default().fg(p.text).bg(p.surface0),
-    );
-    let rs = row(i, &[8, 10, 12], 2, 3);
+    let mut fields = vec![(2, "name", v.input.as_str(), ClientRenameField::Name)];
+    if two_fields {
+        let shown = if v.path_loaded {
+            v.path_input.as_str()
+        } else {
+            "…"
+        };
+        fields.push((4, "path", shown, ClientRenameField::Path));
+    }
+    let mut rename_fields = Vec::new();
+    let mut cursor = None;
+    for (offset, label, value, field) in fields {
+        let rect = Rect::new(i.x, i.y + offset, i.width, 1);
+        let focused = v.field == field || !two_fields;
+        let text = if two_fields {
+            format!(" {label:<5}{value}")
+        } else {
+            format!(" {value}")
+        };
+        let style = Style::default()
+            .fg(p.text)
+            .bg(if focused { p.surface0 } else { p.surface1 });
+        b.set_style(rect, style);
+        put_text(
+            b,
+            rect.x,
+            rect.y,
+            rect.width.saturating_sub(1),
+            &text,
+            style,
+        );
+        rename_fields.push((rect, field));
+        if focused {
+            cursor = Some(crate::protocol::CursorState {
+                x: (rect.x + display_width(&text)).min(rect.right() - 1),
+                y: rect.y,
+                visible: true,
+                shape: 0,
+            });
+        }
+    }
+    let rs = row(i, &[8, 10, 12], 2, if two_fields { 6 } else { 3 });
     let [save, clear, cancel] = rs.as_slice() else {
         return None;
     };
@@ -658,17 +694,8 @@ fn render_rename_overlay(
         primary: *save,
         clear: *clear,
         cancel: *cancel,
-        navigator_popup: Rect::default(),
-        navigator_search: Rect::default(),
-        navigator_rows: Vec::new(),
-        worktree_search: Rect::default(),
-        worktree_rows: Vec::new(),
-        cursor: Some(crate::protocol::CursorState {
-            x: (input.x + 1 + display_width(&v.input)).min(input.right() - 1),
-            y: input.y,
-            visible: true,
-            shape: 0,
-        }),
+        rename_fields,
+        cursor,
         ..OverlayRender::default()
     })
 }
@@ -895,7 +922,7 @@ fn render_navigator_overlay(
         if n.search_focused {
             " search type · move ↑↓/ctrl+n/p · open enter · back esc"
         } else {
-            " move j/k · expand space · filter a/b/w/i/d · search / · open enter · close esc"
+            " move j/k · expand space · filter a/b/w/i/d · search / · path p · new ^o · open enter · close esc"
         },
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );

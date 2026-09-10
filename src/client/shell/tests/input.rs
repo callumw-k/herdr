@@ -147,6 +147,10 @@ fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
         target: ClientRenameTarget::Pane {
             pane_id: "pane_1".into(),
         },
+        field: ClientRenameField::Name,
+        path_input: String::new(),
+        original_path: String::new(),
+        path_loaded: true,
     }));
     let mut outcome = ClientShellInput::default();
     let key = crate::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);

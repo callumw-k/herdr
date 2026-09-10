@@ -223,3 +223,61 @@ mod mouse_selection;
 mod navigator;
 mod popup_focus_projection;
 mod startup_overlays;
+mod workspace_dialog;
+
+pub(super) fn workspace_info(workspace_id: &str) -> crate::api::schema::WorkspaceInfo {
+    crate::api::schema::WorkspaceInfo {
+        workspace_id: workspace_id.to_owned(),
+        number: 1,
+        label: workspace_id.to_owned(),
+        focused: true,
+        pane_count: 1,
+        tab_count: 1,
+        active_tab_id: format!("{workspace_id}:t1"),
+        agent_status: AgentStatus::Unknown,
+        tokens: HashMap::new(),
+        worktree: None,
+        path: None,
+    }
+}
+
+pub(super) fn tab_info(workspace_id: &str, tab_id: &str) -> crate::api::schema::TabInfo {
+    crate::api::schema::TabInfo {
+        tab_id: tab_id.to_owned(),
+        workspace_id: workspace_id.to_owned(),
+        number: 1,
+        label: "1".to_owned(),
+        focused: true,
+        pane_count: 1,
+        agent_status: AgentStatus::Unknown,
+    }
+}
+
+pub(super) fn pane_info(
+    workspace_id: &str,
+    tab_id: &str,
+    pane_id: &str,
+) -> crate::api::schema::PaneInfo {
+    crate::api::schema::PaneInfo {
+        pane_id: pane_id.to_owned(),
+        terminal_id: format!("{pane_id}:terminal"),
+        workspace_id: workspace_id.to_owned(),
+        tab_id: tab_id.to_owned(),
+        floating: false,
+        focused: true,
+        cwd: None,
+        foreground_cwd: None,
+        label: None,
+        agent: None,
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        display_agent: None,
+        agent_status: AgentStatus::Unknown,
+        state_labels: HashMap::new(),
+        tokens: HashMap::new(),
+        agent_session: None,
+        scroll: None,
+        revision: 0,
+    }
+}

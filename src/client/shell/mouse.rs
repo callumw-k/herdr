@@ -1594,6 +1594,20 @@ impl ClientShellState {
             if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
                 return;
             }
+            if let Some((_, field)) = self
+                .hits
+                .rename_fields
+                .iter()
+                .find(|(rect, _)| super::contains(*rect, point))
+                .copied()
+            {
+                if let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() {
+                    rename.field = field;
+                    rename.replace_on_type = false;
+                    outcome.repaint = true;
+                }
+                return;
+            }
             if super::contains(self.hits.overlay_primary, point) {
                 match self.overlay.as_ref() {
                     Some(ClientShellOverlay::Rename(_)) => self.save_rename_overlay(outcome),
@@ -1617,7 +1631,10 @@ impl ClientShellState {
                 }
             } else if super::contains(self.hits.overlay_clear, point) {
                 if let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() {
-                    rename.input.clear();
+                    match rename.field {
+                        ClientRenameField::Name => rename.input.clear(),
+                        ClientRenameField::Path => rename.path_input.clear(),
+                    }
                     rename.replace_on_type = false;
                     outcome.repaint = true;
                 }

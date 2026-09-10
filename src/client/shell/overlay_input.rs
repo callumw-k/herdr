@@ -312,6 +312,32 @@ impl ClientShellState {
         }
     }
 
+    /// why: navigator rows can be a workspace, tab or pane, and the path
+    /// editor always belongs to the workspace the row sits under.
+    fn selected_navigator_workspace_id(&self) -> Option<String> {
+        let ClientShellOverlay::Navigator(navigator) = self.overlay.as_ref()? else {
+            return None;
+        };
+        let rows =
+            render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
+        let target = super::aggregate_navigation::selected_navigator_target(&rows, navigator)?;
+        let snapshot = self.snapshot.as_deref()?;
+        match target {
+            ClientNavigatorTarget::Workspace { workspace_id, .. } => Some(workspace_id),
+            ClientNavigatorTarget::Tab { tab_id, .. } => snapshot
+                .tabs
+                .iter()
+                .find(|tab| tab.tab_id == tab_id)
+                .map(|tab| tab.workspace_id.clone()),
+            ClientNavigatorTarget::Pane { pane_id, .. } => snapshot
+                .panes
+                .iter()
+                .find(|pane| pane.pane_id == pane_id)
+                .map(|pane| pane.workspace_id.clone()),
+            ClientNavigatorTarget::Machine { .. } => None,
+        }
+    }
+
     pub(super) fn workspace_action_id(&self) -> Option<String> {
         self.navigate_workspace_id.clone().or_else(|| {
             self.snapshot
@@ -344,29 +370,54 @@ impl ClientShellState {
                 cwd,
                 suggested_name,
             },
+            field: ClientRenameField::Name,
+            path_input: String::new(),
+            original_path: String::new(),
+            path_loaded: true,
         }));
     }
 
-    pub(super) fn open_rename_workspace_overlay(&mut self) {
-        let Some(snapshot) = self.snapshot.as_deref() else {
-            return;
-        };
-        let Some(workspace_id) = self.workspace_action_id() else {
-            return;
-        };
-        let Some(workspace) = snapshot
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.workspace_id == workspace_id)
-        else {
+    pub(super) fn open_rename_workspace_overlay(&mut self, outcome: &mut ClientShellInput) {
+        if let Some(workspace_id) = self.workspace_action_id() {
+            self.open_rename_workspace_overlay_for(workspace_id, ClientRenameField::Name, outcome);
+        }
+    }
+
+    pub(super) fn open_rename_workspace_overlay_for(
+        &mut self,
+        workspace_id: String,
+        field: ClientRenameField,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(label) = self.snapshot.as_deref().and_then(|snapshot| {
+            snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == workspace_id)
+                .map(|workspace| workspace.label.clone())
+        }) else {
             return;
         };
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
-            title: "rename workspace",
-            input: workspace.label.clone(),
+            title: "workspace",
+            input: label,
             replace_on_type: false,
-            target: ClientRenameTarget::Workspace { workspace_id },
+            target: ClientRenameTarget::Workspace {
+                workspace_id: workspace_id.clone(),
+            },
+            field,
+            path_input: String::new(),
+            original_path: String::new(),
+            path_loaded: false,
         }));
+        self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::WorkspaceGet(crate::api::schema::WorkspaceTarget {
+                workspace_id: workspace_id.clone(),
+            }),
+            PendingEndpointKind::WorkspacePathLookup { workspace_id },
+            outcome,
+        );
+        outcome.repaint = true;
     }
 
     pub(super) fn open_new_tab_overlay(&mut self) {
@@ -391,6 +442,10 @@ impl ClientShellState {
                 workspace_id,
                 default_name,
             },
+            field: ClientRenameField::Name,
+            path_input: String::new(),
+            original_path: String::new(),
+            path_loaded: true,
         }));
     }
 
@@ -413,6 +468,10 @@ impl ClientShellState {
                 auto_name: !tab.custom_label,
                 original_name: tab.label.clone(),
             },
+            field: ClientRenameField::Name,
+            path_input: String::new(),
+            original_path: String::new(),
+            path_loaded: true,
         }));
     }
 
@@ -433,6 +492,10 @@ impl ClientShellState {
             target: ClientRenameTarget::Pane {
                 pane_id: pane.pane_id.clone(),
             },
+            field: ClientRenameField::Name,
+            path_input: String::new(),
+            original_path: String::new(),
+            path_loaded: true,
         }));
     }
 
@@ -442,11 +505,11 @@ impl ClientShellState {
         }
         match self.overlay.as_mut() {
             Some(ClientShellOverlay::Rename(rename)) => {
-                if rename.replace_on_type {
+                if rename.replace_on_type && rename.field == ClientRenameField::Name {
                     rename.input.clear();
                     rename.replace_on_type = false;
                 }
-                rename.input.push_str(text);
+                overlay_field_input(rename).push_str(text);
                 true
             }
             Some(ClientShellOverlay::Help(help)) if help.search_focused => {
@@ -772,6 +835,25 @@ impl ClientShellState {
                 outcome.repaint = true;
                 return;
             }
+            if code == KeyCode::Char('p') && modifiers.is_empty() {
+                let workspace_id = self.selected_navigator_workspace_id();
+                if let Some(workspace_id) = workspace_id {
+                    self.overlay = None;
+                    self.open_rename_workspace_overlay_for(
+                        workspace_id,
+                        ClientRenameField::Path,
+                        outcome,
+                    );
+                }
+                outcome.repaint = true;
+                return;
+            }
+            if code == KeyCode::Char('o') && modifiers.contains(KeyModifiers::CONTROL) {
+                self.overlay = None;
+                self.open_new_workspace_overlay();
+                outcome.repaint = true;
+                return;
+            }
             if code == KeyCode::Char(' ') && modifiers.is_empty() {
                 self.toggle_selected_navigator_workspace();
                 outcome.repaint = true;
@@ -934,8 +1016,21 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         }
+        let has_path_field = matches!(
+            rename.target,
+            ClientRenameTarget::Workspace { .. } | ClientRenameTarget::NewWorkspace { .. }
+        );
+        if key.code == KeyCode::Tab && has_path_field {
+            rename.field = match rename.field {
+                ClientRenameField::Name => ClientRenameField::Path,
+                ClientRenameField::Path => ClientRenameField::Name,
+            };
+            rename.replace_on_type = false;
+            outcome.repaint = true;
+            return;
+        }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-            rename.input.clear();
+            overlay_field_input(rename).clear();
             rename.replace_on_type = false;
             outcome.repaint = true;
             return;
@@ -943,7 +1038,7 @@ impl ClientShellState {
         if (key.code == KeyCode::Char('u') && key.modifiers.contains(KeyModifiers::CONTROL))
             || (key.code == KeyCode::Backspace && key.modifiers.contains(KeyModifiers::SUPER))
         {
-            rename.input.clear();
+            overlay_field_input(rename).clear();
             rename.replace_on_type = false;
             outcome.repaint = true;
             return;
@@ -959,25 +1054,25 @@ impl ClientShellState {
             return;
         }
         if key.code == KeyCode::Backspace {
-            if rename.replace_on_type {
+            if rename.replace_on_type && rename.field == ClientRenameField::Name {
                 rename.input.clear();
                 rename.replace_on_type = false;
             } else {
-                rename.input.pop();
+                overlay_field_input(rename).pop();
             }
             outcome.repaint = true;
             return;
         }
         if let KeyCode::Char(character) = key.code {
             if key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
-                if rename.replace_on_type {
+                if rename.replace_on_type && rename.field == ClientRenameField::Name {
                     rename.input.clear();
                     rename.replace_on_type = false;
                 }
                 if let Some(text) = key.generated_text.as_deref() {
-                    rename.input.push_str(text);
+                    overlay_field_input(rename).push_str(text);
                 } else {
-                    rename.input.push(character);
+                    overlay_field_input(rename).push(character);
                 }
                 outcome.repaint = true;
             }
@@ -994,24 +1089,68 @@ impl ClientShellState {
                 source_workspace_id,
                 cwd,
                 suggested_name,
-            } => Some(crate::api::schema::Method::WorkspaceCreate(
-                crate::api::schema::WorkspaceCreateParams {
-                    source_workspace_id,
-                    cwd,
-                    focus: true,
-                    label: (!trimmed.is_empty() && trimmed != suggested_name)
-                        .then(|| trimmed.to_owned()),
-                    env: Default::default(),
-                },
-            )),
-            ClientRenameTarget::Workspace { workspace_id } => (!trimmed.is_empty()).then(|| {
-                crate::api::schema::Method::WorkspaceRename(
-                    crate::api::schema::WorkspaceRenameParams {
-                        workspace_id,
-                        label: trimmed.to_owned(),
+            } => {
+                let path = rename.path_input.trim().to_owned();
+                let method = crate::api::schema::Method::WorkspaceCreate(
+                    crate::api::schema::WorkspaceCreateParams {
+                        source_workspace_id,
+                        cwd: if path.is_empty() {
+                            cwd
+                        } else {
+                            Some(path.clone())
+                        },
+                        focus: true,
+                        label: (!trimmed.is_empty() && trimmed != suggested_name)
+                            .then(|| trimmed.to_owned()),
+                        env: Default::default(),
                     },
-                )
-            }),
+                );
+                if path.is_empty() {
+                    self.push_endpoint_method(method, outcome);
+                } else {
+                    self.push_endpoint_method_with_kind(
+                        method,
+                        PendingEndpointKind::WorkspaceCreateThenPin { path },
+                        outcome,
+                    );
+                }
+                outcome.repaint = true;
+                return;
+            }
+            ClientRenameTarget::Workspace { workspace_id } => {
+                let original_label = self.snapshot.as_deref().and_then(|snapshot| {
+                    snapshot
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.workspace_id == workspace_id)
+                        .map(|workspace| workspace.label.clone())
+                });
+                if !trimmed.is_empty() && original_label.as_deref() != Some(trimmed) {
+                    self.push_endpoint_method(
+                        crate::api::schema::Method::WorkspaceRename(
+                            crate::api::schema::WorkspaceRenameParams {
+                                workspace_id: workspace_id.clone(),
+                                label: trimmed.to_owned(),
+                            },
+                        ),
+                        outcome,
+                    );
+                }
+                let path = rename.path_input.trim();
+                if rename.path_loaded && path != rename.original_path.trim() {
+                    self.push_endpoint_method(
+                        crate::api::schema::Method::WorkspaceSetPath(
+                            crate::api::schema::WorkspaceSetPathParams {
+                                workspace_id,
+                                path: (!path.is_empty()).then(|| path.to_owned()),
+                            },
+                        ),
+                        outcome,
+                    );
+                }
+                outcome.repaint = true;
+                return;
+            }
             ClientRenameTarget::NewTab {
                 workspace_id,
                 default_name,

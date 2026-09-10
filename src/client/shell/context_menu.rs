@@ -226,24 +226,11 @@ impl ClientShellState {
 
         match action {
             ClientContextMenuAction::Rename => {
-                let label = self
-                    .snapshot
-                    .as_deref()
-                    .and_then(|snapshot| {
-                        snapshot
-                            .workspaces
-                            .iter()
-                            .find(|workspace| workspace.workspace_id == workspace_id)
-                    })
-                    .map(|workspace| workspace.label.clone());
-                if let Some(label) = label {
-                    self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
-                        title: "rename workspace",
-                        input: label,
-                        replace_on_type: false,
-                        target: ClientRenameTarget::Workspace { workspace_id },
-                    }));
-                }
+                self.open_rename_workspace_overlay_for(
+                    workspace_id,
+                    ClientRenameField::Name,
+                    outcome,
+                );
             }
             ClientContextMenuAction::Close => {
                 if self.config.confirm_close {
@@ -328,6 +315,10 @@ impl ClientShellState {
                             workspace_id,
                             default_name,
                         },
+                        field: ClientRenameField::Name,
+                        path_input: String::new(),
+                        original_path: String::new(),
+                        path_loaded: true,
                     }));
                 } else {
                     self.push_endpoint_method(
@@ -357,6 +348,10 @@ impl ClientShellState {
                             auto_name: !tab.custom_label,
                             original_name: tab.label.clone(),
                         },
+                        field: ClientRenameField::Name,
+                        path_input: String::new(),
+                        original_path: String::new(),
+                        path_loaded: true,
                     }));
                 }
             }
@@ -395,6 +390,10 @@ impl ClientShellState {
                     input: label.clone().unwrap_or_default(),
                     replace_on_type: label.is_none(),
                     target: ClientRenameTarget::Pane { pane_id },
+                    field: ClientRenameField::Name,
+                    path_input: String::new(),
+                    original_path: String::new(),
+                    path_loaded: true,
                 }));
             }
             ClientContextMenuAction::ClearPaneName => self.push_endpoint_method(

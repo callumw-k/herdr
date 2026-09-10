@@ -174,6 +174,7 @@ pub(super) struct ShellHitMap {
     pub(super) overlay_primary: Rect,
     pub(super) overlay_clear: Rect,
     pub(super) overlay_cancel: Rect,
+    pub(super) rename_fields: Vec<(Rect, ClientRenameField)>,
     pub(super) navigator_popup: Rect,
     pub(super) navigator_search: Rect,
     pub(super) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
@@ -368,12 +369,24 @@ pub(super) enum ClientRenameTarget {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClientRenameField {
+    Name,
+    Path,
+}
+
 #[derive(Debug)]
 pub(super) struct ClientRenameOverlay {
     pub(super) title: &'static str,
     pub(super) input: String,
     pub(super) replace_on_type: bool,
     pub(super) target: ClientRenameTarget,
+    pub(super) field: ClientRenameField,
+    pub(super) path_input: String,
+    pub(super) original_path: String,
+    /// why: false until `workspace.get` answers, so saving during a slow
+    /// lookup never sends `set_path` and cannot clear an existing pin.
+    pub(super) path_loaded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -674,6 +687,12 @@ pub(super) enum PendingEndpointKind {
     ReloadConfig,
     IntegrationList,
     IntegrationInstall,
+    WorkspacePathLookup {
+        workspace_id: String,
+    },
+    WorkspaceCreateThenPin {
+        path: String,
+    },
     PrepareWorktreeCreate {
         workspace_id: String,
     },

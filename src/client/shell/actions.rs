@@ -86,7 +86,7 @@ impl ClientShellState {
                     return;
                 }
                 if action == crate::input::KeybindAction::RenameWorkspace {
-                    self.open_rename_workspace_overlay();
+                    self.open_rename_workspace_overlay(outcome);
                     outcome.repaint = true;
                     return;
                 }
@@ -564,6 +564,41 @@ impl ClientShellState {
         }
         match pending.kind {
             PendingEndpointKind::Generic => {}
+            PendingEndpointKind::WorkspacePathLookup { workspace_id } => {
+                if let (
+                    Ok(crate::api::schema::ResponseResult::WorkspaceInfo { workspace }),
+                    Some(ClientShellOverlay::Rename(rename)),
+                ) = (&result, self.overlay.as_mut())
+                {
+                    if matches!(&rename.target, ClientRenameTarget::Workspace { workspace_id: id } if *id == workspace_id)
+                        && !rename.path_loaded
+                    {
+                        rename.path_input = workspace.path.clone().unwrap_or_default();
+                        rename.original_path = rename.path_input.clone();
+                        rename.path_loaded = true;
+                        return (true, Vec::new());
+                    }
+                }
+                return (false, Vec::new());
+            }
+            PendingEndpointKind::WorkspaceCreateThenPin { path } => {
+                let mut outcome = ClientShellInput::default();
+                if let Ok(crate::api::schema::ResponseResult::WorkspaceCreated {
+                    workspace, ..
+                }) = &result
+                {
+                    self.push_endpoint_method(
+                        crate::api::schema::Method::WorkspaceSetPath(
+                            crate::api::schema::WorkspaceSetPathParams {
+                                workspace_id: workspace.workspace_id.clone(),
+                                path: Some(path),
+                            },
+                        ),
+                        &mut outcome,
+                    );
+                }
+                return (true, outcome.actions);
+            }
             PendingEndpointKind::ProductAnnouncementDismiss { version, id } => {
                 return match result {
                     Ok(_) => (false, Vec::new()),

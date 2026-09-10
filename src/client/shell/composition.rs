@@ -569,6 +569,7 @@ impl ClientShellState {
                 self.hits.overlay_primary = rendered.primary;
                 self.hits.overlay_clear = rendered.clear;
                 self.hits.overlay_cancel = rendered.cancel;
+                self.hits.rename_fields = rendered.rename_fields;
                 self.hits.navigator_popup = rendered.navigator_popup;
                 self.hits.navigator_search = rendered.navigator_search;
                 self.hits.navigator_rows = rendered.navigator_rows;

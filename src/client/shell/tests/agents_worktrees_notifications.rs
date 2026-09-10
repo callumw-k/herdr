@@ -753,7 +753,13 @@ fn workspace_actions_preserve_selected_target_and_client_confirmation() {
         KeyCode::Char('w'),
         KeyModifiers::SHIFT,
     ))]);
-    assert!(rename.actions.is_empty());
+    let [ClientShellAction::Endpoint { request, .. }] = &rename.actions[..] else {
+        panic!("opening the workspace editor should look up its pinned path");
+    };
+    assert!(matches!(
+        &request.method,
+        crate::api::schema::Method::WorkspaceGet(target) if target.workspace_id == "ws_2"
+    ));
     assert!(matches!(
         state.overlay.as_ref(),
         Some(ClientShellOverlay::Rename(ClientRenameOverlay {
