@@ -6,6 +6,10 @@
 - The sidebar now marks agent state with a coloured ribbon down the left of every space and agent entry. The Navigate cursor's ribbon takes the accent colour so it stays readable next to a focused row. Default rows drop `state_icon` because the ribbon carries the same state; add the token back to a row in `ui.sidebar.spaces` or `ui.sidebar.agents` to restore the inline icon.
 - `ui.sidebar.spaces.divider` draws a rule between top-level spaces. The rule sits in `row_gap` and raises a zero gap to one row. Worktree children stay packed under their parent.
 - A new `activity` sidebar token resolves to the first of `terminal_title_stripped`, `pane`, or `agent` that is set, and replaces `agent` in the default agent rows, so the second row shows the pane's own context instead of repeating the agent name.
+- The workspace dialog has a path field: `tab` switches to it and saving pins the workspace. In the session navigator, `p` edits the selected workspace's path and `ctrl+o` opens the new-workspace dialog.
+- The navigator opens in search, and a query lists matching panes flat with a breadcrumb, ranking a pane's own match above a workspace or tab match.
+- Keybind help lists the arrangement, float and pin bindings.
+- A single pane keeps a one-row title strip in `ui.pane_borders = "auto"`.
 
 ### Fixed
 - Opening a floating pane no longer slows down the whole session. Only panes a float actually covers fall back to a full redraw; the float itself and panes outside its region keep the fast path.
@@ -13,6 +17,14 @@
 - Collapsed panes in a stacked tab now draw as a titled bar with corners facing the expanded pane, instead of a bare horizontal rule. Members that do not fit fold into a `+N more` bar. Clicking a bar focuses that pane.
 - Every pane now shows a border title. A manual name wins; otherwise an agent pane shows its own terminal title, then (with `ui.show_agent_labels_on_pane_borders`) the agent name, and every pane falls back through the foreground process, the working directory and finally the pane number, so a stacked shell is never nameless.
 - The keyboard documentation listed `prefix+[` for copy mode, which now cycles the pane arrangement backwards. Copy mode is `prefix+u`.
+- Floating panes now take keyboard focus, mouse clicks, scrolling and selection in the TUI; before, all of these went to the pane underneath.
+- A float stays visible and correctly sized while its tab is zoomed, and floats in background tabs follow terminal resizes.
+- Closing or moving the last tiled pane of a tab no longer leaves that tab's floats running invisibly.
+- Tiled borders and titles no longer draw through a float.
+- `prefix+v` and `prefix+minus` set the tab arrangement again, and add a float when a float has focus.
+- Floats opened from the keyboard now carry `HERDR_PANE_ID`, `HERDR_TAB_ID` and `HERDR_WORKSPACE_ID`.
+- Focusing a tiled pane hides the float layer instead of leaving focus under it.
+- Declaring or undeclaring a repo now matches `[[repos]]` entries that have comments, escapes or extra keys, and refuses an inline `repos = [...]` array instead of duplicating it.
 
 ### Changed
 - The collapsed sidebar sizes its workspace and agent sections to their contents, so the divider follows the workspace list instead of splitting the column in half. Workspace numbers appear only in Navigate mode where digits switch workspaces, and a section with more entries than rows ends in a `+N` count instead of cutting off.
