@@ -1092,8 +1092,8 @@ fn layout_export_describes_the_float_layer() {
         tab_id: "t".into(),
         zoomed: false,
         focused_pane_id: "1".into(),
-        arrangement: ArrangementSchema::Grid,
-        float_arrangement: ArrangementSchema::Stacked,
+        arrangement: LayoutArrangementSchema::Grid,
+        float_arrangement: LayoutArrangementSchema::Stacked,
         float_root: Some(LayoutNode::Stack {
             panes: vec![LayoutPane {
                 pane_id: Some("2".into()),
@@ -1126,7 +1126,10 @@ fn a_description_without_float_fields_still_deserialises() {
     }"#;
     let description: LayoutDescription = serde_json::from_str(json).expect("parses");
     assert!(description.float_root.is_none());
-    assert_eq!(description.float_arrangement, ArrangementSchema::Stacked);
+    assert_eq!(
+        description.float_arrangement,
+        LayoutArrangementSchema::Stacked
+    );
 }
 
 #[test]
@@ -1145,13 +1148,13 @@ fn layout_description_without_an_arrangement_parses_as_stacked() {
         "root": { "type": "pane", "pane_id": "w1:p1" }
     }"#;
     let description: LayoutDescription = serde_json::from_str(json).expect("parses");
-    assert_eq!(description.arrangement, ArrangementSchema::Stacked);
+    assert_eq!(description.arrangement, LayoutArrangementSchema::Stacked);
 }
 
 #[test]
 fn an_unrecognised_arrangement_falls_back_to_unknown() {
-    let value: ArrangementSchema = serde_json::from_str(r#""spiral""#).expect("parses");
-    assert_eq!(value, ArrangementSchema::Unknown);
+    let value: LayoutArrangementSchema = serde_json::from_str(r#""spiral""#).expect("parses");
+    assert_eq!(value, LayoutArrangementSchema::Unknown);
 }
 
 #[test]
@@ -1212,8 +1215,8 @@ fn layout_export_apply_round_trip() {
                 tab_id: "w1:1".into(),
                 zoomed: false,
                 focused_pane_id: "w1-1".into(),
-                arrangement: ArrangementSchema::Grid,
-                float_arrangement: ArrangementSchema::Stacked,
+                arrangement: LayoutArrangementSchema::Grid,
+                float_arrangement: LayoutArrangementSchema::Stacked,
                 float_root: None,
                 root,
             },
@@ -1231,8 +1234,8 @@ fn layout_export_apply_round_trip() {
                 tab_id: "w1:1".into(),
                 zoomed: false,
                 focused_pane_id: "w1-1".into(),
-                arrangement: ArrangementSchema::Grid,
-                float_arrangement: ArrangementSchema::Stacked,
+                arrangement: LayoutArrangementSchema::Grid,
+                float_arrangement: LayoutArrangementSchema::Stacked,
                 float_root: None,
                 root: LayoutNode::Pane {
                     pane: LayoutPane {

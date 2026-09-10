@@ -1700,22 +1700,13 @@
         },
         "ArrangementSchema": {
           "description": "The whole-tab pane arrangement. A shared runtime fact: it determines the\nshape of the server-owned pane tree, so it is exposed on the API rather\nthan kept as TUI-only state.",
-          "oneOf": [
-            {
-              "enum": [
-                "vertical",
-                "horizontal",
-                "grid",
-                "stacked"
-              ],
-              "type": "string"
-            },
-            {
-              "const": "unknown",
-              "description": "A value this client does not know. Servers never emit it; clients\ntreat it as the default arrangement.",
-              "type": "string"
-            }
-          ]
+          "enum": [
+            "vertical",
+            "horizontal",
+            "grid",
+            "stacked"
+          ],
+          "type": "string"
         },
         "ClientShellSurfaceSetParams": {
           "description": "Updates whether the requesting client shell receives and controls pane presentation.",
@@ -7186,25 +7177,6 @@
           ],
           "type": "string"
         },
-        "ArrangementSchema": {
-          "description": "The whole-tab pane arrangement. A shared runtime fact: it determines the\nshape of the server-owned pane tree, so it is exposed on the API rather\nthan kept as TUI-only state.",
-          "oneOf": [
-            {
-              "enum": [
-                "vertical",
-                "horizontal",
-                "grid",
-                "stacked"
-              ],
-              "type": "string"
-            },
-            {
-              "const": "unknown",
-              "description": "A value this client does not know. Servers never emit it; clients\ntreat it as the default arrangement.",
-              "type": "string"
-            }
-          ]
-        },
         "ClientWindowTitleReason": {
           "enum": [
             "set",
@@ -8098,14 +8070,33 @@
           ],
           "type": "object"
         },
+        "LayoutArrangementSchema": {
+          "description": "The whole-tab pane arrangement, as reported in a layout snapshot. Kept\ndistinct from `ArrangementSchema` (the `tab.arrangement` request enum) so\nthis response-only fallback variant never reshapes that request's frozen\ncontract.",
+          "oneOf": [
+            {
+              "enum": [
+                "vertical",
+                "horizontal",
+                "grid",
+                "stacked"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A value this client does not know. Servers never emit it; clients\ntreat it as the default arrangement.",
+              "type": "string"
+            }
+          ]
+        },
         "LayoutDescription": {
           "properties": {
             "arrangement": {
-              "$ref": "#/schemas/success_response/$defs/ArrangementSchema",
+              "$ref": "#/schemas/success_response/$defs/LayoutArrangementSchema",
               "default": "stacked"
             },
             "float_arrangement": {
-              "$ref": "#/schemas/success_response/$defs/ArrangementSchema",
+              "$ref": "#/schemas/success_response/$defs/LayoutArrangementSchema",
               "default": "stacked"
             },
             "float_root": {

@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use ratatui::layout::Direction;
 
 use crate::api::schema::{
-    ArrangementSchema, EventData, EventEnvelope, EventKind, LayoutApplyParams, LayoutDescription,
-    LayoutExportParams, LayoutNode, LayoutPane, LayoutSetSplitRatioParams, ResponseResult,
-    SplitDirection,
+    EventData, EventEnvelope, EventKind, LayoutApplyParams, LayoutArrangementSchema,
+    LayoutDescription, LayoutExportParams, LayoutNode, LayoutPane, LayoutSetSplitRatioParams,
+    ResponseResult, SplitDirection,
 };
 use crate::app::{App, Mode};
 use crate::layout::{Arrangement, Node, PaneId, TileLayout};
@@ -957,12 +957,12 @@ fn rebuild_layout_node_as_stack(node: &Node, members: &[PaneId], active: usize) 
     }
 }
 
-fn arrangement_schema(arrangement: Arrangement) -> ArrangementSchema {
+fn arrangement_schema(arrangement: Arrangement) -> LayoutArrangementSchema {
     match arrangement {
-        Arrangement::Vertical => ArrangementSchema::Vertical,
-        Arrangement::Horizontal => ArrangementSchema::Horizontal,
-        Arrangement::Grid => ArrangementSchema::Grid,
-        Arrangement::Stacked => ArrangementSchema::Stacked,
+        Arrangement::Vertical => LayoutArrangementSchema::Vertical,
+        Arrangement::Horizontal => LayoutArrangementSchema::Horizontal,
+        Arrangement::Grid => LayoutArrangementSchema::Grid,
+        Arrangement::Stacked => LayoutArrangementSchema::Stacked,
     }
 }
 
@@ -1046,7 +1046,7 @@ mod tests {
         };
         assert_eq!(pane.label.as_deref(), Some("tests"));
         assert_eq!(pane.pane_id, Some(app.public_pane_id(0, right).unwrap()));
-        assert_eq!(layout.arrangement, ArrangementSchema::Grid);
+        assert_eq!(layout.arrangement, LayoutArrangementSchema::Grid);
     }
 
     #[test]
@@ -1079,7 +1079,7 @@ mod tests {
         let ResponseResult::LayoutExport { layout } = success.result else {
             panic!("expected layout export response");
         };
-        assert_eq!(layout.arrangement, ArrangementSchema::Stacked);
+        assert_eq!(layout.arrangement, LayoutArrangementSchema::Stacked);
         let LayoutNode::Stack { panes, active } = layout.root else {
             panic!("expected stack layout root");
         };
@@ -1220,7 +1220,7 @@ mod tests {
             panic!("expected layout export response");
         };
         assert!(matches!(layout.root, LayoutNode::Stack { .. }));
-        assert_eq!(layout.arrangement, ArrangementSchema::Stacked);
+        assert_eq!(layout.arrangement, LayoutArrangementSchema::Stacked);
 
         // A mismatched arrangement would survive the render re-flow guard only
         // to be re-flowed away by the next pane create or close.
@@ -1295,7 +1295,7 @@ mod tests {
         let ResponseResult::LayoutApply { layout } = success.result else {
             panic!("expected layout apply response");
         };
-        assert_eq!(layout.float_arrangement, ArrangementSchema::Stacked);
+        assert_eq!(layout.float_arrangement, LayoutArrangementSchema::Stacked);
         let LayoutNode::Stack { panes, active } = layout.float_root.expect("float root") else {
             panic!("expected stack float root");
         };

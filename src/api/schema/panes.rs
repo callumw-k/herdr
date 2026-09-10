@@ -225,18 +225,18 @@ pub struct LayoutDescription {
     pub tab_id: String,
     pub zoomed: bool,
     pub focused_pane_id: String,
-    #[serde(default = "stacked_arrangement_schema")]
-    pub arrangement: ArrangementSchema,
-    #[serde(default = "stacked_arrangement_schema")]
-    pub float_arrangement: ArrangementSchema,
+    #[serde(default = "stacked_layout_arrangement_schema")]
+    pub arrangement: LayoutArrangementSchema,
+    #[serde(default = "stacked_layout_arrangement_schema")]
+    pub float_arrangement: LayoutArrangementSchema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub float_root: Option<LayoutNode>,
     pub root: LayoutNode,
 }
 
 /// Older clients omit this field; both layers default to Stacked.
-fn stacked_arrangement_schema() -> ArrangementSchema {
-    ArrangementSchema::Stacked
+fn stacked_layout_arrangement_schema() -> LayoutArrangementSchema {
+    LayoutArrangementSchema::Stacked
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -264,6 +264,19 @@ pub enum LayoutNode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ArrangementSchema {
+    Vertical,
+    Horizontal,
+    Grid,
+    Stacked,
+}
+
+/// The whole-tab pane arrangement, as reported in a layout snapshot. Kept
+/// distinct from `ArrangementSchema` (the `tab.arrangement` request enum) so
+/// this response-only fallback variant never reshapes that request's frozen
+/// contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutArrangementSchema {
     Vertical,
     Horizontal,
     Grid,

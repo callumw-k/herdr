@@ -326,7 +326,6 @@ impl App {
                 ArrangementSchema::Horizontal => crate::layout::Arrangement::Horizontal,
                 ArrangementSchema::Grid => crate::layout::Arrangement::Grid,
                 ArrangementSchema::Stacked => crate::layout::Arrangement::Stacked,
-                ArrangementSchema::Unknown => crate::layout::Arrangement::default(),
             }),
             None => self.state.cycle_tab_arrangement(params.forward),
         }
