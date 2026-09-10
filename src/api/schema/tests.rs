@@ -1136,6 +1136,25 @@ fn arrangement_serialises_as_snake_case() {
 }
 
 #[test]
+fn layout_description_without_an_arrangement_parses_as_stacked() {
+    let json = r#"{
+        "workspace_id": "w1",
+        "tab_id": "w1:t1",
+        "zoomed": false,
+        "focused_pane_id": "w1:p1",
+        "root": { "type": "pane", "pane_id": "w1:p1" }
+    }"#;
+    let description: LayoutDescription = serde_json::from_str(json).expect("parses");
+    assert_eq!(description.arrangement, ArrangementSchema::Stacked);
+}
+
+#[test]
+fn an_unrecognised_arrangement_falls_back_to_unknown() {
+    let value: ArrangementSchema = serde_json::from_str(r#""spiral""#).expect("parses");
+    assert_eq!(value, ArrangementSchema::Unknown);
+}
+
+#[test]
 fn layout_export_apply_round_trip() {
     let root = LayoutNode::Split {
         direction: SplitDirection::Right,

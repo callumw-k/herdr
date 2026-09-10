@@ -225,6 +225,7 @@ pub struct LayoutDescription {
     pub tab_id: String,
     pub zoomed: bool,
     pub focused_pane_id: String,
+    #[serde(default = "stacked_arrangement_schema")]
     pub arrangement: ArrangementSchema,
     #[serde(default = "stacked_arrangement_schema")]
     pub float_arrangement: ArrangementSchema,
@@ -267,6 +268,10 @@ pub enum ArrangementSchema {
     Horizontal,
     Grid,
     Stacked,
+    /// A value this client does not know. Servers never emit it; clients
+    /// treat it as the default arrangement.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, Default)]

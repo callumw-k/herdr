@@ -1700,13 +1700,22 @@
         },
         "ArrangementSchema": {
           "description": "The whole-tab pane arrangement. A shared runtime fact: it determines the\nshape of the server-owned pane tree, so it is exposed on the API rather\nthan kept as TUI-only state.",
-          "enum": [
-            "vertical",
-            "horizontal",
-            "grid",
-            "stacked"
-          ],
-          "type": "string"
+          "oneOf": [
+            {
+              "enum": [
+                "vertical",
+                "horizontal",
+                "grid",
+                "stacked"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A value this client does not know. Servers never emit it; clients\ntreat it as the default arrangement.",
+              "type": "string"
+            }
+          ]
         },
         "ClientShellSurfaceSetParams": {
           "description": "Updates whether the requesting client shell receives and controls pane presentation.",
@@ -7179,13 +7188,22 @@
         },
         "ArrangementSchema": {
           "description": "The whole-tab pane arrangement. A shared runtime fact: it determines the\nshape of the server-owned pane tree, so it is exposed on the API rather\nthan kept as TUI-only state.",
-          "enum": [
-            "vertical",
-            "horizontal",
-            "grid",
-            "stacked"
-          ],
-          "type": "string"
+          "oneOf": [
+            {
+              "enum": [
+                "vertical",
+                "horizontal",
+                "grid",
+                "stacked"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "unknown",
+              "description": "A value this client does not know. Servers never emit it; clients\ntreat it as the default arrangement.",
+              "type": "string"
+            }
+          ]
         },
         "ClientWindowTitleReason": {
           "enum": [
@@ -8083,7 +8101,8 @@
         "LayoutDescription": {
           "properties": {
             "arrangement": {
-              "$ref": "#/schemas/success_response/$defs/ArrangementSchema"
+              "$ref": "#/schemas/success_response/$defs/ArrangementSchema",
+              "default": "stacked"
             },
             "float_arrangement": {
               "$ref": "#/schemas/success_response/$defs/ArrangementSchema",
@@ -8120,7 +8139,6 @@
             "tab_id",
             "zoomed",
             "focused_pane_id",
-            "arrangement",
             "root"
           ],
           "type": "object"
