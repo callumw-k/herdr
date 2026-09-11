@@ -942,7 +942,7 @@ impl App {
             .workspaces
             .get(ws_idx)
             .and_then(|ws| ws.tabs.get(tab_idx))
-            .map(|tab| tab.layout.focused())
+            .map(|tab| tab.focused_pane())
             .and_then(|pane_id| self.public_pane_id(ws_idx, pane_id));
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
@@ -2304,7 +2304,19 @@ impl App {
         direction: PaneDirection,
     ) -> Option<PaneId> {
         let tab = self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
-        let panes = tab.layout.panes(self.state.view.terminal_area);
+        let area = self.state.view.terminal_area;
+        // why: focusing a tiled pane hides the float layer, so a float only has float neighbours
+        let panes = if tab.is_float(source_pane_id) {
+            let region = crate::popup_size::resolve_popup_geometry(
+                self.state.floating_pane_width,
+                self.state.floating_pane_height,
+                area,
+            )?
+            .outer;
+            tab.float_layout.as_ref()?.panes(region)
+        } else {
+            tab.layout.panes(area)
+        };
         let source = panes.iter().find(|pane| pane.id == source_pane_id)?;
         find_in_direction(source, direction.into(), &panes)
     }
@@ -4390,6 +4402,46 @@ mod tests {
         assert_eq!(focus.focused_pane_id, Some(right_public.clone()));
         assert_eq!(focus.layout.focused_pane_id, right_public);
         assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(right));
+    }
+
+    #[tokio::test]
+    async fn api_pane_focus_direction_moves_within_a_stacked_float_layer() {
+        let (mut app, _) = app_with_test_workspace();
+        app.state.active = Some(0);
+        let first = app
+            .open_float_pane(0, Some("/tmp".into()))
+            .expect("first float");
+        let second = app
+            .open_float_pane(0, Some("/tmp".into()))
+            .expect("second float");
+        crate::ui::compute_view_with_runtime_registry(
+            &mut app.state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            ratatui::layout::Rect::new(0, 0, 100, 40),
+        );
+        let tab = &app.state.workspaces[0].tabs[0];
+        assert_eq!(tab.float_arrangement, crate::layout::Arrangement::Stacked);
+        assert_eq!(tab.focused_pane(), second);
+        let first_public = app.public_pane_id(0, first).unwrap();
+
+        let response = app.handle_pane_focus_direction(
+            "req".into(),
+            crate::api::schema::PaneFocusDirectionParams {
+                pane_id: None,
+                direction: PaneDirection::Up,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneFocusDirection { focus } = success.result else {
+            panic!("expected pane focus direction response, got {response}");
+        };
+        assert!(focus.changed, "{focus:?}");
+        assert_eq!(focus.focused_pane_id, Some(first_public));
+        let tab = &app.state.workspaces[0].tabs[0];
+        assert_eq!(tab.focused_pane(), first);
+        assert!(tab.float_focused, "navigation stays inside the float layer");
+        assert!(!tab.floats_hidden);
     }
 
     #[test]
