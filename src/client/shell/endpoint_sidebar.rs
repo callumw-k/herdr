@@ -319,13 +319,12 @@ pub(super) fn render_expanded(
                     nested,
                     workspace,
                     workspace.agent_status,
-                    config.status_indicators,
                     entry,
                     tokens,
                     endpoint_active,
                     false,
                     false,
-                    palette,
+                    config,
                     state.pulse_phase,
                 );
                 if endpoint.status != ClientEndpointStatus::Online {

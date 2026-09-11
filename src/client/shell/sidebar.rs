@@ -358,13 +358,12 @@ pub(crate) fn render_sidebar(
             rect,
             workspace,
             status,
-            config.status_indicators,
             entry,
             rows,
             true,
             selected,
             dragged,
-            palette,
+            config,
             state.pulse_phase,
         );
         let group_toggle = parent_group_key(snapshot, entry.index).map(|key| {
@@ -736,15 +735,15 @@ pub(in crate::client::shell) fn render_workspace_rows(
     area: Rect,
     workspace: &ClientShellWorkspace,
     status: crate::api::schema::AgentStatus,
-    indicators: crate::config::StatusIndicatorStyle,
     entry: &WorkspaceEntry,
     rows: Vec<Vec<crate::ui::ResolvedToken>>,
     endpoint_active: bool,
     selected: bool,
     dragged: bool,
-    palette: &Palette,
+    config: &ClientShellConfig,
     pulse_phase: u8,
 ) {
+    let palette = &config.palette;
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
         if y >= area.bottom() {
@@ -797,7 +796,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         let spans = crate::ui::resolved_token_spans(
             row,
             (
-                status_icon(status, indicators),
+                status_icon(status, config.status_indicators),
                 status_dot_style(status, palette, pulse_phase),
             ),
             Style::default()
