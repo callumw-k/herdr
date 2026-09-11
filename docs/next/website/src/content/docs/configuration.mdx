@@ -346,7 +346,12 @@ Agent status uses compact colored dots by default. To distinguish blocked, worki
 status_indicators = "symbols"
 ```
 
-The symbols are static, so this option does not enable spinner animation.
+The symbols are static. The only motion in the sidebar is the blocked dot, which pulses while an agent is waiting on you. Turn that off with:
+
+```toml
+[ui]
+status_pulse = false
+```
 
 ### Sidebar row layouts
 

@@ -1097,6 +1097,12 @@
           ]
         },
         {
+          "key": "ui.status_pulse",
+          "type": "boolean",
+          "default": "true",
+          "description": "Pulse the blocked-state dot so an agent waiting on you stands out."
+        },
+        {
           "key": "ui.sidebar.agents.row_gap",
           "type": "integer",
           "default": "0",
