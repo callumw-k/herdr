@@ -283,8 +283,15 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
         buffer[(machine.x, machine.y)].bg,
         state.config.palette.active_row_bg
     );
+    // The focus marker sits in the nested row's first column, two in from
+    // the machine indent; the row itself carries no tint.
+    assert_eq!(buffer[(workspace.x + 2, workspace.y)].symbol(), "▌");
     assert_eq!(
-        buffer[(workspace.x + 2, workspace.y)].bg,
+        buffer[(workspace.x + 2, workspace.y)].fg,
+        state.config.palette.text
+    );
+    assert_ne!(
+        buffer[(workspace.x + 4, workspace.y)].bg,
         state.config.palette.active_row_bg
     );
 

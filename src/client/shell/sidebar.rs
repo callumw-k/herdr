@@ -350,8 +350,6 @@ pub(crate) fn render_sidebar(
             buffer.set_style(rect, Style::default().bg(palette.selection_bg));
         } else if dragged {
             buffer.set_style(rect, Style::default().bg(palette.surface1));
-        } else if workspace.focused {
-            buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
         }
         render_workspace_rows(
             buffer,
@@ -818,8 +816,6 @@ pub(in crate::client::shell) fn render_workspace_rows(
         Some(palette.selection_bg)
     } else if dragged {
         Some(palette.surface1)
-    } else if endpoint_active && workspace.focused {
-        Some(palette.active_row_bg)
     } else {
         None
     };
