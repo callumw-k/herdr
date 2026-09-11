@@ -147,7 +147,8 @@ fn grouped_worktrees_render_parent_branch_and_indented_child() {
     state.set_pane_surface(replacement_surface);
     let collapsed = state.compose(106, 20).expect("collapsed worktree group");
     let parent = state.hits.workspaces[0].rect;
-    // why: column 0 is the focus marker; the dot after the two-column indent carries the rolled-up child state.
+    // Column 0 is the focus marker; the dot after the two-column indent carries
+    // the rolled-up child state.
     let status_cell = usize::from(parent.y) * usize::from(collapsed.width)
         + usize::from(parent.x.saturating_add(2));
     assert_eq!(
