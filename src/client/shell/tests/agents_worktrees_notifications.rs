@@ -147,8 +147,9 @@ fn grouped_worktrees_render_parent_branch_and_indented_child() {
     state.set_pane_surface(replacement_surface);
     let collapsed = state.compose(106, 20).expect("collapsed worktree group");
     let parent = state.hits.workspaces[0].rect;
-    // The status ribbon in column 0 carries the rolled-up child state.
-    let status_cell = usize::from(parent.y) * usize::from(collapsed.width) + usize::from(parent.x);
+    // why: column 0 is the focus marker; the dot after the two-column indent carries the rolled-up child state.
+    let status_cell = usize::from(parent.y) * usize::from(collapsed.width)
+        + usize::from(parent.x.saturating_add(2));
     assert_eq!(
         collapsed.cells[status_cell].fg,
         crate::protocol::color_to_u32(state.config.palette.red)
@@ -567,8 +568,14 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
         .expect("blocked compact agent")
         .0;
     let row_start = blocked.y as usize * compact.width as usize + blocked.x as usize;
-    assert_ne!(compact.cells[row_start].fg, compact.cells[row_start + 2].fg);
-    assert_eq!(compact.cells[row_start].bg, compact.cells[row_start + 2].bg);
+    assert_ne!(
+        compact.cells[row_start + 1].fg,
+        compact.cells[row_start + 2].fg
+    );
+    assert_eq!(
+        compact.cells[row_start + 1].bg,
+        compact.cells[row_start + 2].bg
+    );
 }
 
 #[test]

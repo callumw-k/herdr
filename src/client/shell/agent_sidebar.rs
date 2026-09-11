@@ -382,12 +382,7 @@ pub(super) fn render_agent_row(
             rect.x,
             rect.y,
             ribbon_height,
-            status_color(row.status, palette),
-            if row.focused {
-                super::sidebar::RibbonWeight::Full
-            } else {
-                super::sidebar::RibbonWeight::Faint
-            },
+            super::sidebar::workspace_ribbon(palette, false, row.focused),
         );
     }
 }

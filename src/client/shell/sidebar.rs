@@ -100,13 +100,13 @@ pub(crate) fn render_collapsed_sidebar(
         );
         let selected = selected_workspace_id == Some(workspace.workspace_id.as_str());
         let status = workspace.agent_status;
-        let (ribbon_color, ribbon_weight) = workspace_ribbon(
-            palette,
-            status_color(status, palette),
-            selected,
-            workspace.focused,
+        render_status_ribbon(
+            buffer,
+            rect.x,
+            rect.y,
+            1,
+            workspace_ribbon(palette, selected, workspace.focused),
         );
-        render_status_ribbon(buffer, rect.x, rect.y, 1, ribbon_color, ribbon_weight);
         // Digits 1-9 switch workspaces in navigate mode. Outside it, and past the
         // ninth row, the number is noise in a three-column strip.
         if navigating && index < 9 {
@@ -188,12 +188,7 @@ pub(crate) fn render_collapsed_sidebar(
             rect.x,
             rect.y,
             1,
-            status_color(agent.agent_status, palette),
-            if agent.focused {
-                RibbonWeight::Full
-            } else {
-                RibbonWeight::Faint
-            },
+            workspace_ribbon(palette, false, agent.focused),
         );
         put_text(
             buffer,
@@ -698,31 +693,20 @@ pub(in crate::client::shell) fn workspace_rows(
     )
 }
 
-/// Weight of the left status ribbon. Colour carries agent state, weight carries
-/// emphasis.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(in crate::client::shell) enum RibbonWeight {
-    Faint,
-    Medium,
-    Full,
-}
-
-/// The selection cursor outranks state here. A selected space is the one the
-/// navigate cursor sits on, so it takes the accent colour: state owns the colour
-/// channel everywhere else, and accent already means "navigation is engaged" for
-/// the sidebar separator and the section divider.
+/// The selection cursor outranks focus. A selected space is the one the navigate
+/// cursor sits on, so it takes the accent colour: accent already means
+/// "navigation is engaged" for the sidebar separator and the section divider.
 pub(in crate::client::shell) fn workspace_ribbon(
     palette: &Palette,
-    state_color: Color,
     selected: bool,
     focused: bool,
-) -> (Color, RibbonWeight) {
+) -> Option<Color> {
     if selected {
-        (palette.accent, RibbonWeight::Full)
+        Some(palette.accent)
     } else if focused {
-        (state_color, RibbonWeight::Medium)
+        Some(palette.text)
     } else {
-        (state_color, RibbonWeight::Faint)
+        None
     }
 }
 
@@ -731,18 +715,15 @@ pub(in crate::client::shell) fn render_status_ribbon(
     x: u16,
     y: u16,
     height: u16,
-    color: Color,
-    weight: RibbonWeight,
+    color: Option<Color>,
 ) {
-    let symbol = match weight {
-        RibbonWeight::Faint => "▏",
-        RibbonWeight::Medium => "▌",
-        RibbonWeight::Full => "█",
+    let Some(color) = color else {
+        return;
     };
     let style = Style::default().fg(color);
     for row in y..y.saturating_add(height) {
         if let Some(cell) = buffer.cell_mut((x, row)) {
-            cell.set_symbol(symbol).set_style(style);
+            cell.set_symbol("▌").set_style(style);
         }
     }
 }
@@ -849,19 +830,16 @@ pub(in crate::client::shell) fn render_workspace_rows(
 
     // Drawn last so the row background does not paint over the gutter this
     // function already reserves in column 0.
-    let (ribbon_color, ribbon_weight) = workspace_ribbon(
-        palette,
-        status_color(status, palette),
-        selected || dragged,
-        endpoint_active && workspace.focused,
-    );
     render_status_ribbon(
         buffer,
         area.x,
         area.y,
         area.height,
-        ribbon_color,
-        ribbon_weight,
+        workspace_ribbon(
+            palette,
+            selected || dragged,
+            endpoint_active && workspace.focused,
+        ),
     );
 }
 
@@ -929,24 +907,15 @@ mod tests {
     }
 
     #[test]
-    fn the_navigate_cursor_outranks_agent_state_on_the_ribbon() {
+    fn the_ribbon_marks_only_the_cursor_and_the_focused_entry() {
         let palette = Palette::catppuccin();
-        let state = Color::Red;
-
         assert_eq!(
-            workspace_ribbon(&palette, state, true, true),
-            (palette.accent, RibbonWeight::Full),
+            workspace_ribbon(&palette, true, true),
+            Some(palette.accent),
             "the cursor takes accent even on the focused space"
         );
-        assert_eq!(
-            workspace_ribbon(&palette, state, false, true),
-            (state, RibbonWeight::Medium),
-            "the focused space keeps agent state at medium weight"
-        );
-        assert_eq!(
-            workspace_ribbon(&palette, state, false, false),
-            (state, RibbonWeight::Faint)
-        );
+        assert_eq!(workspace_ribbon(&palette, false, true), Some(palette.text));
+        assert_eq!(workspace_ribbon(&palette, false, false), None);
     }
 
     #[test]
