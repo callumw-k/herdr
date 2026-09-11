@@ -361,7 +361,7 @@ The expanded desktop sidebar renders each inner array in `rows` as one line. The
 [ui.sidebar.agents]
 row_gap = 0
 rows = [
-  ["machine", "workspace", "tab"],
+  ["state_icon", "machine", "workspace", "tab"],
   ["activity"],
 ]
 
@@ -369,12 +369,12 @@ rows = [
 row_gap = 0
 divider = false
 rows = [
-  ["workspace"],
+  ["state_icon", "workspace"],
   ["branch", "git_status"],
 ]
 ```
 
-Every space and agent entry carries a coloured status ribbon in its leftmost column, so the default rows leave out `state_icon`. Add the token back to a row to restore the inline icon.
+The leftmost column is reserved for a marker on the focused entry and the Navigate cursor; agent state is carried by `state_icon`, so keep that token when you write custom rows.
 
 Agent rows accept these built-in tokens:
 

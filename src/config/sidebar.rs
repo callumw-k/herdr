@@ -445,6 +445,7 @@ impl Default for AgentsSidebarConfig {
         Self {
             rows: vec![
                 vec![
+                    AgentSidebarToken::StateIcon,
                     AgentSidebarToken::Machine,
                     AgentSidebarToken::Workspace,
                     AgentSidebarToken::Tab,
@@ -470,7 +471,7 @@ impl Default for SpacesSidebarConfig {
     fn default() -> Self {
         Self {
             rows: vec![
-                vec![SpaceSidebarToken::Workspace],
+                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
                 vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
             ],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
@@ -497,6 +498,7 @@ mod tests {
             config.agents.rows,
             vec![
                 vec![
+                    AgentSidebarToken::StateIcon,
                     AgentSidebarToken::Machine,
                     AgentSidebarToken::Workspace,
                     AgentSidebarToken::Tab,
@@ -509,7 +511,7 @@ mod tests {
         assert_eq!(
             config.spaces.rows,
             vec![
-                vec![SpaceSidebarToken::Workspace],
+                vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
                 vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
             ]
         );
