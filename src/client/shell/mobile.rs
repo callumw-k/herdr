@@ -52,6 +52,7 @@ pub(super) fn render_mobile_header(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    pulse_phase: u8,
     hits: &mut ShellHitMap,
 ) {
     if area.is_empty() {
@@ -69,7 +70,7 @@ pub(super) fn render_mobile_header(
     hits.mobile_switch = button;
     let status_width = button.x.saturating_sub(area.x).saturating_sub(1);
     let status = Rect::new(area.x, area.y, status_width, area.height);
-    render_header_status(buffer, status, snapshot, config);
+    render_header_status(buffer, status, snapshot, config, pulse_phase);
     render_header_button(buffer, button, snapshot, config);
 }
 
@@ -78,6 +79,7 @@ fn render_header_status(
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    pulse_phase: u8,
 ) {
     if area.is_empty() {
         return;
@@ -111,9 +113,7 @@ fn render_header_status(
             " {} ",
             status_icon(workspace.agent_status, config.status_indicators)
         ),
-        Style::default()
-            .fg(status_color(workspace.agent_status, palette))
-            .bg(palette.panel_bg),
+        status_dot_style(workspace.agent_status, palette, pulse_phase).bg(palette.panel_bg),
     );
     put_text(
         buffer,
@@ -370,6 +370,7 @@ pub(super) fn render_mobile_switcher(
     selected_workspace_id: Option<&str>,
     scroll: &mut usize,
     reveal_workspace: &mut bool,
+    pulse_phase: u8,
     hits: &mut ShellHitMap,
 ) {
     if area.is_empty() {
@@ -443,6 +444,7 @@ pub(super) fn render_mobile_switcher(
         config,
         selected_workspace_id,
         viewport.width.saturating_sub(1),
+        pulse_phase,
     );
     let total_rows = items.iter().map(|item| item.lines.len()).sum::<usize>();
     let max_scroll = total_rows.saturating_sub(usize::from(viewport.height));
@@ -579,6 +581,7 @@ fn mobile_items(
     config: &ClientShellConfig,
     selected_workspace_id: Option<&str>,
     content_width: u16,
+    pulse_phase: u8,
 ) -> Vec<MobileItem> {
     let palette = &config.palette;
     let mut items = Vec::new();
@@ -703,14 +706,13 @@ fn mobile_items(
                         Span::styled("  ", Style::default().bg(background)),
                         Span::styled(
                             status_icon(agent.agent_status, config.status_indicators),
-                            Style::default()
-                                .fg(if endpoint.stale() {
-                                    palette.overlay0
-                                } else {
-                                    status_color(agent.agent_status, palette)
-                                })
-                                .bg(background)
-                                .add_modifier(dim),
+                            if endpoint.stale() {
+                                Style::default().fg(palette.overlay0)
+                            } else {
+                                status_dot_style(agent.agent_status, palette, pulse_phase)
+                            }
+                            .bg(background)
+                            .add_modifier(dim),
                         ),
                         Span::styled(" ", Style::default().bg(background)),
                         Span::styled(
@@ -803,9 +805,9 @@ fn mobile_items(
                 palette.text
             };
             let status = if endpoint.stale() {
-                palette.overlay0
+                Style::default().fg(palette.overlay0)
             } else {
-                status_color(workspace.agent_status, palette)
+                status_dot_style(workspace.agent_status, palette, pulse_phase)
             };
             let stale_detail = if endpoint.stale() {
                 format!(" · {}", mobile_endpoint_state(endpoint.status))
@@ -824,7 +826,7 @@ fn mobile_items(
                         ),
                         Span::styled(
                             status_icon(workspace.agent_status, config.status_indicators),
-                            Style::default().fg(status).bg(background).add_modifier(dim),
+                            status.bg(background).add_modifier(dim),
                         ),
                         Span::styled(" ", Style::default().bg(background)),
                         Span::styled(

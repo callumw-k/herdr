@@ -243,6 +243,7 @@ pub(super) fn render_shell(
             layout.mobile_header,
             snapshot,
             config,
+            state.pulse_phase,
             &mut hits,
         );
     }

@@ -520,6 +520,7 @@ impl ClientShellState {
                 self.navigate_workspace_id.as_deref(),
                 &mut self.mobile_switcher_scroll,
                 &mut self.reveal_mobile_workspace,
+                self.pulse_phase,
                 &mut self.hits,
             );
             if let Some((label, status)) = active_lifecycle.as_ref() {
@@ -571,6 +572,7 @@ impl ClientShellState {
                     &self.active_endpoint_id,
                     &self.config.keybinds,
                     &self.config.palette,
+                    self.pulse_phase,
                 )?;
                 self.hits.overlay_primary = rendered.primary;
                 self.hits.overlay_clear = rendered.clear;
