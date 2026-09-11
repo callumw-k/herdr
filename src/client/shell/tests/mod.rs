@@ -223,6 +223,7 @@ mod mouse_selection;
 mod navigator;
 mod popup_focus_projection;
 mod startup_overlays;
+mod status_dot_style;
 mod workspace_dialog;
 
 pub(super) fn workspace_info(workspace_id: &str) -> crate::api::schema::WorkspaceInfo {

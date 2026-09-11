@@ -19,7 +19,7 @@ pub(crate) use self::onboarding::{
 pub(crate) use self::panes::popup_pane_rects;
 use self::panes::resize_popup_pane;
 pub(crate) use self::panes::{
-    apply_pane_chrome, pane_inner_rect, pane_is_scrolled_back, render_selection_highlight,
+    apply_pane_chrome, mix_rgb, pane_inner_rect, pane_is_scrolled_back, render_selection_highlight,
 };
 pub(crate) use self::release_notes::{
     product_announcement_display_lines, product_announcement_scroll_metrics,

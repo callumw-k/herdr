@@ -259,6 +259,41 @@ fn status_color(
     }
 }
 
+pub(crate) const PULSE_PHASES: u8 = 4;
+pub(crate) const PULSE_PHASE_MS: u64 = 300;
+
+/// Only the blocked dot moves: it is the one state that is waiting on the user.
+/// RGB palettes breathe toward `surface_dim`; named palettes step through
+/// weight because they have no in-between shades.
+fn status_dot_style(
+    status: crate::api::schema::AgentStatus,
+    palette: &Palette,
+    phase: u8,
+) -> Style {
+    use ratatui::style::Color;
+    let color = status_color(status, palette);
+    if status != crate::api::schema::AgentStatus::Blocked {
+        return Style::default().fg(color);
+    }
+    let phase = phase % PULSE_PHASES;
+    match (color, palette.surface_dim) {
+        (Color::Rgb(r, g, b), Color::Rgb(dr, dg, db)) => {
+            let amount = match phase {
+                0 => 0.0,
+                2 => 0.6,
+                _ => 0.3,
+            };
+            let (r, g, b) = crate::ui::mix_rgb((r, g, b), (dr, dg, db), amount);
+            Style::default().fg(Color::Rgb(r, g, b))
+        }
+        _ => match phase {
+            0 => Style::default().fg(color).add_modifier(Modifier::BOLD),
+            2 => Style::default().fg(color).add_modifier(Modifier::DIM),
+            _ => Style::default().fg(color),
+        },
+    }
+}
+
 fn panel_contrast_fg(palette: &Palette) -> ratatui::style::Color {
     match palette.panel_bg {
         ratatui::style::Color::Reset => palette.surface_dim,
