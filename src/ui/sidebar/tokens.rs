@@ -137,6 +137,13 @@ pub(crate) fn agent_rows(
         .collect()
 }
 
+/// Reserved token the server adds to a pinned workspace's client snapshot. A
+/// dot keeps it out of the user token namespace, which allows `[A-Za-z0-9_-]`
+/// only, and it rides the existing token channel so the frozen snapshot codec
+/// stays untouched.
+pub(crate) const PINNED_WORKSPACE_TOKEN: &str = "herdr.pinned";
+pub(crate) const PINNED_WORKSPACE_GLYPH: &str = "\u{26b2}";
+
 pub(crate) struct SpaceTokenContext<'a> {
     pub(crate) workspace: &'a str,
     pub(crate) branch: Option<&'a str>,
@@ -164,7 +171,12 @@ pub(crate) fn space_rows(
                             Some(ResolvedTokenKind::StateText(context.state_text.to_string()))
                         }
                         SpaceSidebarToken::Workspace => {
-                            Some(ResolvedTokenKind::Workspace(context.workspace.to_string()))
+                            let label = if context.tokens.contains_key(PINNED_WORKSPACE_TOKEN) {
+                                format!("{} {PINNED_WORKSPACE_GLYPH}", context.workspace)
+                            } else {
+                                context.workspace.to_string()
+                            };
+                            Some(ResolvedTokenKind::Workspace(label))
                         }
                         SpaceSidebarToken::Branch if !context.suppress_git_details => context
                             .branch
@@ -535,6 +547,40 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
             ),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
                 "feature".into()
+            ))]]
+        );
+    }
+
+    #[test]
+    fn a_pinned_workspace_label_carries_the_pin_glyph() {
+        let tokens = std::collections::HashMap::from([(
+            PINNED_WORKSPACE_TOKEN.to_string(),
+            PINNED_WORKSPACE_GLYPH.to_string(),
+        )]);
+        let config = SpacesSidebarConfig {
+            rows: vec![vec![SpaceSidebarToken::Workspace]],
+            ..Default::default()
+        };
+        let context = |tokens| SpaceTokenContext {
+            workspace: "repo",
+            branch: None,
+            state_text: "idle",
+            ahead_behind: None,
+            tokens,
+            suppress_git_details: false,
+        };
+
+        assert_eq!(
+            space_rows(&config, context(&tokens)),
+            vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
+                "repo \u{26b2}".into()
+            ))]]
+        );
+        let none = std::collections::HashMap::new();
+        assert_eq!(
+            space_rows(&config, context(&none)),
+            vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
+                "repo".into()
             ))]]
         );
     }

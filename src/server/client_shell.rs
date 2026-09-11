@@ -38,6 +38,12 @@ pub(super) fn snapshot(
         .enumerate()
         .map(|(workspace_index, (workspace, state))| {
             let mut tokens = workspace.tokens.into_iter().collect::<Vec<_>>();
+            if state.pinned_path.is_some() {
+                tokens.push((
+                    crate::ui::PINNED_WORKSPACE_TOKEN.to_string(),
+                    crate::ui::PINNED_WORKSPACE_GLYPH.to_string(),
+                ));
+            }
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
             let workspace_id = workspace.workspace_id;
             let active_tab_id = location
@@ -561,6 +567,32 @@ fn split_hit_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_marks_a_pinned_workspace_with_the_reserved_token() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut pinned = crate::workspace::Workspace::test_new("pinned");
+        pinned.pinned_path = Some(std::path::PathBuf::from("/repos/pinned"));
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("plain"), pinned];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+
+        let snapshot = snapshot(&app, "boot", 1, None, None);
+
+        let pinned_token = (
+            crate::ui::PINNED_WORKSPACE_TOKEN.to_string(),
+            crate::ui::PINNED_WORKSPACE_GLYPH.to_string(),
+        );
+        assert!(!snapshot.workspaces[0].tokens.contains(&pinned_token));
+        assert!(snapshot.workspaces[1].tokens.contains(&pinned_token));
+    }
 
     #[test]
     fn snapshot_projects_cached_release_and_update_facts() {
