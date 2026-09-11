@@ -547,9 +547,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
             ),
             vec![vec![
                 ResolvedToken::unstyled(ResolvedTokenKind::StateIcon),
-                ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
-                    "feature".into()
-                ))
+                ResolvedToken::unstyled(ResolvedTokenKind::Workspace("feature".into()))
             ]]
         );
     }
