@@ -261,6 +261,26 @@ pub(super) fn render_pane_surface(
     graphics_delivery: &crate::kitty_graphics::surface::DeliveryCache,
     client_id: u64,
 ) -> RenderedPaneSurface {
+    // A tab's tree is regenerated lazily under its arrangement. compute_view
+    // only reflows the server's active tab, and runs after this frame, so the
+    // client's own tab has to be reflowed here or the frame shows the layout
+    // from before the last arrangement change.
+    if let Some(target) = target {
+        let float_region = crate::popup_size::resolve_popup_geometry(
+            app.state.floating_pane_width,
+            app.state.floating_pane_height,
+            area,
+        )
+        .map(|geometry| geometry.outer);
+        if let Some(tab) = app
+            .state
+            .workspaces
+            .get_mut(target.workspace_index)
+            .and_then(|workspace| workspace.tabs.get_mut(target.tab_index))
+        {
+            tab.reflow(area, float_region);
+        }
+    }
     let content_revisions_before = target
         .and_then(|target| {
             let workspace = app.state.workspaces.get(target.workspace_index)?;

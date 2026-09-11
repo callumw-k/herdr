@@ -6398,3 +6398,82 @@ async fn client_shell_input_reaches_a_focused_float() {
         Bytes::from_static(b"typed")
     );
 }
+
+#[tokio::test]
+async fn a_client_shell_arrangement_change_shows_in_the_next_frame() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("arrangement");
+    let first = workspace.tabs[0].root_pane;
+    let second = workspace.test_split(ratatui::layout::Direction::Horizontal);
+    workspace.insert_test_runtime(
+        first,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"ONE"),
+    );
+    workspace.insert_test_runtime(
+        second,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"TWO"),
+    );
+    workspace.tabs[0].arrangement = crate::layout::Arrangement::Stacked;
+    workspace.tabs[0].needs_reflow = true;
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+
+    let (control, render) = connect_test_shell(&mut server, 41, 100, 30);
+    let _ = control.recv().expect("initial snapshot");
+    server.render_and_stream();
+    let latest_surface = |render: &std::sync::mpsc::Receiver<Vec<u8>>, label: &str| {
+        let mut latest = None;
+        let mut wait = Duration::from_secs(2);
+        while let Ok(message) = render.recv_timeout(wait) {
+            wait = Duration::from_millis(100);
+            if let ServerMessage::PaneSurface(surface) = read_server_message(message) {
+                latest = Some(surface);
+            }
+        }
+        latest.unwrap_or_else(|| panic!("no pane surface frame {label}"))
+    };
+    let before = latest_surface(&render, "after connecting");
+    assert!(
+        before
+            .panes
+            .iter()
+            .all(|pane| pane.rect.width == before.frame.width),
+        "stacked members span the surface: {:?}",
+        before
+            .panes
+            .iter()
+            .map(|pane| pane.rect)
+            .collect::<Vec<_>>()
+    );
+
+    let boot_id = server.client_shell_boot_id.clone();
+    let workspace_id = server.app.public_workspace_id(0);
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            client_id: 41,
+            boot_id,
+            request: Box::new(api::schema::Request {
+                id: "arrangement-1".into(),
+                method: api::schema::Method::TabArrangement(api::schema::TabArrangementParams {
+                    workspace_id: Some(workspace_id),
+                    arrangement: None,
+                    forward: true,
+                }),
+            }),
+        }),
+        "an arrangement change must ask for a render"
+    );
+    server.render_and_stream();
+    let after = latest_surface(&render, "after the arrangement request");
+    let rects: Vec<_> = after.panes.iter().map(|pane| pane.rect).collect();
+    assert_eq!(after.panes.len(), 2, "{rects:?}");
+    assert!(
+        after
+            .panes
+            .iter()
+            .all(|pane| pane.rect.width < after.frame.width),
+        "the frame after the request already shows the vertical arrangement: {rects:?}"
+    );
+}

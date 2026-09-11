@@ -2216,6 +2216,47 @@ mod tests {
             ),
         };
 
+        let tab_arrangement = crate::api::schema::Request {
+            id: "req_13".into(),
+            method: crate::api::schema::Method::TabArrangement(
+                crate::api::schema::TabArrangementParams {
+                    workspace_id: Some("w1".into()),
+                    arrangement: None,
+                    forward: true,
+                },
+            ),
+        };
+        let tab_float_activate = crate::api::schema::Request {
+            id: "req_14".into(),
+            method: crate::api::schema::Method::TabFloatActivate(
+                crate::api::schema::TabFloatActivateParams {
+                    workspace_id: Some("w1".into()),
+                },
+            ),
+        };
+        let tab_pane_add = crate::api::schema::Request {
+            id: "req_15".into(),
+            method: crate::api::schema::Method::TabPaneAdd(crate::api::schema::TabPaneAddParams {
+                workspace_id: Some("w1".into()),
+            }),
+        };
+        let path_pin_toggle = crate::api::schema::Request {
+            id: "req_16".into(),
+            method: crate::api::schema::Method::WorkspacePathPinToggle(
+                crate::api::schema::WorkspacePathPinToggleParams {
+                    workspace_id: "w1".into(),
+                },
+            ),
+        };
+        let declared_repo_toggle = crate::api::schema::Request {
+            id: "req_17".into(),
+            method: crate::api::schema::Method::WorkspaceDeclaredRepoToggle(
+                crate::api::schema::WorkspaceDeclaredRepoToggleParams {
+                    workspace_id: "w1".into(),
+                },
+            ),
+        };
+
         assert!(!crate::api::request_changes_ui(&read_only));
         assert!(!crate::api::request_changes_ui(&worktree_list));
         assert!(crate::api::request_changes_ui(&mutating));
@@ -2228,6 +2269,11 @@ mod tests {
         assert!(crate::api::request_changes_ui(&command_invoke));
         assert!(crate::api::request_changes_ui(&announcement_dismiss));
         assert!(crate::api::request_changes_ui(&release_notes_dismiss));
+        assert!(crate::api::request_changes_ui(&tab_arrangement));
+        assert!(crate::api::request_changes_ui(&tab_float_activate));
+        assert!(crate::api::request_changes_ui(&tab_pane_add));
+        assert!(crate::api::request_changes_ui(&path_pin_toggle));
+        assert!(crate::api::request_changes_ui(&declared_repo_toggle));
     }
 
     #[test]
