@@ -108,13 +108,12 @@ pub(super) fn render_collapsed(
                 rect.y,
                 rect.width.saturating_sub(number_width),
                 status_icon(workspace.agent_status, config.status_indicators),
-                Style::default()
-                    .fg(if stale {
-                        palette.overlay0
-                    } else {
-                        status_color(workspace.agent_status, palette)
-                    })
-                    .add_modifier(dim),
+                if stale {
+                    Style::default().fg(palette.overlay0).add_modifier(dim)
+                } else {
+                    status_dot_style(workspace.agent_status, palette, state.pulse_phase)
+                        .add_modifier(dim)
+                },
             );
             hits.workspaces.push(WorkspaceHit {
                 rect,
@@ -142,6 +141,7 @@ pub(super) fn render_collapsed(
         state.endpoints,
         state.active_endpoint_id,
         config,
+        state.pulse_phase,
         hits,
     );
     hits.sidebar_toggle = if area.is_empty() || workspace_area.width == 0 {
@@ -326,6 +326,7 @@ pub(super) fn render_expanded(
                     false,
                     false,
                     palette,
+                    state.pulse_phase,
                 );
                 if endpoint.status != ClientEndpointStatus::Online {
                     buffer.set_style(
@@ -397,6 +398,7 @@ pub(super) fn render_expanded(
         state.active_endpoint_id,
         config,
         state.agent_scroll,
+        state.pulse_phase,
         hits,
     );
     hits.sidebar_toggle = Rect::new(

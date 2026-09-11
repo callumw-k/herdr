@@ -56,6 +56,7 @@ impl ClientShellState {
                 selected_workspace_id: self.navigate_workspace_id.as_deref(),
                 dragged_workspace_id: None,
                 workspace_drop_indicator_row: None,
+                pulse_phase: self.pulse_phase,
             },
             &mut self.hits,
         );
@@ -159,6 +160,7 @@ impl ClientShellState {
                     .flatten(),
                 dragged_workspace_id,
                 workspace_drop_indicator_row,
+                pulse_phase: self.pulse_phase,
             },
         );
         self.hits.panes = surface

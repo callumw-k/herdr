@@ -1365,3 +1365,76 @@ fn status_pulse_off_never_advances() {
     }
     assert_eq!(state.pulse_phase, 0);
 }
+
+#[test]
+fn the_blocked_dot_changes_with_the_pulse_phase_and_the_idle_dot_does_not() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snapshot = snapshot();
+    snapshot.workspaces[0].agent_status = AgentStatus::Blocked;
+    snapshot.agents = vec![
+        crate::protocol::ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: None,
+            display_agent: Some("Claude".into()),
+            agent: Some("claude".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Blocked,
+            state_change_seq: 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: true,
+        },
+        crate::protocol::ClientShellAgent {
+            pane_id: "pane_2".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: None,
+            display_agent: Some("Codex".into()),
+            agent: Some("codex".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Idle,
+            state_change_seq: 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        },
+    ];
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+
+    let cell = |frame: &crate::protocol::FrameData, rect: Rect| {
+        frame.cells[usize::from(rect.y) * usize::from(frame.width) + usize::from(rect.x) + 2]
+            .clone()
+    };
+    state.pulse_phase = 0;
+    let first = state.compose(106, 20).expect("frame");
+    let blocked_rect = state.hits.agents[0].0;
+    let idle_rect = state.hits.agents[1].0;
+    let blocked_0 = cell(&first, blocked_rect);
+    let idle_0 = cell(&first, idle_rect);
+    assert_eq!(blocked_0.symbol, "●");
+
+    state.pulse_phase = 2;
+    let second = state.compose(106, 20).expect("frame");
+    let blocked_2 = cell(&second, blocked_rect);
+    let idle_2 = cell(&second, idle_rect);
+    assert_ne!(
+        (blocked_0.fg, blocked_0.modifier),
+        (blocked_2.fg, blocked_2.modifier)
+    );
+    assert_eq!((idle_0.fg, idle_0.modifier), (idle_2.fg, idle_2.modifier));
+
+    let space_rect = state.hits.workspaces[0].rect;
+    let space_0 = cell(&first, space_rect);
+    let space_2 = cell(&second, space_rect);
+    assert_ne!(
+        (space_0.fg, space_0.modifier),
+        (space_2.fg, space_2.modifier)
+    );
+}

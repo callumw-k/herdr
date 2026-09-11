@@ -77,6 +77,7 @@ pub(crate) fn render_collapsed_sidebar(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     selected_workspace_id: Option<&str>,
+    pulse_phase: u8,
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
@@ -129,7 +130,7 @@ pub(crate) fn render_collapsed_sidebar(
                 rect.y,
                 rect.width.saturating_sub(1),
                 status_icon(status, config.status_indicators),
-                Style::default().fg(status_color(status, palette)),
+                status_dot_style(status, palette, pulse_phase),
             );
         }
         hits.workspaces.push(WorkspaceHit {
@@ -196,7 +197,7 @@ pub(crate) fn render_collapsed_sidebar(
             rect.y,
             rect.width.saturating_sub(1),
             status_icon(agent.agent_status, config.status_indicators),
-            Style::default().fg(status_color(agent.agent_status, palette)),
+            status_dot_style(agent.agent_status, palette, pulse_phase),
         );
         hits.agents.push((rect, pane_id));
     }
@@ -364,6 +365,7 @@ pub(crate) fn render_sidebar(
             selected,
             dragged,
             palette,
+            state.pulse_phase,
         );
         let group_toggle = parent_group_key(snapshot, entry.index).map(|key| {
             let rect = Rect::new(rect.right().saturating_sub(1), rect.y, 1, 1);
@@ -489,6 +491,7 @@ pub(crate) fn render_sidebar(
         snapshot,
         config,
         state.agent_scroll,
+        state.pulse_phase,
         hits,
     );
 
@@ -740,6 +743,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
     selected: bool,
     dragged: bool,
     palette: &Palette,
+    pulse_phase: u8,
 ) {
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
@@ -794,7 +798,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
             row,
             (
                 status_icon(status, indicators),
-                Style::default().fg(status_color(status, palette)),
+                status_dot_style(status, palette, pulse_phase),
             ),
             Style::default()
                 .fg(status_color(status, palette))

@@ -7,6 +7,7 @@ pub(super) fn render_collapsed(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
+    pulse_phase: u8,
     hits: &mut ShellHitMap,
 ) {
     let rows = agent_rows(endpoints, active_endpoint_id, config);
@@ -25,17 +26,13 @@ pub(super) fn render_collapsed(
                 "{initial}{}",
                 status_icon(row.agent.status, config.status_indicators)
             ),
-            Style::default()
-                .fg(if row.stale {
-                    config.palette.overlay0
-                } else {
-                    status_color(row.agent.status, &config.palette)
-                })
-                .add_modifier(if row.stale {
-                    Modifier::DIM
-                } else {
-                    Modifier::empty()
-                }),
+            if row.stale {
+                Style::default()
+                    .fg(config.palette.overlay0)
+                    .add_modifier(Modifier::DIM)
+            } else {
+                status_dot_style(row.agent.status, &config.palette, pulse_phase)
+            },
         );
         hits.endpoint_agents
             .push((rect, row.endpoint_id, row.agent.pane_id));
@@ -50,6 +47,7 @@ pub(super) fn render_expanded(
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
+    pulse_phase: u8,
     hits: &mut ShellHitMap,
 ) {
     if !super::agent_sidebar::render_agent_panel_header(
@@ -72,7 +70,7 @@ pub(super) fn render_expanded(
         hits,
         |row| row.agent.rows.len(),
         |buffer, rect, row, hits| {
-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
+            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config, pulse_phase);
             if row.stale {
                 buffer.set_style(
                     rect,

@@ -226,6 +226,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) selected_workspace_id: Option<&'a str>,
     pub(super) dragged_workspace_id: Option<&'a str>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
+    pub(super) pulse_phase: u8,
 }
 
 pub(super) fn render_shell(
@@ -272,6 +273,7 @@ pub(super) fn render_shell(
                 snapshot,
                 config,
                 state.selected_workspace_id,
+                state.pulse_phase,
                 &mut hits,
             );
         } else {
