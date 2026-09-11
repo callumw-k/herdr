@@ -14,7 +14,15 @@ pub(super) struct AgentRow {
     pub(super) pane_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
+    /// Workspace label drawn above the first agent of each workspace in grouped sort.
+    pub(super) group: Option<String>,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+}
+
+impl AgentRow {
+    pub(super) fn lines(&self) -> usize {
+        self.rows.len().max(1) + usize::from(self.group.is_some())
+    }
 }
 
 pub(super) fn ordered_agent_pane_ids(
@@ -80,7 +88,7 @@ pub(super) fn render_agent_panel(
         config,
         agent_scroll,
         hits,
-        |row| row.rows.len(),
+        |row| row.lines(),
         |buffer, rect, row, hits| {
             hits.agents.push((rect, row.pane_id.clone()));
             render_agent_row(buffer, rect, row, config, pulse_phase);
@@ -240,6 +248,11 @@ pub(super) fn agent_rows(
     config: &ClientShellConfig,
     machine: Option<&str>,
 ) -> Vec<AgentRow> {
+    // Headers only make sense while entries run in workspace order; a view
+    // sort would scatter them.
+    let grouped = config.agent_panel_sort == crate::config::AgentPanelSortConfig::Spaces
+        && snapshot.agent_view_label.is_none();
+    let mut previous_workspace: Option<&str> = None;
     ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
         .into_iter()
         .filter_map(|pane_id| {
@@ -302,10 +315,14 @@ pub(super) fn agent_rows(
                 },
                 state_text,
             );
+            let group = (grouped && previous_workspace != Some(workspace.workspace_id.as_str()))
+                .then(|| workspace.label.clone());
+            previous_workspace = Some(workspace.workspace_id.as_str());
             Some(AgentRow {
                 pane_id: agent.pane_id.clone(),
                 status: agent.agent_status,
                 focused: agent.focused,
+                group,
                 rows,
             })
         })
@@ -320,11 +337,6 @@ pub(super) fn render_agent_row(
     pulse_phase: u8,
 ) {
     let palette = &config.palette;
-    let row_style = if row.focused {
-        Style::default().bg(palette.active_row_bg)
-    } else {
-        Style::default()
-    };
     let name_style = if row.focused {
         Style::default()
             .fg(palette.text)
@@ -356,6 +368,21 @@ pub(super) fn render_agent_row(
     } else {
         row.rows.clone()
     };
+    let mut rect = rect;
+    if let Some(group) = &row.group {
+        put_text(
+            buffer,
+            rect.x,
+            rect.y,
+            rect.width,
+            &format!(" {group}"),
+            Style::default()
+                .fg(palette.subtext0)
+                .add_modifier(Modifier::BOLD),
+        );
+        rect.y = rect.y.saturating_add(1);
+        rect.height = rect.height.saturating_sub(1);
+    }
     // Column 0 belongs to the focus marker, so the first row starts one column in.
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let indent = if index == 0 { 2 } else { 3 };
@@ -370,13 +397,12 @@ pub(super) fn render_agent_row(
             palette,
             rect.width.saturating_sub(indent as u16) as usize,
         ));
-        Paragraph::new(Line::from(spans)).style(row_style).render(
+        Paragraph::new(Line::from(spans)).render(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
         );
     }
 
-    // Drawn last so the row background does not paint over it.
     let ribbon_height = (rows.len().min(u16::MAX as usize) as u16).min(rect.height);
     if ribbon_height > 0 {
         super::sidebar::render_status_ribbon(

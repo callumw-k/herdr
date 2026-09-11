@@ -1414,7 +1414,10 @@ fn the_blocked_dot_changes_with_the_pulse_phase_and_the_idle_dot_does_not() {
     };
     state.pulse_phase = 0;
     let first = state.compose(106, 20).expect("frame");
-    let blocked_rect = state.hits.agents[0].0;
+    // The first agent in a workspace sits under its group header, so its dot
+    // is one row into the hit rect.
+    let mut blocked_rect = state.hits.agents[0].0;
+    blocked_rect.y += 1;
     let idle_rect = state.hits.agents[1].0;
     let blocked_0 = cell(&first, blocked_rect);
     let idle_0 = cell(&first, idle_rect);
@@ -1437,4 +1440,66 @@ fn the_blocked_dot_changes_with_the_pulse_phase_and_the_idle_dot_does_not() {
         (space_0.fg, space_0.modifier),
         (space_2.fg, space_2.modifier)
     );
+}
+
+#[test]
+fn grouped_sort_labels_each_workspace_once_and_priority_sort_drops_the_labels() {
+    let agent =
+        |pane: &str, workspace: &str, status: AgentStatus| crate::protocol::ClientShellAgent {
+            pane_id: pane.into(),
+            workspace_id: workspace.into(),
+            tab_id: "tab_1".into(),
+            name: None,
+            display_agent: Some("Claude".into()),
+            agent: Some("claude".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: status,
+            state_change_seq: 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: false,
+        };
+    let mut snapshot = snapshot();
+    let mut second = snapshot.workspaces[0].clone();
+    second.workspace_id = "ws_2".into();
+    second.label = "vault".into();
+    second.focused = false;
+    snapshot.workspaces.push(second);
+    snapshot.agents = vec![
+        agent("pane_1", "ws_1", AgentStatus::Idle),
+        agent("pane_2", "ws_1", AgentStatus::Blocked),
+        agent("pane_3", "ws_2", AgentStatus::Working),
+    ];
+
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.agent_panel_sort = crate::config::AgentPanelSortConfig::Spaces;
+    let groups = super::agent_sidebar::agent_rows(&snapshot, &config, None)
+        .into_iter()
+        .map(|row| row.group)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        groups,
+        vec![
+            Some("client-shell".to_owned()),
+            None,
+            Some("vault".to_owned())
+        ]
+    );
+
+    config.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
+    assert!(
+        super::agent_sidebar::agent_rows(&snapshot, &config, None)
+            .iter()
+            .all(|row| row.group.is_none()),
+        "a re-sorted list would scatter the headers"
+    );
+
+    config.agent_panel_sort = crate::config::AgentPanelSortConfig::Spaces;
+    snapshot.agent_view_label = Some("view".into());
+    snapshot.agent_order = vec!["pane_3".into(), "pane_1".into()];
+    assert!(super::agent_sidebar::agent_rows(&snapshot, &config, None)
+        .iter()
+        .all(|row| row.group.is_none()));
 }
