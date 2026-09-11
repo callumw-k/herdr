@@ -712,8 +712,34 @@ impl HeadlessServer {
 
                 true
             }
+            AppEvent::TerminalCwdReported { .. } => {
+                // A cwd report can move the pane into the workspace pinned to
+                // that directory and close the one it left. A shell client whose
+                // location still names the closed workspace would keep sending
+                // requests for it, so re-point it the way a pane death does.
+                let workspace_ids_before = self.workspace_id_list();
+                let focus_before = self.shell_focus_targets();
+                let focused_tabs_before = self.focused_shell_tabs();
+                let changed = self.app.handle_internal_event_with_render_impact(ev);
+                if self.workspace_id_list() == workspace_ids_before {
+                    return changed;
+                }
+                self.reconcile_client_shell_locations();
+                self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
+                self.reapply_controlled_shell_tab_geometry(false);
+                true
+            }
             _ => self.app.handle_internal_event_with_render_impact(ev),
         }
+    }
+
+    fn workspace_id_list(&self) -> Vec<String> {
+        self.app
+            .state
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.id.clone())
+            .collect()
     }
 
     /// Drains internal events, forwarding clipboard, sound, and toast

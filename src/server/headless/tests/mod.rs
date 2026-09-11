@@ -6477,3 +6477,66 @@ async fn a_client_shell_arrangement_change_shows_in_the_next_frame() {
         "the frame after the request already shows the vertical arrangement: {rects:?}"
     );
 }
+
+#[tokio::test]
+async fn a_cwd_auto_move_that_closes_the_workspace_repoints_shell_clients() {
+    let mut server = test_headless_server();
+    let pinned = std::env::temp_dir().join(format!("herdr-cwd-pin-{}", std::process::id()));
+    std::fs::create_dir_all(&pinned).unwrap();
+    let mut source = crate::workspace::Workspace::test_new("source");
+    let moving_pane = source.tabs[0].root_pane;
+    source.insert_test_runtime(
+        moving_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"MOVING"),
+    );
+    let mut target = crate::workspace::Workspace::test_new("pinned");
+    target.pinned_path = Some(pinned.clone());
+    server.app.state.workspaces = vec![source, target];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let target_id = server.app.public_workspace_id(1);
+
+    let (control, _render) = connect_test_shell(&mut server, 71, 100, 30);
+    let _ = control.recv().expect("initial snapshot");
+    assert_eq!(
+        server
+            .shell_target_for_client(71)
+            .map(|target| target.workspace_index),
+        Some(0)
+    );
+
+    assert!(
+        server.handle_internal_event_with_forwarding(AppEvent::TerminalCwdReported {
+            pane_id: moving_pane,
+            cwd: pinned.clone(),
+        })
+    );
+    std::fs::remove_dir_all(&pinned).ok();
+
+    assert_eq!(
+        server.app.state.workspaces.len(),
+        1,
+        "the emptied source workspace closes after the auto-move"
+    );
+    server.render_and_stream();
+    let mut latest = None;
+    let mut wait = Duration::from_secs(2);
+    while let Ok(message) = control.recv_timeout(wait) {
+        wait = Duration::from_millis(100);
+        if let ServerMessage::EndpointControl { kind, data } = read_server_message(message) {
+            if kind == crate::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND {
+                let snapshot: crate::protocol::ClientShellSnapshot =
+                    serde_json::from_str(&data).expect("decode client shell snapshot");
+                latest = Some(snapshot);
+            }
+        }
+    }
+    let snapshot = latest.expect("a snapshot after the auto-move");
+    assert_eq!(
+        snapshot.focused_workspace_id.as_deref(),
+        Some(target_id.as_str()),
+        "the client must be told it now sits in the pinned workspace"
+    );
+}
