@@ -286,11 +286,18 @@ fn status_dot_style(
             let (r, g, b) = crate::ui::mix_rgb((r, g, b), (dr, dg, db), amount);
             Style::default().fg(Color::Rgb(r, g, b))
         }
-        _ => match phase {
-            0 => Style::default().fg(color).add_modifier(Modifier::BOLD),
-            2 => Style::default().fg(color).add_modifier(Modifier::DIM),
-            _ => Style::default().fg(color),
-        },
+        _ => {
+            let dark = if color == Color::LightRed {
+                Color::Red
+            } else {
+                color
+            };
+            match phase {
+                0 => Style::default().fg(color).add_modifier(Modifier::BOLD),
+                2 => Style::default().fg(dark).add_modifier(Modifier::DIM),
+                _ => Style::default().fg(dark),
+            }
+        }
     }
 }
 

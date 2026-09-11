@@ -750,7 +750,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
             break;
         }
         let mut x = area.x;
-        // Column 0 is the status ribbon, so every prefix starts one column in and
+        // Column 0 is the focus marker, so every prefix starts one column in and
         // each entry keeps one width across its rows: labels stay in a single
         // column instead of stepping right on continuation rows.
         if entry.indented {
@@ -831,8 +831,8 @@ pub(in crate::client::shell) fn render_workspace_rows(
         }
     }
 
-    // Drawn last so the row background does not paint over the gutter this
-    // function already reserves in column 0.
+    // Drawn last so the row background does not paint over the focus marker in
+    // column 0.
     render_status_ribbon(
         buffer,
         area.x,

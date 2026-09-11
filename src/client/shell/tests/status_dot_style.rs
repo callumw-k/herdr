@@ -23,9 +23,17 @@ fn blocked_cycles_through_four_styles_on_an_rgb_palette() {
 fn blocked_steps_through_weight_on_a_named_palette() {
     let palette = Palette::terminal();
     let s = |phase| status_dot_style(AgentStatus::Blocked, &palette, phase);
-    assert!(s(0).add_modifier.contains(Modifier::BOLD));
-    assert_eq!(s(1), Style::default().fg(palette.red));
-    assert!(s(2).add_modifier.contains(Modifier::DIM));
+    assert_eq!(
+        s(0),
+        Style::default()
+            .fg(palette.red)
+            .add_modifier(Modifier::BOLD)
+    );
+    assert_eq!(s(1), Style::default().fg(Color::Red));
+    assert_eq!(
+        s(2),
+        Style::default().fg(Color::Red).add_modifier(Modifier::DIM)
+    );
     assert_eq!(s(3), s(1));
 }
 

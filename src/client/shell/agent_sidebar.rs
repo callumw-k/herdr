@@ -356,7 +356,7 @@ pub(super) fn render_agent_row(
     } else {
         row.rows.clone()
     };
-    // Column 0 belongs to the status ribbon, so the first row starts one column in.
+    // Column 0 belongs to the focus marker, so the first row starts one column in.
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let indent = if index == 0 { 2 } else { 3 };
         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
