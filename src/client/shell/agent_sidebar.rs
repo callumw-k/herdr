@@ -356,6 +356,14 @@ pub(super) fn render_agent_row(
     let secondary = Style::default()
         .fg(palette.overlay0)
         .add_modifier(Modifier::DIM);
+    // Context tokens on the entry's first row are the label when a layout has
+    // no workspace token there, so they read at full strength; later rows stay
+    // dim as supporting detail.
+    let leading = Style::default().fg(if row.focused {
+        palette.text
+    } else {
+        palette.subtext0
+    });
     let icon = (
         status_icon(row.status, config.status_indicators),
         status_dot_style(row.status, palette, pulse_phase),
@@ -386,14 +394,15 @@ pub(super) fn render_agent_row(
     // Column 0 belongs to the focus marker, so the first row starts one column in.
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let indent = if index == 0 { 2 } else { 3 };
+        let context = if index == 0 { leading } else { secondary };
         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
         spans.extend(crate::ui::resolved_token_spans(
             tokens,
             icon,
             status_style,
             name_style,
-            secondary,
-            secondary,
+            context,
+            context,
             palette,
             rect.width.saturating_sub(indent as u16) as usize,
         ));
