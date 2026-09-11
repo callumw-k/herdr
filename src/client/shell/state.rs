@@ -970,6 +970,10 @@ pub(crate) struct ClientShellState {
     pub(super) pane_scroll_targets: HashMap<String, usize>,
     pub(super) copy_feedback: Option<crate::app::state::CopyFeedback>,
     pub(super) copy_feedback_deadline: Option<std::time::Instant>,
+    pub(super) pulse_phase: u8,
+    pulse_started: Option<std::time::Instant>,
+    /// Set by `compose`: whether the last frame drew any status dots.
+    pub(super) dots_visible: bool,
     pub(super) host_mouse_pixels: Option<crate::input::mouse::HostPixels>,
     pub(super) input_leases: ClientInputLeases,
     pub(super) popup_pending: bool,
@@ -1113,6 +1117,9 @@ impl ClientShellState {
             pane_scroll_targets: HashMap::new(),
             copy_feedback: None,
             copy_feedback_deadline: None,
+            pulse_phase: 0,
+            pulse_started: None,
+            dots_visible: false,
             host_mouse_pixels: None,
             input_leases: ClientInputLeases::default(),
             popup_pending: false,
@@ -1787,6 +1794,41 @@ impl ClientShellState {
             repaint = true;
         }
         repaint
+    }
+
+    /// Advances the blocked-dot pulse. Returns whether the frame needs a repaint.
+    /// The client loop already wakes every 100 ms, so this only computes the
+    /// phase from elapsed time and never shortens the timer.
+    pub(crate) fn tick_pulse(&mut self, now: std::time::Instant) -> bool {
+        let active = self.config.status_pulse && self.dots_visible && self.any_blocked();
+        if !active {
+            self.pulse_started = None;
+            return std::mem::replace(&mut self.pulse_phase, 0) != 0;
+        }
+        let started = *self.pulse_started.get_or_insert(now);
+        let elapsed = now.saturating_duration_since(started).as_millis() as u64;
+        let phase = ((elapsed / super::PULSE_PHASE_MS) % u64::from(super::PULSE_PHASES)) as u8;
+        std::mem::replace(&mut self.pulse_phase, phase) != phase
+    }
+
+    fn any_blocked(&self) -> bool {
+        use crate::api::schema::AgentStatus;
+        let blocked = |snapshot: &ClientShellSnapshot| {
+            snapshot
+                .agents
+                .iter()
+                .any(|agent| agent.agent_status == AgentStatus::Blocked)
+                || snapshot
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.agent_status == AgentStatus::Blocked)
+        };
+        self.snapshot.as_deref().is_some_and(blocked)
+            || self
+                .endpoints
+                .iter()
+                .filter_map(|endpoint| endpoint.snapshot.as_deref())
+                .any(blocked)
     }
 
     pub(crate) fn timer_delay(&self, now: std::time::Instant) -> std::time::Duration {

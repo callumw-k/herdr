@@ -1286,3 +1286,74 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     assert!(state.visible_notification.is_none());
     assert_eq!(state.pending_notifications.len(), 1);
 }
+
+#[test]
+fn the_pulse_stays_pinned_while_nothing_is_blocked() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    let start = std::time::Instant::now();
+    assert!(!state.tick_pulse(start));
+    assert!(!state.tick_pulse(start + std::time::Duration::from_millis(1000)));
+    assert_eq!(state.pulse_phase, 0);
+}
+
+#[test]
+fn a_blocked_agent_advances_the_pulse_every_phase_interval() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snapshot = snapshot();
+    snapshot.workspaces[0].agent_status = AgentStatus::Blocked;
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    let start = std::time::Instant::now();
+    let ms = std::time::Duration::from_millis;
+
+    assert!(
+        !state.tick_pulse(start),
+        "the first tick starts the clock at phase 0"
+    );
+    assert!(!state.tick_pulse(start + ms(100)));
+    assert!(
+        state.tick_pulse(start + ms(300)),
+        "a phase boundary repaints"
+    );
+    assert_eq!(state.pulse_phase, 1);
+    assert!(state.tick_pulse(start + ms(1200)));
+    assert_eq!(state.pulse_phase, 0, "four phases wrap");
+
+    assert!(state.tick_pulse(start + ms(1500)));
+    assert_eq!(state.pulse_phase, 1);
+
+    let mut cleared = (**state.snapshot.as_ref().expect("snapshot")).clone();
+    cleared.revision = 2;
+    cleared.workspaces[0].agent_status = AgentStatus::Idle;
+    let mut cleared_surface = surface();
+    cleared_surface.projection_revision = 2;
+    state.set_snapshot(Box::new(cleared));
+    state.set_pane_surface(cleared_surface);
+    assert!(
+        state.tick_pulse(start + ms(1800)),
+        "clearing the block resets to phase 0 and repaints once"
+    );
+    assert_eq!(state.pulse_phase, 0);
+    assert!(!state.tick_pulse(start + ms(2100)));
+}
+
+#[test]
+fn status_pulse_off_never_advances() {
+    let mut config = Config::default();
+    config.ui.status_pulse = false;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut snapshot = snapshot();
+    snapshot.workspaces[0].agent_status = AgentStatus::Blocked;
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    let start = std::time::Instant::now();
+    for step in 0..8u64 {
+        assert!(!state.tick_pulse(start + std::time::Duration::from_millis(step * 300)));
+    }
+    assert_eq!(state.pulse_phase, 0);
+}

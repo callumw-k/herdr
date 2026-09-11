@@ -114,6 +114,9 @@ impl ClientShellState {
             return None;
         }
         let layout = self.layout(cols, rows);
+        self.dots_visible = layout.sidebar.width > 0
+            || layout.mobile_header.height > 0
+            || matches!(self.overlay, Some(ClientShellOverlay::Navigator(_)));
         if self.last_tab_bar_width != Some(layout.tab_bar.width) {
             self.last_tab_bar_width = Some(layout.tab_bar.width);
             self.reveal_focused_tab = true;
