@@ -1681,6 +1681,108 @@ async fn public_close_reapplies_controller_geometry() {
     shutdown_test_runtimes(&mut server);
 }
 
+fn side_by_side_workspace(name: &str) -> (crate::workspace::Workspace, crate::layout::PaneId) {
+    let mut workspace = crate::workspace::Workspace::test_new(name);
+    let first_pane = workspace.tabs[0].root_pane;
+    let second_pane = workspace.test_split(ratatui::layout::Direction::Horizontal);
+    workspace.insert_test_runtime(
+        first_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+    );
+    workspace.insert_test_runtime(
+        second_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b""),
+    );
+    (workspace, first_pane)
+}
+
+fn arrangement_request(id: &str) -> crate::api::ApiRequestMessage {
+    let (respond_to, _response_rx) = std::sync::mpsc::channel();
+    crate::api::ApiRequestMessage {
+        request: crate::api::schema::Request {
+            id: id.into(),
+            method: crate::api::schema::Method::TabArrangement(
+                crate::api::schema::TabArrangementParams {
+                    workspace_id: None,
+                    arrangement: Some(crate::api::schema::ArrangementSchema::Horizontal),
+                    forward: true,
+                },
+            ),
+        },
+        respond_to,
+        response_write_complete: None,
+        stream_active: None,
+    }
+}
+
+#[tokio::test]
+async fn shell_arrangement_change_resizes_the_reflowed_panes() {
+    let mut server = test_headless_server();
+    let (workspace, first_pane) = side_by_side_workspace("shell-arrangement-geometry");
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+
+    let (control, _) = connect_test_shell(&mut server, 67, 100, 30);
+    let _ = control.recv().expect("snapshot");
+    let (rows_before, cols_before) =
+        server.app.state.workspaces[0].test_runtimes[&first_pane].current_size();
+    assert!(
+        cols_before < 60,
+        "expected a side-by-side split, got {cols_before} cols"
+    );
+
+    assert!(server.handle_client_shell_api_request(67, arrangement_request("shell-arrangement")));
+
+    let (rows_after, cols_after) =
+        server.app.state.workspaces[0].test_runtimes[&first_pane].current_size();
+    assert!(
+        rows_after < rows_before,
+        "rows {rows_before} -> {rows_after}"
+    );
+    assert!(
+        cols_after > cols_before,
+        "cols {cols_before} -> {cols_after}"
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn public_arrangement_change_resizes_the_reflowed_panes() {
+    let mut server = test_headless_server();
+    let (workspace, first_pane) = side_by_side_workspace("public-arrangement-geometry");
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+
+    let (control, _) = connect_test_shell(&mut server, 68, 100, 30);
+    let _ = control.recv().expect("snapshot");
+    let (rows_before, cols_before) =
+        server.app.state.workspaces[0].test_runtimes[&first_pane].current_size();
+    assert!(
+        cols_before < 60,
+        "expected a side-by-side split, got {cols_before} cols"
+    );
+
+    assert!(
+        server.handle_api_request_with_shutdown_check(arrangement_request("public-arrangement"))
+    );
+
+    let (rows_after, cols_after) =
+        server.app.state.workspaces[0].test_runtimes[&first_pane].current_size();
+    assert!(
+        rows_after < rows_before,
+        "rows {rows_before} -> {rows_after}"
+    );
+    assert!(
+        cols_after > cols_before,
+        "cols {cols_before} -> {cols_after}"
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
 #[tokio::test]
 async fn geometry_reapply_replaces_a_controller_that_left_the_tab() {
     let mut server = test_headless_server();

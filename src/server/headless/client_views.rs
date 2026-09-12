@@ -249,25 +249,32 @@ impl HeadlessServer {
         matches!(
             method,
             Method::CommandInvoke(_)
+                | Method::LayoutApply(_)
                 | Method::LayoutSetSplitRatio(_)
                 | Method::PaneClose(_)
                 | Method::PaneCopyMotion(_)
                 | Method::PaneCopySearch(_)
                 | Method::PaneEditScrollback(_)
+                | Method::PaneFloat(_)
                 | Method::PaneFocus(_)
                 | Method::PaneFocusDirection(_)
                 | Method::PaneInputSet(_)
                 | Method::PaneLinkActivate(_)
+                | Method::PaneMove(_)
                 | Method::PaneRename(_)
                 | Method::PaneResize(_)
                 | Method::PaneScroll(_)
                 | Method::PaneSplit(_)
                 | Method::PaneSwap(_)
                 | Method::PaneZoom(_)
+                | Method::TabArrangement(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabFloatActivate(_)
+                | Method::TabFloatsToggle(_)
                 | Method::TabFocus(_)
                 | Method::TabMove(_)
+                | Method::TabPaneAdd(_)
                 | Method::TabRename(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
@@ -287,18 +294,25 @@ impl HeadlessServer {
         matches!(
             method,
             Method::CommandInvoke(_)
+                | Method::LayoutApply(_)
                 | Method::LayoutSetSplitRatio(_)
                 | Method::PaneClose(_)
                 | Method::PaneEditScrollback(_)
+                | Method::PaneFloat(_)
                 | Method::PaneFocus(_)
                 | Method::PaneFocusDirection(_)
+                | Method::PaneMove(_)
                 | Method::PaneResize(_)
                 | Method::PaneSplit(_)
                 | Method::PaneSwap(_)
                 | Method::PaneZoom(_)
+                | Method::TabArrangement(_)
                 | Method::TabClose(_)
                 | Method::TabCreate(_)
+                | Method::TabFloatActivate(_)
+                | Method::TabFloatsToggle(_)
                 | Method::TabFocus(_)
+                | Method::TabPaneAdd(_)
                 | Method::WorkspaceClose(_)
                 | Method::WorkspaceCreate(_)
                 | Method::WorkspaceFocus(_)
@@ -567,9 +581,20 @@ impl HeadlessServer {
             crate::kitty_graphics::HostCellSize::default()
         };
         let area = Rect::new(0, 0, cols, rows);
+        // Arrangement changes only mark the tab dirty; the tree is rebuilt
+        // lazily at render, which runs after this pass. Resizing against the
+        // stale tree would leave every PTY at its pre-arrangement size.
         if self.app_client_count() == 1 {
-            for (workspace_index, workspace) in self.app.state.workspaces.iter().enumerate() {
-                for tab_index in 0..workspace.tabs.len() {
+            for workspace_index in 0..self.app.state.workspaces.len() {
+                for tab_index in 0..self.app.state.workspaces[workspace_index].tabs.len() {
+                    crate::ui::reflow_tab_for_area(
+                        &mut self.app.state,
+                        crate::ui::TabSurfaceTarget {
+                            workspace_index,
+                            tab_index,
+                        },
+                        area,
+                    );
                     crate::ui::resize_tab_surface(
                         &self.app.state,
                         &self.app.terminal_runtimes,
@@ -581,6 +606,7 @@ impl HeadlessServer {
                 }
             }
         } else {
+            crate::ui::reflow_tab_for_area(&mut self.app.state, target, area);
             crate::ui::compute_tab_surface_for(
                 &self.app.state,
                 &self.app.terminal_runtimes,

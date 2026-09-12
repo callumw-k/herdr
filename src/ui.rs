@@ -94,17 +94,14 @@ fn compute_view_internal(
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) {
-    // The float layer is laid out against its own region, so it has to be
-    // reflowed before the surface reads `float_layout` for pane geometry.
-    let float_region =
-        resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
-            .map(|geometry| geometry.outer);
-    if let Some(tab) = app
-        .active
-        .and_then(|index| app.workspaces.get_mut(index))
-        .and_then(|workspace| workspace.active_tab_mut())
-    {
-        tab.reflow(area, float_region);
+    if let Some(target) = app.active.and_then(|workspace_index| {
+        let workspace = app.workspaces.get(workspace_index)?;
+        Some(TabSurfaceTarget {
+            workspace_index,
+            tab_index: workspace.active_tab_index(),
+        })
+    }) {
+        reflow_tab_for_area(app, target, area);
     }
 
     let TabSurfaceLayout { pane_infos, .. } =
@@ -119,6 +116,21 @@ fn compute_view_internal(
         terminal_area: area,
         pane_infos,
     };
+}
+
+/// Rebuild a dirty tab's tree (and float layer) for `area` before anything
+/// reads or resizes against it; the tree is only regenerated lazily.
+pub(crate) fn reflow_tab_for_area(app: &mut AppState, target: TabSurfaceTarget, area: Rect) {
+    let float_region =
+        resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
+            .map(|geometry| geometry.outer);
+    if let Some(tab) = app
+        .workspaces
+        .get_mut(target.workspace_index)
+        .and_then(|workspace| workspace.tabs.get_mut(target.tab_index))
+    {
+        tab.reflow(area, float_region);
+    }
 }
 
 fn resize_background_tab_panes(
