@@ -16,12 +16,14 @@ pub(super) struct AgentRow {
     pub(super) focused: bool,
     /// Workspace label drawn above the first agent of each workspace in grouped sort.
     pub(super) group: Option<String>,
+    /// Blank line above the group header; every group after the first gets one.
+    pub(super) group_gap: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
 }
 
 impl AgentRow {
     pub(super) fn lines(&self) -> usize {
-        self.rows.len().max(1) + usize::from(self.group.is_some())
+        self.rows.len().max(1) + usize::from(self.group.is_some()) + usize::from(self.group_gap)
     }
 }
 
@@ -317,12 +319,14 @@ pub(super) fn agent_rows(
             );
             let group = (grouped && previous_workspace != Some(workspace.workspace_id.as_str()))
                 .then(|| workspace.label.clone());
+            let group_gap = group.is_some() && previous_workspace.is_some();
             previous_workspace = Some(workspace.workspace_id.as_str());
             Some(AgentRow {
                 pane_id: agent.pane_id.clone(),
                 status: agent.agent_status,
                 focused: agent.focused,
                 group,
+                group_gap,
                 rows,
             })
         })
@@ -358,12 +362,9 @@ pub(super) fn render_agent_row(
         .add_modifier(Modifier::DIM);
     // Context tokens on the entry's first row are the label when a layout has
     // no workspace token there, so they read at full strength; later rows stay
-    // dim as supporting detail.
-    let leading = Style::default().fg(if row.focused {
-        palette.text
-    } else {
-        palette.subtext0
-    });
+    // dim as supporting detail. Regular weight in `text` keeps the label in a
+    // different register from the bold `subtext0` group header.
+    let leading = Style::default().fg(palette.text);
     let icon = (
         status_icon(row.status, config.status_indicators),
         status_dot_style(row.status, palette, pulse_phase),
@@ -377,6 +378,10 @@ pub(super) fn render_agent_row(
         row.rows.clone()
     };
     let mut rect = rect;
+    if row.group_gap {
+        rect.y = rect.y.saturating_add(1);
+        rect.height = rect.height.saturating_sub(1);
+    }
     if let Some(group) = &row.group {
         put_text(
             buffer,
