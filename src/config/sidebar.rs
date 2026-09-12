@@ -10,6 +10,7 @@ use crate::detect::Agent;
 
 const MAX_SIDEBAR_ROWS: usize = 16;
 const MAX_SIDEBAR_TOKENS_PER_ROW: usize = 16;
+const MAX_SIDEBAR_TEXT_CHARS: usize = 32;
 const DEFAULT_SIDEBAR_ROW_GAP: u16 = 0;
 
 fn deserialize_sidebar_rows<'de, D, T>(deserializer: D) -> Result<Vec<Vec<T>>, D::Error>
@@ -117,6 +118,7 @@ pub enum AgentSidebarToken {
     TerminalTitle,
     TerminalTitleStripped,
     Custom(String),
+    Text(String),
     Styled {
         token: Box<AgentSidebarToken>,
         style: SidebarTokenStyle,
@@ -132,6 +134,7 @@ pub enum SpaceSidebarToken {
     Branch,
     GitStatus,
     Custom(String),
+    Text(String),
     Styled {
         token: Box<SpaceSidebarToken>,
         style: SidebarTokenStyle,
@@ -186,16 +189,45 @@ struct RawStyledSidebarToken {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTextSidebarToken {
+    text: String,
+    #[serde(default)]
+    fg: Option<SidebarTokenColor>,
+    #[serde(default)]
+    bold: Option<bool>,
+    #[serde(default)]
+    dim: Option<bool>,
+}
+
+#[derive(Deserialize)]
 #[serde(untagged)]
 enum RawSidebarToken {
     Plain(String),
     Styled(RawStyledSidebarToken),
+    Text(RawTextSidebarToken),
+}
+
+enum RawSidebarTokenParts {
+    Named {
+        name: String,
+        style: Option<SidebarTokenStyle>,
+        rules: Vec<SidebarTokenRule>,
+    },
+    Text {
+        text: String,
+        style: Option<SidebarTokenStyle>,
+    },
 }
 
 impl RawSidebarToken {
-    fn parts(self) -> Result<(String, Option<SidebarTokenStyle>, Vec<SidebarTokenRule>), String> {
+    fn parts(self) -> Result<RawSidebarTokenParts, String> {
         match self {
-            Self::Plain(token) => Ok((token, None, Vec::new())),
+            Self::Plain(name) => Ok(RawSidebarTokenParts::Named {
+                name,
+                style: None,
+                rules: Vec::new(),
+            }),
             Self::Styled(token) => {
                 if token.rules.len() > 16 {
                     return Err("sidebar tokens may contain at most 16 rules".into());
@@ -205,15 +237,37 @@ impl RawSidebarToken {
                 {
                     return Err("sidebar rules require a text-valued token".into());
                 }
-                Ok((
-                    token.token,
-                    Some(SidebarTokenStyle {
+                Ok(RawSidebarTokenParts::Named {
+                    name: token.token,
+                    style: Some(SidebarTokenStyle {
                         fg: token.fg,
                         bold: token.bold,
                         dim: token.dim,
                     }),
-                    token.rules,
-                ))
+                    rules: token.rules,
+                })
+            }
+            Self::Text(token) => {
+                if token.text.is_empty() {
+                    return Err("sidebar text must not be empty".into());
+                }
+                if token.text.chars().count() > MAX_SIDEBAR_TEXT_CHARS {
+                    return Err(format!(
+                        "sidebar text may contain at most {MAX_SIDEBAR_TEXT_CHARS} characters"
+                    ));
+                }
+                if token.text.chars().any(char::is_control) {
+                    return Err("sidebar text must not contain control characters".into());
+                }
+                let style = SidebarTokenStyle {
+                    fg: token.fg,
+                    bold: token.bold,
+                    dim: token.dim,
+                };
+                Ok(RawSidebarTokenParts::Text {
+                    text: token.text,
+                    style: (style != SidebarTokenStyle::default()).then_some(style),
+                })
             }
         }
     }
@@ -243,6 +297,7 @@ where
 }
 
 fn serialize_styled_token<S>(
+    key: &str,
     name: String,
     style: SidebarTokenStyle,
     rules: &[SidebarTokenRule],
@@ -253,7 +308,7 @@ where
 {
     use serde::ser::SerializeMap;
     let mut map = serializer.serialize_map(None)?;
-    map.serialize_entry("token", &name)?;
+    map.serialize_entry(key, &name)?;
     if let Some(fg) = style.fg {
         map.serialize_entry("fg", &fg)?;
     }
@@ -282,7 +337,16 @@ fn agent_token_name(token: &AgentSidebarToken) -> String {
         AgentSidebarToken::TerminalTitle => "terminal_title".into(),
         AgentSidebarToken::TerminalTitleStripped => "terminal_title_stripped".into(),
         AgentSidebarToken::Custom(name) => format!("${name}"),
+        AgentSidebarToken::Text(text) => text.clone(),
         AgentSidebarToken::Styled { token, .. } => agent_token_name(token),
+    }
+}
+
+fn agent_token_key(token: &AgentSidebarToken) -> &'static str {
+    match token {
+        AgentSidebarToken::Text(_) => "text",
+        AgentSidebarToken::Styled { token, .. } => agent_token_key(token),
+        _ => "token",
     }
 }
 
@@ -294,7 +358,16 @@ fn space_token_name(token: &SpaceSidebarToken) -> String {
         SpaceSidebarToken::Branch => "branch".into(),
         SpaceSidebarToken::GitStatus => "git_status".into(),
         SpaceSidebarToken::Custom(name) => format!("${name}"),
+        SpaceSidebarToken::Text(text) => text.clone(),
         SpaceSidebarToken::Styled { token, .. } => space_token_name(token),
+    }
+}
+
+fn space_token_key(token: &SpaceSidebarToken) -> &'static str {
+    match token {
+        SpaceSidebarToken::Text(_) => "text",
+        SpaceSidebarToken::Styled { token, .. } => space_token_key(token),
+        _ => "token",
     }
 }
 
@@ -308,7 +381,20 @@ impl Serialize for AgentSidebarToken {
                 token,
                 style,
                 rules,
-            } => serialize_styled_token(agent_token_name(token), *style, rules, serializer),
+            } => serialize_styled_token(
+                agent_token_key(token),
+                agent_token_name(token),
+                *style,
+                rules,
+                serializer,
+            ),
+            Self::Text(_) => serialize_styled_token(
+                "text",
+                agent_token_name(self),
+                SidebarTokenStyle::default(),
+                &[],
+                serializer,
+            ),
             token => serializer.serialize_str(&agent_token_name(token)),
         }
     }
@@ -325,9 +411,20 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
     where
         D: serde::Deserializer<'de>,
     {
-        let (value, style, rules) = RawSidebarToken::deserialize(deserializer)?
+        let (value, style, rules) = match RawSidebarToken::deserialize(deserializer)?
             .parts()
-            .map_err(serde::de::Error::custom)?;
+            .map_err(serde::de::Error::custom)?
+        {
+            RawSidebarTokenParts::Named { name, style, rules } => (name, style, rules),
+            RawSidebarTokenParts::Text { text, style } => {
+                let token = Self::Text(text);
+                return Ok(style.map_or(token.clone(), |style| Self::Styled {
+                    token: Box::new(token),
+                    style,
+                    rules: Vec::new(),
+                }));
+            }
+        };
         let token = parse_sidebar_token(
             value,
             &[
@@ -362,7 +459,20 @@ impl Serialize for SpaceSidebarToken {
                 token,
                 style,
                 rules,
-            } => serialize_styled_token(space_token_name(token), *style, rules, serializer),
+            } => serialize_styled_token(
+                space_token_key(token),
+                space_token_name(token),
+                *style,
+                rules,
+                serializer,
+            ),
+            Self::Text(_) => serialize_styled_token(
+                "text",
+                space_token_name(self),
+                SidebarTokenStyle::default(),
+                &[],
+                serializer,
+            ),
             token => serializer.serialize_str(&space_token_name(token)),
         }
     }
@@ -379,9 +489,20 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
     where
         D: serde::Deserializer<'de>,
     {
-        let (value, style, rules) = RawSidebarToken::deserialize(deserializer)?
+        let (value, style, rules) = match RawSidebarToken::deserialize(deserializer)?
             .parts()
-            .map_err(serde::de::Error::custom)?;
+            .map_err(serde::de::Error::custom)?
+        {
+            RawSidebarTokenParts::Named { name, style, rules } => (name, style, rules),
+            RawSidebarTokenParts::Text { text, style } => {
+                let token = Self::Text(text);
+                return Ok(style.map_or(token.clone(), |style| Self::Styled {
+                    token: Box::new(token),
+                    style,
+                    rules: Vec::new(),
+                }));
+            }
+        };
         let token = parse_sidebar_token(
             value,
             &[
@@ -664,6 +785,58 @@ rows = [[{ token = "$status", rules = [{ contains = "error", bold = true }] }]]
             let input = format!("[agents]\nrows = [[{{ token = 'machine', rules = [{rules}] }}]]");
             assert_eq!(toml::from_str::<SidebarConfig>(&input).is_ok(), count == 16);
         }
+    }
+
+    #[test]
+    fn literal_text_tokens_parse_style_and_round_trip() {
+        let input = r##"
+[agents]
+rows = [[{ text = "  " }, "state_text", { text = " | ", fg = "#abc", dim = true }]]
+[spaces]
+rows = [[{ text = "» " }, "workspace"]]
+"##;
+        let config: SidebarConfig = toml::from_str(input).expect("literal text config");
+
+        assert_eq!(
+            config.agents.rows[0][0],
+            AgentSidebarToken::Text("  ".into())
+        );
+        let (token, style) = config.agents.rows[0][2].parts();
+        assert_eq!(token, &AgentSidebarToken::Text(" | ".into()));
+        assert_eq!(style.dim, Some(true));
+        assert_eq!(
+            style.fg.unwrap().ratatui(),
+            ratatui::style::Color::Rgb(0xaa, 0xbb, 0xcc)
+        );
+        assert_eq!(
+            config.spaces.rows[0][0],
+            SpaceSidebarToken::Text("» ".into())
+        );
+
+        let encoded = toml::to_string(&config).unwrap();
+        assert_eq!(toml::from_str::<SidebarConfig>(&encoded).unwrap(), config);
+    }
+
+    #[test]
+    fn rejects_malformed_literal_text_tokens() {
+        let long = "x".repeat(MAX_SIDEBAR_TEXT_CHARS + 1);
+        for entry in [
+            r#"{ text = "" }"#.to_string(),
+            r#"{ text = "a\tb" }"#.to_string(),
+            r#"{ text = "a\u001bb" }"#.to_string(),
+            format!(r#"{{ text = "{long}" }}"#),
+            r#"{ text = " ", token = "agent" }"#.to_string(),
+            r#"{ text = " ", rules = [{ equals = "x", bold = true }] }"#.to_string(),
+        ] {
+            let input = format!("[ui.sidebar.agents]\nrows = [[{entry}]]\n");
+            assert!(
+                toml::from_str::<crate::config::Config>(&input).is_err(),
+                "accepted {entry}"
+            );
+        }
+        let ok = "x".repeat(MAX_SIDEBAR_TEXT_CHARS);
+        let input = format!("[ui.sidebar.agents]\nrows = [[{{ text = \"{ok}\" }}]]\n");
+        assert!(toml::from_str::<crate::config::Config>(&input).is_ok());
     }
 
     #[test]

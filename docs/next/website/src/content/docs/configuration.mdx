@@ -413,6 +413,18 @@ rows = [
 
 `fg` accepts strict `#RGB` or `#RRGGBB`. `bold` and `dim` accept booleans. Omitted fields preserve the token's contextual style; explicit `false` removes that modifier. Styling applies to one occurrence, so the same token may look different in another row or agent override. A foreground override replaces all semantic foregrounds inside that occurrence: for example, styled `git_status` ahead and behind counts use one color instead of their default green and red. Token styles never change separators or row backgrounds.
 
+A `text` entry places literal text in a row, for indentation or a custom separator:
+
+```toml
+[ui.sidebar.agents]
+rows = [
+  ["state_icon", "activity"],
+  [{ text = "  " }, "state_text", { text = " | ", dim = true }, "agent"],
+]
+```
+
+Literal text takes the same `fg`, `bold`, and `dim` fields, never accepts `rules`, and gets no ` · ` separator on either side. It is never truncated or dropped when the sidebar is narrow. A row whose only values are literal text disappears, so an indent on an empty row leaves no blank line. Text must be 1 to 32 characters with no control characters.
+
 Text-valued tokens also accept up to 16 ordered `rules`. Each rule contains exactly one condition—`equals`, `contains`, `starts_with`, `gt`, or `lt`—and optional `fg`, `bold`, and `dim` overrides:
 
 ```toml

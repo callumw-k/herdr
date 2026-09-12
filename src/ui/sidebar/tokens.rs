@@ -22,6 +22,7 @@ pub(crate) enum ResolvedTokenKind {
     Branch(String),
     GitStatus { ahead: usize, behind: usize },
     Custom(String),
+    Text(String),
 }
 
 impl ResolvedTokenKind {
@@ -36,9 +37,17 @@ impl ResolvedTokenKind {
             | Self::TerminalTitle(value)
             | Self::Branch(value)
             | Self::Custom(value) => Some(value),
-            Self::StateIcon | Self::GitStatus { .. } => None,
+            Self::StateIcon | Self::GitStatus { .. } | Self::Text(_) => None,
         }
     }
+
+    fn is_literal(&self) -> bool {
+        matches!(self, Self::Text(_))
+    }
+}
+
+fn has_resolved_value(row: &[ResolvedToken]) -> bool {
+    row.iter().any(|token| !token.kind.is_literal())
 }
 
 impl ResolvedToken {
@@ -124,6 +133,9 @@ pub(crate) fn agent_rows(
                             .get(name)
                             .cloned()
                             .map(ResolvedTokenKind::Custom),
+                        AgentSidebarToken::Text(text) => {
+                            Some(ResolvedTokenKind::Text(text.clone()))
+                        }
                         AgentSidebarToken::Styled { .. } => None,
                     }?;
                     let style = kind
@@ -132,7 +144,7 @@ pub(crate) fn agent_rows(
                     Some(ResolvedToken::new(kind, style))
                 })
                 .collect::<Vec<_>>();
-            (!resolved.is_empty()).then_some(resolved)
+            has_resolved_value(&resolved).then_some(resolved)
         })
         .collect()
 }
@@ -192,6 +204,9 @@ pub(crate) fn space_rows(
                             .get(name)
                             .cloned()
                             .map(ResolvedTokenKind::Custom),
+                        SpaceSidebarToken::Text(text) => {
+                            Some(ResolvedTokenKind::Text(text.clone()))
+                        }
                         SpaceSidebarToken::Styled { .. } => None,
                     }?;
                     let style = kind
@@ -200,13 +215,15 @@ pub(crate) fn space_rows(
                     Some(ResolvedToken::new(kind, style))
                 })
                 .collect::<Vec<_>>();
-            (!resolved.is_empty()).then_some(resolved)
+            has_resolved_value(&resolved).then_some(resolved)
         })
         .collect()
 }
 
 pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'static str {
-    if matches!(previous.kind, ResolvedTokenKind::StateIcon)
+    if previous.kind.is_literal() || current.kind.is_literal() {
+        ""
+    } else if matches!(previous.kind, ResolvedTokenKind::StateIcon)
         || matches!(current.kind, ResolvedTokenKind::GitStatus { .. })
     {
         " "
@@ -420,6 +437,42 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
                 "pi".into()
             ))]
         );
+    }
+
+    #[test]
+    fn literal_text_pads_rows_without_separators_or_keeping_empty_rows_alive() {
+        let entry = entry();
+        let config = AgentsSidebarConfig {
+            rows: vec![
+                vec![
+                    AgentSidebarToken::Text("  ".into()),
+                    AgentSidebarToken::Custom("missing".into()),
+                ],
+                vec![
+                    AgentSidebarToken::Text("  ".into()),
+                    AgentSidebarToken::Agent,
+                    AgentSidebarToken::Text(" | ".into()),
+                    AgentSidebarToken::StateText,
+                ],
+            ],
+            ..Default::default()
+        };
+
+        let rows = agent_rows(&config, context(&entry), "working");
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0],
+            vec![
+                ResolvedToken::unstyled(ResolvedTokenKind::Text("  ".into())),
+                ResolvedToken::unstyled(ResolvedTokenKind::Agent("pi".into())),
+                ResolvedToken::unstyled(ResolvedTokenKind::Text(" | ".into())),
+                ResolvedToken::unstyled(ResolvedTokenKind::StateText("working".into())),
+            ]
+        );
+        assert_eq!(separator(&rows[0][0], &rows[0][1]), "");
+        assert_eq!(separator(&rows[0][1], &rows[0][2]), "");
+        assert_eq!(separator(&rows[0][2], &rows[0][3]), "");
     }
 
     #[test]
