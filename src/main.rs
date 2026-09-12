@@ -1,13 +1,5 @@
 use std::io;
 
-use crossterm::event::{
-    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-    EnableFocusChange, EnableMouseCapture,
-};
-#[cfg(not(windows))]
-use crossterm::event::{PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
-use crossterm::execute;
-
 pub(crate) const HERDR_ENV_VAR: &str = "HERDR_ENV";
 pub(crate) const HERDR_ENV_VALUE: &str = "1";
 const NESTED_HERDR_MESSAGES: [&str; 6] = [
@@ -19,41 +11,6 @@ const NESTED_HERDR_MESSAGES: [&str; 6] = [
     "recursion detected. base case not found. aborting.",
 ];
 
-#[cfg(not(windows))]
-fn push_keyboard_enhancement_flags() -> io::Result<()> {
-    execute!(
-        io::stdout(),
-        PushKeyboardEnhancementFlags(crate::input::ime_compatible_keyboard_enhancement_flags())
-    )
-}
-
-#[cfg(windows)]
-fn push_keyboard_enhancement_flags() -> io::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn pop_keyboard_enhancement_flags() -> io::Result<()> {
-    execute!(io::stdout(), PopKeyboardEnhancementFlags)
-}
-
-#[cfg(windows)]
-fn pop_keyboard_enhancement_flags() -> io::Result<()> {
-    Ok(())
-}
-
-fn set_host_color_scheme_reports(enabled: bool) -> io::Result<()> {
-    use std::io::Write;
-
-    let sequence = if enabled {
-        crate::terminal_theme::HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE
-    } else {
-        crate::terminal_theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE
-    };
-    io::stdout().write_all(sequence.as_bytes())?;
-    io::stdout().flush()
-}
-
 mod agent_resume;
 mod api;
 mod app;
@@ -62,8 +19,10 @@ mod checksum;
 mod cli;
 mod client;
 mod config;
+mod copy_mode;
 mod detect;
 mod events;
+mod fuzzy;
 mod ghostty;
 mod handoff_runtime;
 mod input;
@@ -102,10 +61,6 @@ mod ui;
 mod update;
 mod workspace;
 mod worktree;
-
-fn init_logging() {
-    crate::logging::init_file_logging("herdr.log");
-}
 
 const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Place this file at ~/.config/herdr/config.toml
@@ -160,10 +115,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # "current" for Herdr's process directory, or a fixed path such as "~/Projects".
 # new_cwd = "follow"
 
-# Repos you work in often. Entering one of these directories in the focused
-# pane creates a workspace pinned to it and moves the pane there.
-# [[repos]]
-# path = "~/Projects/herdr"
+# Render pane images in Kitty graphics-compatible outer terminals.
+# kitty_graphics = true
 
 [update]
 # Update channel used by background version checks and `herdr update`.
@@ -196,8 +149,6 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # open_notification_target = "prefix+o"
 # workspace_picker = "prefix+w"
 # goto = "prefix+g"
-# pin_workspace_path = "prefix+."
-# toggle_declared_repo = "prefix+>"
 # new_workspace = "prefix+shift+n"
 # new_worktree = "prefix+shift+g"
 # open_worktree = ""    # optional, unset by default
@@ -334,9 +285,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Ask for a workspace name before interactive creation.
 # prompt_new_workspace_name = false
 
-# Draw borders around split panes, and a one-row title strip above a lone pane
-# so its name is visible without splitting.
-# pane_borders = true
+# Draw borders around split panes.
+# "auto" draws them only for split panes, "always" also frames a lone pane
+# (only while pane_outer_borders is enabled), "off" disables them.
+# Legacy booleans still parse: true = "auto", false = "off".
+# pane_borders = "auto"
 
 # Draw borders along the outside edge of the pane area.
 # Disable for tmux-style internal splitters without an outside frame.
@@ -349,7 +302,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Keep split panes visually separated instead of sharing divider borders.
 # pane_gaps = true
 
-# Show detected/reported agent labels in split pane borders when no manual pane name is set.
+# Use detected/reported agent names as pane border titles. Off, an agent pane
+# still shows its own terminal title, then its directory, then its number.
 # show_agent_labels_on_pane_borders = false
 
 # Hide the tab row when a workspace has exactly one tab.
@@ -381,8 +335,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # distinct static glyphs for blocked, working, done, idle, and unknown states.
 # status_indicators = "dots"
 
-# Expanded agent rows. Built-ins are state_icon, state_text, workspace, tab, pane, agent,
-# activity, terminal_title, and terminal_title_stripped.
+# Expanded agent rows. Built-ins are state_icon, state_text, machine, workspace, tab,
+# pane, agent, activity, terminal_title, and terminal_title_stripped.
 # activity resolves to the first of terminal_title_stripped, pane, or agent that is set.
 # Custom values reported through pane metadata use a $name token.
 # A token occurrence may be styled with { token = "workspace", fg = "#89b4fa", bold = true, dim = false }.
@@ -390,14 +344,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # [ui.sidebar.agents]
 # Blank rows between agent entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
-# rows = [["workspace", "tab"], ["activity"]]
-# The Agent panel prints a space name header above each run of agents from the
-# same space and drops the workspace token from those rows, so a row left with
-# no values disappears. Custom view sorts and priority ordering keep the token
-# and print no headers.
+# rows = [["machine", "workspace", "tab"], ["activity"]]
 # Optional canonical agent IDs replace the default rows for matching agents.
 # [ui.sidebar.agents.rows_by_agent]
-# claude = [["state_icon", "workspace", "tab"], ["terminal_title_stripped"], ["agent"]]
+# claude = [["state_icon", "machine", "workspace", "tab"], ["terminal_title_stripped"], ["agent"]]
 
 # Expanded space rows. Built-ins are state_icon, state_text, workspace, branch, and git_status.
 # Custom values reported through workspace metadata use a $name token, for example $jj_status.
@@ -462,9 +412,6 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 [experimental]
 # Allow launching herdr from inside a herdr-managed pane.
 # allow_nested = false
-# Experimental local Kitty graphics rendering for attached clients.
-# Requires a Kitty graphics-compatible outer terminal.
-# kitty_graphics = false
 # Save recent pane screen history across full server restarts.
 pane_history = false
 # While prefix mode is active, temporarily switch the host input source to
@@ -649,6 +596,7 @@ fn main() -> io::Result<()> {
         println!("       herdr completion zsh");
         println!("       herdr update [--handoff]");
         println!("       herdr channel set <stable|preview>");
+        println!("       herdr machine <subcommand> ...");
         println!("       herdr server stop");
         println!("       herdr server reload-config");
         println!("       herdr api <subcommand> ...");
@@ -693,6 +641,7 @@ fn main() -> io::Result<()> {
                 "herdr channel <subcommand>",
                 "Manage the stable or preview update channel",
             ),
+            ("herdr machine <subcommand>", "Manage saved SSH machines"),
             (
                 "herdr api <subcommand>",
                 "Inspect socket API metadata and live runtime state",
@@ -734,7 +683,6 @@ fn main() -> io::Result<()> {
         println!("  {:<32} Run as headless server", "herdr server");
         println!();
         println!("Options:");
-        println!("  --no-session        Run monolithically (no server/client, escape hatch)");
         println!("  --session <name>    Use or create a named persistent session");
         println!("  --remote <target>   Attach through SSH to a remote Herdr server");
         println!("  --remote-keybindings <local|server>");
@@ -774,7 +722,6 @@ fn main() -> io::Result<()> {
 
     // Reject unknown flags
     let known_flags = [
-        "--no-session",
         "--session",
         "--remote",
         "--remote-keybindings",
@@ -801,6 +748,7 @@ fn main() -> io::Result<()> {
                 "status",
                 "config",
                 "channel",
+                "machine",
                 "workspace",
                 "worktree",
                 "pane",
@@ -828,135 +776,13 @@ fn main() -> io::Result<()> {
     let loaded_config = config::Config::load();
     exit_if_nested_disabled(&loaded_config.config);
 
-    let no_session = args.iter().any(|a| a == "--no-session");
-
-    // Auto-detect launch: when --no-session is NOT set, use server/client mode.
-    // Check if a server is running, spawn one if needed, then attach as client.
-    if !no_session {
-        if let Err(err) = server::autodetect::auto_detect_launch() {
-            eprintln!("herdr: {err}");
-            std::process::exit(1);
-        }
-        return Ok(());
+    let saved_federation =
+        client::endpoint::EndpointCatalog::load().is_ok_and(|catalog| catalog.has_enabled_ssh());
+    if let Err(err) = server::autodetect::auto_detect_launch(saved_federation) {
+        eprintln!("herdr: {err}");
+        std::process::exit(1);
     }
-
-    // --- Monolithic mode (--no-session escape hatch) ---
-    // This is the pre-mission single-process behavior.
-
-    init_logging();
-
-    let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
-    let event_hub = api::EventHub::default();
-    let _api_server = match api::start_server_with_capabilities(api_tx, event_hub.clone(), None) {
-        Ok(server) => server,
-        Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
-            eprintln!("error: herdr is already running");
-            eprintln!("socket: {}", api::socket_path().display());
-            std::process::exit(1);
-        }
-        Err(err) => return Err(err),
-    };
-
-    let modify_other_keys_mode = crate::input::host_modify_other_keys_mode();
-
-    let original_hook = std::panic::take_hook();
-    let panic_resets_modify_other_keys = modify_other_keys_mode.is_some();
-    std::panic::set_hook(Box::new(move |info| {
-        tracing::error!("PANIC: {info}");
-        if panic_resets_modify_other_keys {
-            let _ = std::io::Write::write_all(&mut io::stdout(), b"\x1b[>4;0m");
-        }
-        if crate::kitty_graphics::is_enabled() {
-            let _ = crate::kitty_graphics::clear_all_host_graphics();
-        }
-        let _ = execute!(
-            io::stdout(),
-            DisableFocusChange,
-            DisableBracketedPaste,
-            DisableMouseCapture
-        );
-        let _ = crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout());
-        let _ = set_host_color_scheme_reports(false);
-        let _ = pop_keyboard_enhancement_flags();
-        ratatui::restore();
-        original_hook(info);
-    }));
-
-    let config = &loaded_config.config;
-    let config_diagnostic = config::config_diagnostic_summary(&loaded_config.diagnostics);
-    logging::startup("app");
-
-    // Background update check (non-blocking, best-effort)
-    // Only checks for newer versions and notifies the TUI.
-    // Skipped in --no-session mode (testing).
-
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("failed to create tokio runtime");
-
-    let result = rt.block_on(async {
-        let mut terminal = ratatui::init();
-        crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
-        if config.ui.mouse_capture {
-            execute!(io::stdout(), EnableMouseCapture)?;
-        } else {
-            execute!(io::stdout(), DisableMouseCapture)?;
-        }
-        execute!(io::stdout(), EnableBracketedPaste, EnableFocusChange)?;
-        set_host_color_scheme_reports(true)?;
-        push_keyboard_enhancement_flags()?;
-
-        // Some hosts do not honor Kitty keyboard enhancement pushes for
-        // Shift+Enter. Enable xterm modifyOtherKeys only on hosts where we
-        // know it is needed and parseable, so modified Enter stays distinct.
-        if let Some(mode) = modify_other_keys_mode {
-            use std::io::Write;
-            std::io::stdout().write_all(mode.set_sequence())?;
-            std::io::stdout().flush()?;
-        }
-
-        let mut app = app::App::new(
-            config,
-            true, // no_session — monolithic mode never saves/restores sessions
-            config_diagnostic,
-            api_rx,
-            event_hub,
-        );
-        let result = app.run(&mut terminal).await;
-
-        // Reset modifyOtherKeys if we enabled it.
-        if modify_other_keys_mode.is_some() {
-            use std::io::Write;
-            std::io::stdout().write_all(b"\x1b[>4;0m")?;
-            std::io::stdout().flush()?;
-        }
-
-        if crate::kitty_graphics::is_enabled() {
-            crate::kitty_graphics::clear_all_host_graphics()?;
-        }
-        pop_keyboard_enhancement_flags()?;
-        execute!(
-            io::stdout(),
-            DisableFocusChange,
-            DisableBracketedPaste,
-            DisableMouseCapture
-        )?;
-        crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
-        set_host_color_scheme_reports(false)?;
-        ratatui::restore();
-
-        // Drop app (and all workspaces/panes) before runtime shuts down
-        drop(app);
-
-        result
-    });
-
-    // Shut down runtime immediately — kills lingering PTY reader/writer tasks
-    rt.shutdown_timeout(std::time::Duration::from_millis(100));
-
-    logging::shutdown("app");
-    result
+    Ok(())
 }
 
 #[cfg(test)]

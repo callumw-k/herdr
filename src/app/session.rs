@@ -12,7 +12,8 @@ enum SessionSaveJob {
 
 impl App {
     pub(super) fn schedule_session_save(&mut self) {
-        if !self.no_session {
+        if self.policy.persist_session {
+            self.pane_exit_checkpoint_pending = false;
             self.session_save_deadline = Some(Instant::now() + SESSION_SAVE_DEBOUNCE);
         }
     }
@@ -46,9 +47,6 @@ impl App {
                 &self.terminal_runtimes,
                 self.state.active,
                 self.state.selected,
-                self.state.sidebar_width,
-                self.state.sidebar_section_split,
-                self.state.collapsed_space_keys.clone(),
             );
             let history = self.persist_pane_history.then(|| {
                 crate::persist::capture_history(&self.state.workspaces, &self.terminal_runtimes)
@@ -58,7 +56,7 @@ impl App {
     }
 
     pub(crate) fn start_background_session_save(&mut self) {
-        if self.no_session {
+        if !self.policy.persist_session {
             self.session_save_deadline = None;
             return;
         }
@@ -70,6 +68,7 @@ impl App {
         }
 
         let job = self.capture_session_save_job();
+        self.pane_exit_checkpoint_pending = false;
         self.session_save_deadline = None;
         match std::thread::Builder::new()
             .name("herdr-session-save".into())
@@ -88,13 +87,40 @@ impl App {
             let _ = thread.join();
         }
 
-        if self.no_session {
+        if !self.policy.persist_session {
             self.session_save_deadline = None;
             return;
         }
 
         run_session_save_job(self.capture_session_save_job());
+        self.pane_exit_checkpoint_pending = false;
         self.session_save_deadline = None;
+    }
+
+    pub(crate) fn checkpoint_session_before_pane_exit(&mut self) {
+        if !self.policy.persist_session
+            || (self.pane_exit_checkpoint_pending && !self.state.session_dirty)
+        {
+            return;
+        }
+        self.save_session_now();
+        self.pane_exit_checkpoint_pending = true;
+        self.state.session_dirty = false;
+    }
+
+    pub(crate) fn finish_checkpointed_pane_exit(&mut self) {
+        if self.pane_exit_checkpoint_pending {
+            self.state.session_dirty = false;
+            self.session_save_deadline = Some(Instant::now() + SESSION_SAVE_DEBOUNCE);
+        }
+    }
+
+    pub(crate) fn save_session_on_shutdown(&mut self) {
+        if self.pane_exit_checkpoint_pending && !self.state.session_dirty {
+            self.session_save_deadline = None;
+            return;
+        }
+        self.save_session_now();
     }
 }
 

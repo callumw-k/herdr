@@ -165,6 +165,11 @@ pub enum DirectionSnapshot {
 /// Mirrors `Arrangement` for the on-disk format so a session snapshot round
 /// trips the tab's arrangement without depending on the layout module's enum
 /// representation.
+///
+/// A snapshot written before arrangements existed carries a hand-built BSP
+/// tree. Grid is the arrangement that keeps every one of those panes visible
+/// when the tab is next reflowed, so it is the legacy default even though a
+/// tab created today starts Stacked (`Arrangement::default`).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArrangementSnapshot {
     Vertical,
@@ -174,7 +179,7 @@ pub enum ArrangementSnapshot {
     Stacked,
 }
 
-/// The float layer defaults to Stacked, unlike the tiled layer's Grid.
+/// The float layer has no legacy tree to preserve, so it takes the live default.
 fn stacked_arrangement() -> ArrangementSnapshot {
     ArrangementSnapshot::Stacked
 }
@@ -326,9 +331,6 @@ pub fn capture(
     terminal_runtimes: &TerminalRuntimeRegistry,
     active: Option<usize>,
     selected: usize,
-    sidebar_width: u16,
-    sidebar_section_split: f32,
-    collapsed_space_keys: std::collections::HashSet<String>,
 ) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
@@ -338,9 +340,9 @@ pub fn capture(
             .collect(),
         active,
         selected,
-        sidebar_width: Some(sidebar_width),
-        sidebar_section_split: Some(sidebar_section_split),
-        collapsed_space_keys,
+        sidebar_width: None,
+        sidebar_section_split: None,
+        collapsed_space_keys: std::collections::HashSet::new(),
     }
 }
 
@@ -623,9 +625,6 @@ mod tests {
             terminal_runtimes,
             state.active,
             state.selected,
-            state.sidebar_width,
-            state.sidebar_section_split,
-            state.collapsed_space_keys.clone(),
         )
     }
 
@@ -959,16 +958,13 @@ mod tests {
     }
 
     #[test]
-    fn capture_contract_tracks_sidebar_state() {
-        let mut state = state_with_workspaces(&["one"]);
-        state.sidebar_width = 31;
-        state.sidebar_section_split = 0.4;
-        state.collapsed_space_keys.insert("repo-key".into());
+    fn capture_contract_omits_legacy_server_chrome_state() {
+        let state = state_with_workspaces(&["one"]);
 
         let snapshot = capture_from_state(&state);
-        assert_eq!(snapshot.sidebar_width, Some(31));
-        assert_eq!(snapshot.sidebar_section_split, Some(0.4));
-        assert!(snapshot.collapsed_space_keys.contains("repo-key"));
+        assert_eq!(snapshot.sidebar_width, None);
+        assert_eq!(snapshot.sidebar_section_split, None);
+        assert!(snapshot.collapsed_space_keys.is_empty());
     }
 
     #[test]
@@ -1012,7 +1008,11 @@ mod tests {
         let mut state = state_with_workspaces(&["one"]);
         let root = state.workspaces[0].tabs[0].root_pane;
         let second = state.workspaces[0].test_split(Direction::Horizontal);
-        crate::ui::compute_view(&mut state, Rect::new(0, 0, 106, 20));
+        crate::ui::compute_view_with_runtime_registry(
+            &mut state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 106, 20),
+        );
 
         state.navigate_pane(NavDirection::Right);
 
@@ -1027,7 +1027,11 @@ mod tests {
         let root = state.workspaces[0].tabs[0].root_pane;
         state.workspaces[0].test_split(Direction::Horizontal);
         state.workspaces[0].layout.focus_pane(root);
-        crate::ui::compute_view(&mut state, Rect::new(0, 0, 106, 20));
+        crate::ui::compute_view_with_runtime_registry(
+            &mut state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 106, 20),
+        );
         let before = capture_from_state(&state);
 
         state.resize_pane(NavDirection::Right);
@@ -1412,7 +1416,7 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_without_an_arrangement_restores_as_grid() {
+    fn a_legacy_snapshot_restores_as_grid_to_keep_its_panes_visible() {
         let json = r#"{
             "layout": {"Pane": 1},
             "panes": {},

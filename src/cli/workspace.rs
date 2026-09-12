@@ -42,7 +42,6 @@ fn workspace_list(args: &[String]) -> std::io::Result<i32> {
 
 fn workspace_create(args: &[String]) -> std::io::Result<i32> {
     let mut cwd = None;
-    let mut path = None;
     let mut focus = false;
     let mut label = None;
     let mut env = HashMap::new();
@@ -56,14 +55,6 @@ fn workspace_create(args: &[String]) -> std::io::Result<i32> {
                     return Ok(2);
                 };
                 cwd = Some(value.clone());
-                index += 2;
-            }
-            "--path" => {
-                let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for --path");
-                    return Ok(2);
-                };
-                path = Some(value.clone());
                 index += 2;
             }
             "--label" => {
@@ -105,8 +96,8 @@ fn workspace_create(args: &[String]) -> std::io::Result<i32> {
     }
 
     super::runtime::workspace_create(WorkspaceCreateParams {
+        source_workspace_id: None,
         cwd,
-        path,
         focus,
         label,
         env,
@@ -258,28 +249,31 @@ fn workspace_report_metadata(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn workspace_close(args: &[String]) -> std::io::Result<i32> {
-    let Some(raw_workspace_id) = args.first() else {
-        eprintln!("usage: herdr workspace close <workspace_id>");
-        return Ok(2);
+    let (raw_workspace_id, close_group) = match args {
+        [workspace_id] => (workspace_id, false),
+        [workspace_id, flag] if flag == "--group" => (workspace_id, true),
+        _ => {
+            eprintln!("usage: herdr workspace close <workspace_id> [--group]");
+            return Ok(2);
+        }
     };
-    if args.len() != 1 {
-        eprintln!("usage: herdr workspace close <workspace_id>");
-        return Ok(2);
-    }
 
-    super::runtime::workspace_close(super::normalize_workspace_id(raw_workspace_id))
+    super::runtime::workspace_close(crate::api::schema::WorkspaceCloseParams {
+        workspace_id: super::normalize_workspace_id(raw_workspace_id),
+        close_group,
+    })
 }
 
 fn print_workspace_help() {
     eprintln!("herdr workspace commands:");
     eprintln!("  herdr workspace list");
-    eprintln!("  herdr workspace create [--cwd PATH] [--path PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]");
+    eprintln!("  herdr workspace create [--cwd PATH] [--label TEXT] [--env KEY=VALUE] [--focus] [--no-focus]");
     eprintln!("  herdr workspace get <workspace_id>");
     eprintln!("  herdr workspace focus <workspace_id>");
     eprintln!("  herdr workspace rename <workspace_id> <label>");
     eprintln!("  herdr workspace set-path <workspace_id> [PATH | --clear]");
     eprintln!("  herdr workspace report-metadata <workspace_id> --source ID [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
-    eprintln!("  herdr workspace close <workspace_id>");
+    eprintln!("  herdr workspace close <workspace_id> [--group]");
 }
 
 #[cfg(test)]

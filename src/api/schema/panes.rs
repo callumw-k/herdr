@@ -60,10 +60,45 @@ pub struct TabFloatsToggleParams {
     pub mode: PaneZoomMode,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct TabFloatActivateParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct TabArrangementParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// Set this arrangement outright. Unset cycles instead, in `forward`'s
+    /// direction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrangement: Option<ArrangementSchema>,
+    #[serde(default)]
+    pub forward: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
+pub struct TabPaneAddParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PaneInputSetParams {
     pub pane_id: String,
     pub right_click: PaneRightClickTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneLinkActivateParams {
+    pub pane_id: String,
+    pub viewport_row: u16,
+    pub col: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_from_bottom: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -190,17 +225,18 @@ pub struct LayoutDescription {
     pub tab_id: String,
     pub zoomed: bool,
     pub focused_pane_id: String,
-    pub arrangement: ArrangementSchema,
-    #[serde(default = "stacked_arrangement_schema")]
-    pub float_arrangement: ArrangementSchema,
+    #[serde(default = "stacked_layout_arrangement_schema")]
+    pub arrangement: LayoutArrangementSchema,
+    #[serde(default = "stacked_layout_arrangement_schema")]
+    pub float_arrangement: LayoutArrangementSchema,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub float_root: Option<LayoutNode>,
     pub root: LayoutNode,
 }
 
 /// Older clients omit this field; both layers default to Stacked.
-fn stacked_arrangement_schema() -> ArrangementSchema {
-    ArrangementSchema::Stacked
+fn stacked_layout_arrangement_schema() -> LayoutArrangementSchema {
+    LayoutArrangementSchema::Stacked
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -232,6 +268,23 @@ pub enum ArrangementSchema {
     Horizontal,
     Grid,
     Stacked,
+}
+
+/// The whole-tab pane arrangement, as reported in a layout snapshot. Kept
+/// distinct from `ArrangementSchema` (the `tab.arrangement` request enum) so
+/// this response-only fallback variant never reshapes that request's frozen
+/// contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LayoutArrangementSchema {
+    Vertical,
+    Horizontal,
+    Grid,
+    Stacked,
+    /// A value this client does not know. Servers never emit it; clients
+    /// treat it as the default arrangement.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema, Default)]
@@ -275,6 +328,75 @@ pub struct PaneResizeParams {
     pub direction: PaneDirection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneScrollParams {
+    pub pane_id: String,
+    pub offset_from_bottom: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneTextPoint {
+    pub row: u32,
+    pub col: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneSelectionReadParams {
+    pub pane_id: String,
+    pub anchor: PaneTextPoint,
+    pub cursor: PaneTextPoint,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneCopyMotion {
+    LineEnd,
+    FirstNonBlank,
+    NextWordStart,
+    PreviousWordStart,
+    NextWordEnd,
+    NextBigWordStart,
+    PreviousBigWordStart,
+    NextBigWordEnd,
+    PreviousParagraph,
+    NextParagraph,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneCopyMotionParams {
+    pub pane_id: String,
+    pub cursor: PaneTextPoint,
+    pub motion: PaneCopyMotion,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneCopySearchDirection {
+    Forward,
+    Backward,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneTextRange {
+    pub start: PaneTextPoint,
+    pub end: PaneTextPoint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneCopySearchParams {
+    pub pane_id: String,
+    pub query: String,
+    pub direction: PaneCopySearchDirection,
+    pub cursor: PaneTextPoint,
+    pub content_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<PaneTextRange>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]

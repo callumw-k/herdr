@@ -262,11 +262,7 @@ impl Tab {
         self.float_layout.as_ref().map(TileLayout::focused)
     }
 
-    /// Focus resolves to the focused float when the floating layer holds focus,
-    /// otherwise to the tiled layer. `layout.focused()` keeps tracking the
-    /// tiled focus independently, so returning to it needs no saved-focus field.
-    /// The pane ids of whichever layer holds focus. Cycling and directional
-    /// movement both stay within one layer, because the layers overlap.
+    #[cfg(test)]
     pub fn focused_layer_pane_ids(&self) -> Vec<PaneId> {
         if self.float_focused && !self.floats_hidden {
             self.floats()
@@ -280,6 +276,22 @@ impl Tab {
             .then(|| self.focused_float())
             .flatten()
             .unwrap_or_else(|| self.layout.focused())
+    }
+
+    /// Every pane a client can currently see on this tab: the zoomed pane or
+    /// the whole tiled layer, plus the float layer while it is shown. Input
+    /// routing, immediate PTY sources and graphics visibility all read this
+    /// so no single path can forget the float layer.
+    pub fn visible_pane_ids(&self) -> Vec<PaneId> {
+        let mut ids = if self.zoomed {
+            vec![self.layout.focused()]
+        } else {
+            self.layout.pane_ids()
+        };
+        if !self.floats_hidden {
+            ids.extend(self.floats());
+        }
+        ids
     }
 
     pub fn push_float(&mut self, pane_id: PaneId, pane_state: PaneState) {
@@ -356,36 +368,6 @@ impl Tab {
             self.float_focused = true;
         }
         true
-    }
-
-    #[cfg(test)]
-    pub fn split_focused(
-        &mut self,
-        direction: Direction,
-        rows: u16,
-        cols: u16,
-        cwd: Option<PathBuf>,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: crate::terminal_theme::TerminalTheme,
-        host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        launch_env: &PaneLaunchEnv,
-    ) -> std::io::Result<NewPane> {
-        self.split_pane_with_runtime(
-            self.layout.focused(),
-            true,
-            direction,
-            None,
-            rows,
-            cols,
-            cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            launch_env,
-            None,
-        )
     }
 
     pub fn split_focused_command(

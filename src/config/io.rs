@@ -619,11 +619,22 @@ pub fn remove_section_key(content: &str, section: &str, key: &str) -> String {
 }
 
 /// Add a `[[repos]]` entry for `path`, or drop every entry that already
-/// declares it. Paths are compared after expansion so a `~` entry matches the
-/// absolute directory it names. Returns the new content and whether the path
-/// ended up declared.
-pub fn toggle_repo_path(content: &str, path: &Path) -> (String, bool) {
+/// declares it. Each block is parsed as TOML so comments, escapes and extra
+/// keys do not hide a match. Paths are compared after expansion so a `~`
+/// entry matches the absolute directory it names. Returns the new content and
+/// whether the path ended up declared.
+pub fn toggle_repo_path(content: &str, path: &Path) -> Result<(String, bool), String> {
     let lines: Vec<&str> = content.lines().collect();
+    if lines.iter().any(|line| {
+        let trimmed = line.trim_start();
+        trimmed
+            .strip_prefix("repos")
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    }) {
+        return Err(
+            "repos is declared as an inline array in config.toml; edit it by hand".to_string(),
+        );
+    }
     let mut result: Vec<String> = Vec::new();
     let mut removed = false;
     let mut i = 0;
@@ -637,13 +648,12 @@ pub fn toggle_repo_path(content: &str, path: &Path) -> (String, bool) {
 
         let start = i;
         i += 1;
-        let mut declares_path = false;
         while i < lines.len() && toml_table_header_name(lines[i].trim()).is_none() {
-            if let Some(value) = repo_path_value(lines[i].trim()) {
-                declares_path = crate::workspace::expand_pinned_path(value) == path;
-            }
             i += 1;
         }
+        let block = lines[start..i].join("\n");
+        let declares_path = repo_block_path(&block)
+            .is_some_and(|value| crate::workspace::expand_pinned_path(&value) == path);
 
         if declares_path {
             removed = true;
@@ -663,24 +673,19 @@ pub fn toggle_repo_path(content: &str, path: &Path) -> (String, bool) {
         ));
     }
 
-    (result.join("\n") + "\n", !removed)
+    Ok((result.join("\n") + "\n", !removed))
 }
 
-/// The string value of a `path = "..."` assignment, basic or literal.
-fn repo_path_value(trimmed: &str) -> Option<&str> {
-    let value = trimmed
-        .strip_prefix("path")?
-        .trim_start()
-        .strip_prefix('=')?
-        .trim();
+/// The `path` of one `[[repos]]` block, read through the TOML parser.
+fn repo_block_path(block: &str) -> Option<String> {
+    let value: toml::Value = block.parse().ok()?;
     value
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .or_else(|| {
-            value
-                .strip_prefix('\'')
-                .and_then(|rest| rest.strip_suffix('\''))
-        })
+        .get("repos")?
+        .as_array()?
+        .first()?
+        .get("path")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 pub fn remove_keybinding_config_sections(content: &str) -> (String, bool) {
@@ -817,7 +822,7 @@ mod tests {
     #[test]
     fn toggle_repo_path_appends_an_undeclared_path() {
         let (updated, declared) =
-            toggle_repo_path("[ui]\nsidebar_width = 30\n", Path::new("/repos/herdr"));
+            toggle_repo_path("[ui]\nsidebar_width = 30\n", Path::new("/repos/herdr")).unwrap();
         assert!(declared);
         assert!(updated.ends_with("[[repos]]\npath = \"/repos/herdr\"\n"));
         assert!(updated.contains("sidebar_width = 30"));
@@ -835,11 +840,33 @@ mod tests {
             "[ui]\n",
             "sidebar_width = 30\n",
         );
-        let (updated, declared) = toggle_repo_path(content, Path::new("/repos/herdr"));
+        let (updated, declared) = toggle_repo_path(content, Path::new("/repos/herdr")).unwrap();
         assert!(!declared);
         assert!(updated.contains("path = \"/repos/api\""));
         assert!(!updated.contains("/repos/herdr"));
         assert!(updated.contains("[ui]\nsidebar_width = 30"));
+    }
+
+    #[test]
+    fn toggle_repo_path_matches_through_comments_and_escapes() {
+        let content = concat!(
+            "[[repos]]\n",
+            "path = \"/repos/h\\u00e9\" # accent\n",
+            "label = \"x\"\n",
+        );
+        let (updated, declared) = toggle_repo_path(content, Path::new("/repos/hé")).unwrap();
+        assert!(
+            !declared,
+            "an escaped, commented entry still counts as declared"
+        );
+        assert!(!updated.contains("[[repos]]"));
+    }
+
+    #[test]
+    fn toggle_repo_path_refuses_an_inline_repos_array() {
+        let content = "repos = [{ path = \"/repos/herdr\" }]\n";
+        let err = toggle_repo_path(content, Path::new("/repos/other")).unwrap_err();
+        assert!(err.contains("inline"), "{err}");
     }
 
     #[test]

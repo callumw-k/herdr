@@ -42,6 +42,9 @@ Herdr 是鼠标原生的。你可以点击窗格、标签页、工作区和智�
 | 按当前排布新建窗格 | `prefix+enter` |
 | 调整大小模式 | `prefix+r` |
 | 复制模式 | `prefix+u` |
+| 新建浮动窗格 | `prefix+f` |
+| 聚焦或隐藏浮动层 | `prefix+ctrl+f` |
+| 显示 / 隐藏浮动窗格 | `prefix+shift+f` |
 
 标签页:
 
@@ -60,7 +63,6 @@ Herdr 是鼠标原生的。你可以点击窗格、标签页、工作区和智�
 | 重命名工作区 | `prefix+shift+w` |
 | 关闭工作区 | `prefix+shift+d` |
 | Goto 选择器 | `prefix+g` |
-| 固定工作区路径 | `prefix+.` |
 | 切换侧边栏 | `prefix+b` |
 
 完整键位和绑定语法见[按键绑定参考](/zh-cn/docs/configuration/#按键绑定)。
@@ -72,6 +74,8 @@ Herdr 是鼠标原生的。你可以点击窗格、标签页、工作区和智�
 `prefix+v` 和 `prefix+minus` 在添加窗格的同时也会设置排布: `prefix+v` 把标签页切换成均分的列,`prefix+minus` 切换成均分的行,两种情况下整个标签页都会重建。按两次 `prefix+v` 得到的是三个均分的列,而不是嵌套的分割。想在当前形状下再加一个窗格,请用 `prefix+enter`。
 
 重建标签页会丢弃手动调整的大小。你拖动或用 `prefix+r` 调整过的边框会保持到下一次创建或关闭窗格为止,之后由排布的均分大小接管。
+
+浮动层保持自己的排布,与标签页的平铺布局分开。`prefix+]`、`prefix+[`、`prefix+v`、`prefix+minus` 和 `prefix+enter` 都作用于当前持有焦点的那一层: 浮动窗格被聚焦时是浮动层,否则是平铺窗格。
 
 ## 复制模式
 

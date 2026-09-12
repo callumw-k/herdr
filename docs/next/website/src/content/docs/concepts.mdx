@@ -11,14 +11,6 @@ A workspace is the top-level project container. Use one workspace per repo, task
 
 A workspace owns tabs and panes. Its sidebar state rolls up from the agents inside it, so you can see which project needs attention.
 
-A workspace can also claim a directory, called its pinned path. Set one with `herdr workspace create --path`, `herdr workspace set-path`, `p` in the goto picker, or `prefix+.`, which pins the active workspace to the focused pane's directory and clears the pin when you press it again in the same place. A pin survives restarts. Once a workspace claims `~/code/herdr`, a pane you create whose working directory sits at or under that path moves into a new tab in that workspace, and focus follows it. Split off a shell in `~/code/herdr/src` from an unrelated workspace and it lands where the rest of that repo's work already is.
-
-A pane you already have open moves too. Change its directory into a pinned path, with `cd` or a jump tool like zoxide, and the pane relocates into the workspace claiming that path. This only happens at an idle shell prompt, so a pane running a build, an editor, or an agent stays where it is until that finishes. Focus follows only when the moved pane was the one you were working in: a background pane that wanders into a pinned path relocates quietly. A pane in a zoomed tab stays put. If the moved pane was the last one in its workspace, that workspace closes behind it, the same as closing its last pane by hand.
-
-Herdr matches by path component, so `/ws-worktrees` does not count as living under a pinned `/ws`. When several workspaces claim the same directory, the deepest pin wins: a worktree pinned to `~/code/herdr-issue-42` beats the repo pinned to `~/code`. Herdr resolves symlinks on both sides when the directories exist and compares the paths as written when they do not, so you can pin a repo before you clone it.
-
-Two creation paths route this way: splitting a pane, and creating a tab. The rest stay put on purpose. `herdr workspace create` is a direct instruction to make a workspace, so Herdr never folds the result into another one. Session restore and handoff rebuild the layout you arranged rather than reshuffling it. Popup panes and floating panes are overlays rather than workspace members. A split inside a zoomed tab also stays where you made it.
-
 ## Tab
 
 A tab is a layout inside a workspace. Use tabs to separate views like `agents`, `logs`, `server`, or `review`.
@@ -40,7 +32,7 @@ An arrangement is the shape a tab lays its panes out in. Every tab always has ex
 | `vertical` | Even columns side by side. |
 | `horizontal` | Even rows top to bottom. |
 | `grid` | A balanced rectangular grid. |
-| `stacked` | One stack. The focused pane fills the tab and the others collapse to single-row title bars above and below it. Click a bar to focus that pane. |
+| `stacked` | One stack. The focused pane fills the tab and the others collapse to single rows above and below it. |
 
 `prefix+]` and `prefix+[` cycle a tab through them. Cycling regenerates the tab from its panes in order, so a full lap returns the layout you started with. Splitting right or down sets the arrangement as well as adding a pane, which means `prefix+v` twice gives three even columns rather than a split nested inside a split. `prefix+enter` adds a pane without changing the arrangement.
 
@@ -71,6 +63,8 @@ Agent states are:
 | `idle` | The agent is finished or waiting and has been seen. |
 | `unknown` | Herdr cannot confidently classify the state. |
 
+Each client tracks which completions it has displayed. Viewing a completion in one client does not clear another client's Done badge. CLI/API statuses use the server's seen state, so they need not match a particular client's badge; both `idle` and `done` mean ready for input.
+
 ## Session
 
 A session is a persistent Herdr server namespace. The default `herdr` command attaches to the default session.
@@ -90,6 +84,8 @@ Use workspaces first. Use named sessions when you need completely separate panes
 By default, Herdr runs as a background server plus one or more attached clients.
 
 The server owns panes and process state. The client is the terminal UI attached to that server.
+
+With one attached client, all tabs follow its size as before. With multiple clients, each can view its own workspace and tab. Different viewed tabs follow their respective clients; when clients view the same tab, the last one to focus, select, or interact with it controls that tab's pane sizes.
 
 Detach the client with `ctrl+b q`. The server and agents continue running.
 

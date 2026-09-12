@@ -1,19 +1,24 @@
 use ratatui::{
+    buffer::Buffer,
     layout::Rect,
     style::{Color, Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear},
     Frame,
 };
 
 use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
-use super::text::{display_width, truncate_end};
+use super::text::truncate_end;
 use super::widgets::panel_contrast_fg;
 use crate::app::state::Palette;
-use crate::app::{AppState, Mode};
+use crate::app::AppState;
 use crate::layout::PaneInfo;
-use crate::popup_size::{resolve_popup_geometry, StackBar, StackBarKind};
+use crate::popup_size::resolve_popup_geometry;
 use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
+
+/// A lone pane in `auto` mode gives up one row to a title strip. The resize
+/// path and the render path both read this: they must agree, or the PTY is
+/// sized to a box the pane never gets.
+pub(crate) const LONE_PANE_BORDERS: Borders = Borders::TOP;
 
 pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
     rt.scroll_metrics()
@@ -28,12 +33,11 @@ fn pane_label(
     ws: &crate::workspace::Workspace,
     pane_id: crate::layout::PaneId,
 ) -> String {
-    ws.terminal_id(pane_id)
-        .and_then(|terminal_id| app.terminals.get(terminal_id))
+    ws.pane_state(pane_id)
+        .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
         .and_then(|terminal| terminal.pane_label(app.show_agent_labels_on_pane_borders))
         .or_else(|| {
-            ws.public_pane_numbers
-                .get(&pane_id)
+            ws.public_pane_number(pane_id)
                 .map(|number| format!("pane {number}"))
         })
         .unwrap_or_default()
@@ -106,18 +110,14 @@ fn shrink_for_one_cell_gap(size: u16) -> u16 {
     }
 }
 
-/// A lone pane has no split borders to hang its name on, so it keeps a one-row
-/// strip across the top for the title. Both the resize and the render path read
-/// this: they must agree, or the PTY is sized to a box the pane never gets.
-pub(crate) const LONE_PANE_BORDERS: Borders = Borders::TOP;
-
 pub(crate) fn apply_pane_chrome(
     panes: Vec<PaneInfo>,
-    pane_borders: bool,
+    pane_borders: crate::config::PaneBordersConfig,
     pane_gaps: bool,
     pane_outer_borders: bool,
 ) -> Vec<PaneInfo> {
     let multi_pane = panes.len() > 1;
+    let bordered = pane_borders.shows_borders(multi_pane);
     let outer_left = panes.iter().map(|info| info.rect.x).min().unwrap_or(0);
     let outer_top = panes.iter().map(|info| info.rect.y).min().unwrap_or(0);
     let outer_right = panes
@@ -137,7 +137,7 @@ pub(crate) fn apply_pane_chrome(
             let right_neighbor = multi_pane.then(|| pane_to_right(&info, &panes)).flatten();
             let below_neighbor = multi_pane.then(|| pane_below(&info, &panes)).flatten();
 
-            if multi_pane && pane_gaps && !pane_borders {
+            if multi_pane && pane_gaps && !pane_borders.draws_borders() {
                 if right_neighbor.is_some() {
                     info.rect.width = shrink_for_one_cell_gap(info.rect.width);
                 }
@@ -146,10 +146,12 @@ pub(crate) fn apply_pane_chrome(
                 }
             }
 
-            info.borders = if !pane_borders {
-                Borders::NONE
-            } else if !multi_pane {
-                LONE_PANE_BORDERS
+            info.borders = if !bordered {
+                if !multi_pane && pane_borders == crate::config::PaneBordersConfig::Auto {
+                    LONE_PANE_BORDERS
+                } else {
+                    Borders::NONE
+                }
             } else {
                 let mut borders = Borders::ALL;
                 if !pane_gaps {
@@ -182,13 +184,21 @@ pub(crate) fn apply_pane_chrome(
 }
 
 fn runtime_for_tab_pane<'a>(
+    _app: &'a AppState,
     terminal_runtimes: &'a TerminalRuntimeRegistry,
+    _workspace_index: usize,
     tab: &'a crate::workspace::Tab,
     pane_id: crate::layout::PaneId,
 ) -> Option<(&'a crate::terminal::TerminalId, &'a TerminalRuntime)> {
     let terminal_id = tab.terminal_id(pane_id)?;
     #[cfg(test)]
-    if let Some(runtime) = tab.runtimes.get(&pane_id) {
+    if let Some(runtime) = _app
+        .workspaces
+        .get(_workspace_index)?
+        .test_runtimes
+        .get(&pane_id)
+        .or_else(|| tab.runtimes.get(&pane_id))
+    {
         return Some((terminal_id, runtime));
     }
     terminal_runtimes
@@ -223,6 +233,7 @@ fn stable_scrollbar_gutter(
 pub(super) fn resize_tab_panes(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    workspace_index: usize,
     tab: &crate::workspace::Tab,
     area: Rect,
     cell_size: crate::kitty_graphics::HostCellSize,
@@ -231,11 +242,11 @@ pub(super) fn resize_tab_panes(
 
     if tab.zoomed {
         let focused_id = tab.layout.focused();
-        if let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, focused_id) {
-            let borders = if multi_pane && app.pane_borders && app.pane_outer_borders {
+        if let Some((terminal_id, rt)) =
+            runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, focused_id)
+        {
+            let borders = if app.pane_borders.shows_borders(multi_pane) && app.pane_outer_borders {
                 Borders::ALL
-            } else if !multi_pane && app.pane_borders {
-                LONE_PANE_BORDERS
             } else {
                 Borders::NONE
             };
@@ -250,54 +261,84 @@ pub(super) fn resize_tab_panes(
                 );
             }
         }
-        return;
+    } else {
+        for info in apply_pane_chrome(
+            tab.layout.panes(area),
+            app.pane_borders,
+            app.pane_gaps,
+            app.pane_outer_borders,
+        ) {
+            let pane_inner = pane_inner_rect(info.rect, info.borders);
+
+            if let Some((terminal_id, rt)) =
+                runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, info.id)
+            {
+                let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
+                if info.rect.height > 1 && !app.direct_attach_resize_locks.contains(terminal_id) {
+                    rt.resize(
+                        inner_rect.height,
+                        inner_rect.width,
+                        cell_size.width_px,
+                        cell_size.height_px,
+                    );
+                }
+            }
+        }
     }
 
-    for info in apply_pane_chrome(
-        tab.layout.panes(area),
-        app.pane_borders,
-        app.pane_gaps,
-        app.pane_outer_borders,
-    ) {
-        let pane_inner = pane_inner_rect(info.rect, info.borders);
-
-        if let Some((terminal_id, rt)) = runtime_for_tab_pane(terminal_runtimes, tab, info.id) {
-            let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
-            if info.rect.height > 1 && !app.direct_attach_resize_locks.contains(terminal_id) {
-                rt.resize(
-                    inner_rect.height,
-                    inner_rect.width,
-                    cell_size.width_px,
-                    cell_size.height_px,
-                );
+    // A background tab's floats otherwise keep a stale size until the tab is
+    // activated. Same box rule as compute_pane_infos_for_tab: no scrollbar
+    // lane, and collapsed members are not reflowed.
+    if let Some(layout) = tab.float_layout.as_ref().filter(|_| !tab.floats_hidden) {
+        if let Some(geometry) =
+            resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
+        {
+            for info in layout.panes(geometry.outer) {
+                if info.rect.height <= 1 {
+                    continue;
+                }
+                let inner_rect = pane_inner_rect(info.rect, Borders::ALL);
+                if let Some((terminal_id, rt)) =
+                    runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, info.id)
+                {
+                    if !app.direct_attach_resize_locks.contains(terminal_id) {
+                        rt.resize(
+                            inner_rect.height,
+                            inner_rect.width,
+                            cell_size.width_px,
+                            cell_size.height_px,
+                        );
+                    }
+                }
             }
         }
     }
 }
 
 /// Compute pane layout info and optionally resize pane runtimes to match.
-pub(super) fn compute_pane_infos(
+pub(super) fn compute_pane_infos_for_tab(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    ws_idx: usize,
+    tab_idx: usize,
     area: Rect,
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) -> Vec<PaneInfo> {
-    let Some(ws_idx) = app.active else {
-        return Vec::new();
-    };
-    let Some(ws) = app.workspaces.get(ws_idx) else {
+    let Some(tab) = app
+        .workspaces
+        .get(ws_idx)
+        .and_then(|workspace| workspace.tabs.get(tab_idx))
+    else {
         return Vec::new();
     };
 
-    let multi_pane = ws.layout.pane_count() > 1;
+    let multi_pane = tab.layout.pane_count() > 1;
 
-    let mut pane_infos = if ws.zoomed {
-        let focused_id = ws.layout.focused();
-        let borders = if multi_pane && app.pane_borders && app.pane_outer_borders {
+    let mut pane_infos = if tab.zoomed {
+        let focused_id = tab.layout.focused();
+        let borders = if app.pane_borders.shows_borders(multi_pane) && app.pane_outer_borders {
             Borders::ALL
-        } else if !multi_pane && app.pane_borders {
-            LONE_PANE_BORDERS
         } else {
             Borders::NONE
         };
@@ -308,7 +349,7 @@ pub(super) fn compute_pane_infos(
             (inner_rect, scrollbar_rect) =
                 stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
             if resize_panes
-                && ws.terminal_id(focused_id).is_some_and(|terminal_id| {
+                && tab.terminal_id(focused_id).is_some_and(|terminal_id| {
                     !app.direct_attach_resize_locks.contains(terminal_id)
                 })
             {
@@ -326,11 +367,11 @@ pub(super) fn compute_pane_infos(
             inner_rect,
             scrollbar_rect,
             borders,
-            is_focused: !ws.float_focused,
+            is_focused: !tab.float_focused,
         }]
     } else {
         let mut pane_infos = apply_pane_chrome(
-            ws.layout.panes(area),
+            tab.layout.panes(area),
             app.pane_borders,
             app.pane_gaps,
             app.pane_outer_borders,
@@ -345,14 +386,10 @@ pub(super) fn compute_pane_infos(
             {
                 (inner_rect, scrollbar_rect) =
                     stable_scrollbar_gutter(rt, pane_inner, app.pane_scrollbars);
-                // A collapsed or folded stack member has no content on screen,
-                // and reflowing its PTY down to the clamped minimum destroys an
-                // alternate screen's rows for nothing: they have no scrollback
-                // to come back from, and the child only repaints if the winsize
-                // it sees actually changed. Leave it at its last real size.
+                // Reflowing a collapsed member wrecks an alt screen for no visible gain.
                 if resize_panes
                     && info.rect.height > 1
-                    && ws.terminal_id(info.id).is_some_and(|terminal_id| {
+                    && tab.terminal_id(info.id).is_some_and(|terminal_id| {
                         !app.direct_attach_resize_locks.contains(terminal_id)
                     })
                 {
@@ -367,35 +404,34 @@ pub(super) fn compute_pane_infos(
 
             info.inner_rect = inner_rect;
             info.scrollbar_rect = scrollbar_rect;
-            info.is_focused = !ws.float_focused && info.is_focused;
+            info.is_focused = !tab.float_focused && info.is_focused;
         }
-
         pane_infos
     };
 
-    // Floats are appended last so hit-tests that iterate in reverse find them
-    // before any tiled pane underneath. Every member gets a `PaneInfo` — even
-    // a collapsed or folded one — the same way a tiled `Node::Stack` does, so
-    // the render pass can reuse that stack's bar/fold handling unchanged.
-    //
     // A hidden layer emits nothing at all. Drawing, PTY resizing, mouse
     // hit-testing, hyperlink scanning and graphics all key off this list, so
     // this one gate is what `floats_hidden` means everywhere downstream.
-    if let Some(layout) = ws.float_layout.as_ref().filter(|_| !ws.floats_hidden) {
+    if let Some(layout) = tab.float_layout.as_ref().filter(|_| !tab.floats_hidden) {
         if let Some(geometry) =
             resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
         {
-            let focused_float = ws.focused_float();
+            let focused_float = tab.focused_float();
             for mut info in layout.panes(geometry.outer) {
                 info.borders = Borders::ALL;
                 // Floats get no scrollbar lane, matching the old popup pane;
                 // `layout.panes` already leaves `scrollbar_rect: None`.
                 info.inner_rect = pane_inner_rect(info.rect, info.borders);
-                info.is_focused = ws.float_focused && Some(info.id) == focused_float;
+                info.is_focused = tab.float_focused && Some(info.id) == focused_float;
                 // Only the expanded member has content to display; resizing a
                 // collapsed or folded float's PTY to its near-zero box would
                 // reflow it for nothing.
-                if resize_panes && info.rect.height > 1 {
+                if resize_panes
+                    && info.rect.height > 1
+                    && tab.terminal_id(info.id).is_some_and(|terminal_id| {
+                        !app.direct_attach_resize_locks.contains(terminal_id)
+                    })
+                {
                     if let Some(rt) =
                         app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)
                     {
@@ -415,148 +451,173 @@ pub(super) fn compute_pane_infos(
     pane_infos
 }
 
+#[cfg(test)]
+fn compute_pane_infos(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    area: Rect,
+    resize_panes: bool,
+    cell_size: crate::kitty_graphics::HostCellSize,
+) -> Vec<PaneInfo> {
+    let Some(workspace_index) = app.active else {
+        return Vec::new();
+    };
+    let Some(tab_index) = app
+        .workspaces
+        .get(workspace_index)
+        .map(crate::workspace::Workspace::active_tab_index)
+    else {
+        return Vec::new();
+    };
+    compute_pane_infos_for_tab(
+        app,
+        terminal_runtimes,
+        workspace_index,
+        tab_index,
+        area,
+        resize_panes,
+        cell_size,
+    )
+}
+
 pub(super) fn render_panes(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
     frame: &mut Frame,
+    target: Option<super::tab_surface::TabSurfaceTarget>,
     pane_infos: &[PaneInfo],
     split_borders: &[crate::layout::SplitBorder],
-    stack_bars: &[StackBar],
 ) {
-    let Some(ws_idx) = app.active else {
+    let Some(ws_idx) = target.map(|target| target.workspace_index) else {
         return;
     };
     let Some(ws) = app.workspaces.get(ws_idx) else {
         return;
     };
 
-    let multi_pane = ws.layout.pane_count() > 1;
-    let terminal_active = app.mode == Mode::Terminal;
+    // The lookup is skipped entirely for a tab with no floating layer, which is
+    // the common case in this pane-scaled path.
+    let floats = target
+        .map(|target| target.tab_index)
+        .and_then(|tab_index| ws.tabs.get(tab_index))
+        .filter(|tab| tab.float_layout.is_some())
+        .map(|tab| tab.floats())
+        .unwrap_or_default();
 
-    for info in pane_infos {
-        // Tiled stack members with height 0 or 1 have no content on screen —
-        // `stack_rects` collapsed them to a bar or folded them out. They get
-        // drawn as bars below instead.
-        if ws.is_float(info.id) || info.rect.height <= 1 {
+    // Floats are appended after the tiled panes, so one boundary index splits
+    // the list without a per-pane membership scan.
+    let tiled_end = pane_infos
+        .iter()
+        .position(|info| floats.contains(&info.id))
+        .unwrap_or(pane_infos.len());
+    let (tiled, floating) = pane_infos.split_at(tiled_end);
+
+    let render_content = |frame: &mut Frame, info: &PaneInfo| {
+        if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
+            let show_cursor = info.is_focused
+                && !pane_is_scrolled_back(rt)
+                && app.pane_exposes_host_cursor(ws_idx, info.id);
+            rt.render(frame, info.inner_rect, show_cursor);
+            render_pane_scrollbar(app, frame, info, rt);
+        }
+    };
+
+    // Tiled draws first, in full, so the float layer drawn over it afterwards
+    // never needs to know where the floats are.
+    for info in tiled {
+        // A collapsed or folded stack member has no content rows; it is drawn
+        // as a stack bar below.
+        if info.rect.height <= 1 {
             continue;
         }
-        if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
-            let show_cursor = info.is_focused
-                && terminal_active
-                && !pane_is_scrolled_back(rt)
-                && app.pane_exposes_host_cursor(ws_idx, info.id);
-            rt.render(frame, info.inner_rect, show_cursor);
+        render_content(frame, info);
+    }
+    render_pane_borders(app, ws, tiled, split_borders, frame);
+    if tiled.iter().any(|info| info.rect.height <= 1) {
+        for bar in stack_bars_for(tiled.iter()) {
+            render_stack_bar(app, ws, frame, &bar);
+        }
+    }
 
-            let should_dim = !info.is_focused && multi_pane && !terminal_active;
-            if should_dim {
-                let inner = info.inner_rect;
-                let buf = frame.buffer_mut();
-                for y in inner.y..inner.y + inner.height {
-                    for x in inner.x..inner.x + inner.width {
-                        let cell = &mut buf[(x, y)];
-                        cell.set_style(cell.style().add_modifier(Modifier::DIM));
-                    }
+    for info in floating {
+        if info.rect.height <= 1 {
+            continue;
+        }
+        render_float_chrome(app, ws, frame, info);
+        render_content(frame, info);
+        // Content leaves untouched cells at Color::Reset, which would show
+        // through the float's opaque fill; only backfill cells still Reset, so a
+        // background the pane's own content painted survives.
+        let buf = frame.buffer_mut();
+        let rect = info.inner_rect.intersection(buf.area);
+        for y in rect.y..rect.y.saturating_add(rect.height) {
+            for x in rect.x..rect.x.saturating_add(rect.width) {
+                let cell = &mut buf[(x, y)];
+                if cell.bg == Color::Reset {
+                    cell.set_bg(app.palette.panel_bg);
                 }
             }
-
-            render_pane_overlays(app, frame, info, rt);
         }
     }
-
-    for info in pane_infos
-        .iter()
-        .filter(|info| ws.is_float(info.id) && info.rect.height > 1)
-    {
-        if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
-            let title = pane_label(app, ws, info.id);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Thick)
-                .border_style(Style::default().fg(if info.is_focused {
-                    app.palette.accent
-                } else {
-                    app.palette.overlay1
-                }))
-                .title(
-                    pane_border_title(&title, info.rect.width, info.is_focused).unwrap_or_default(),
-                )
-                .style(Style::default().bg(app.palette.panel_bg));
-            frame.render_widget(Clear, info.rect);
-            frame.render_widget(block, info.rect);
-            let show_cursor = info.is_focused
-                && terminal_active
-                && !pane_is_scrolled_back(rt)
-                && app.pane_exposes_host_cursor(ws_idx, info.id);
-            rt.render(frame, info.inner_rect, show_cursor);
-            render_pane_overlays(app, frame, info, rt);
+    if floating.iter().any(|info| info.rect.height <= 1) {
+        for bar in stack_bars_for(floating.iter()) {
+            render_stack_bar(app, ws, frame, &bar);
         }
     }
-
-    let tiled_bars = tiled_stack_bars(ws, pane_infos);
-    let float_bars = stack_bars_for(pane_infos.iter().filter(|info| ws.is_float(info.id)));
-    for bar in stack_bars
-        .iter()
-        .chain(tiled_bars.iter())
-        .chain(float_bars.iter())
-    {
-        render_stack_bar(app, ws, frame, bar);
-    }
-
-    render_pane_borders(app, ws, pane_infos, split_borders, stack_bars, frame);
 }
 
-/// Everything drawn on top of a pane's terminal content: scrollbar, copy-mode
-/// search highlights, text selection and the copy-mode cursor. Tiled panes and
-/// floats draw their frames differently but need the same overlays. The
-/// scrollbar is a no-op for floats, which get no scrollbar lane.
-fn render_pane_overlays(
+/// A float overlaps the tiled panes behind it, so it draws its own frame rather
+/// than taking a line from the shared junction table: a thick border and an
+/// opaque fill are what separate it from the panes it covers.
+fn render_float_chrome(
     app: &AppState,
+    ws: &crate::workspace::Workspace,
     frame: &mut Frame,
     info: &PaneInfo,
-    rt: &crate::terminal::TerminalRuntime,
 ) {
-    render_pane_scrollbar(app, frame, info, rt);
-
-    let (copy_search_top, copy_search_bottom, copy_search_matches) =
-        validated_copy_mode_search_matches(app, info, rt);
-    render_copy_mode_search_highlights(
-        app,
-        frame,
-        info,
-        copy_search_top,
-        copy_search_bottom,
-        &copy_search_matches,
-        false,
-    );
-    render_selection_highlight(
-        &app.selection,
-        frame,
-        info.id,
-        info.inner_rect,
-        rt.scroll_metrics(),
-        &app.palette,
-        app.host_terminal_theme,
-    );
-    render_copy_mode_search_highlights(
-        app,
-        frame,
-        info,
-        copy_search_top,
-        copy_search_bottom,
-        &copy_search_matches,
-        true,
-    );
-    render_copy_mode_cursor(app, frame, info);
+    let rect = info.rect.intersection(frame.area());
+    if rect.is_empty() {
+        return;
+    }
+    let title = pane_label(app, ws, info.id);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Thick)
+        .border_style(Style::default().fg(if info.is_focused {
+            app.palette.accent
+        } else {
+            app.palette.overlay1
+        }))
+        .title(pane_border_title(&title, rect.width, info.is_focused).unwrap_or_default())
+        .style(Style::default().bg(app.palette.panel_bg));
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block, rect);
 }
 
-/// Where to find an already-valid, currently-drawn row to repurpose as a
-/// fold's `+N more` indicator, since a fold's own rect is never one (see
-/// `close_fold_run`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StackBarKind {
+    Pane(crate::layout::PaneId),
+    /// Folds `count` further hidden members that did not fit as their own rows.
+    Summary {
+        count: usize,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StackBar {
+    rect: Rect,
+    kind: StackBarKind,
+    /// The bar sits after the stack's expanded member, so its single row reads
+    /// as that pane's bottom edge rather than its top edge.
+    below_active: bool,
+}
+
+/// Where to find an already-valid, currently-drawn row to repurpose as a fold's
+/// `+N more` indicator, since a fold's own rect is never one. See
+/// `close_fold_run`.
 #[derive(Clone, Copy)]
 enum FoldAnchor {
-    /// Index into `bars` of an already-pushed collapsed-bar entry.
     Bar(usize),
-    /// The stack's active member's own rect.
     Active(Rect),
 }
 
@@ -566,18 +627,16 @@ struct ZeroRun {
     predecessor: Option<FoldAnchor>,
 }
 
-/// Derives collapsed (height 1) and folded (height 0) rows into `StackBar`s
-/// from a set of already-laid-out stack members. `stack_rects` lays out a
-/// tiled `Node::Stack` and the floating layer's stacked arrangement
-/// identically, so this fold-detection is shared between them: a run of
-/// consecutive height-0 entries sharing a rect position is one fold; a run
-/// interrupted by the active member (a different rect) is a second, separate
-/// fold, since they are genuinely different screen locations.
+/// Derives collapsed (height 1) and folded (height 0) rows into `StackBar`s from
+/// already-laid-out stack members. `stack_rects` lays out a tiled `Node::Stack`
+/// and the floating layer's stacked arrangement identically, so this is shared
+/// between them: a run of consecutive height-0 entries sharing a rect position
+/// is one fold, and a run interrupted by the active member is a second,
+/// separate fold, since those are genuinely different screen locations.
 fn stack_bars_for<'a>(infos: impl Iterator<Item = &'a PaneInfo>) -> Vec<StackBar> {
     let mut bars: Vec<StackBar> = Vec::new();
-    // The most recent non-folded (height >= 1) entry seen, and its x — a
-    // fold's predecessor candidate, valid only while still inside the same
-    // stack's column (stack members all share the same x and width).
+    // The most recent non-folded entry and its x: a fold's predecessor
+    // candidate, valid only inside the same stack column.
     let mut last_real: Option<(u16, FoldAnchor)> = None;
     let mut zero_run: Option<ZeroRun> = None;
     let mut seen_active = false;
@@ -629,23 +688,15 @@ fn stack_bars_for<'a>(infos: impl Iterator<Item = &'a PaneInfo>) -> Vec<StackBar
     bars
 }
 
-/// Bars for tiled `Node::Stack` members whose rect signals a collapsed or
-/// folded row.
-fn tiled_stack_bars(ws: &crate::workspace::Workspace, pane_infos: &[PaneInfo]) -> Vec<StackBar> {
-    stack_bars_for(pane_infos.iter().filter(|info| !ws.is_float(info.id)))
-}
-
-/// `stack_rects` always consumes the whole stack area once any folding
-/// happens, so a fold's own rect is never a real, drawable row: a fold
-/// before the active member lands exactly on the active member's own first
-/// row, and a fold after it lands one row past the end of the area — both
-/// invalid to draw at directly. Borrow an already-valid row instead: the
-/// last collapsed bar right before the fold if one exists (that pane's row
-/// now reads as part of the fold too, so it joins the count); otherwise the
-/// active member's near edge (its pane stays visible in its own rect, so
-/// the count is unaffected) — a fold with no bar before it is always
-/// immediately followed by the active member, since `stack_rects` never
-/// folds the active member itself.
+/// `stack_rects` consumes the whole stack area once any folding happens, so a
+/// fold's own rect is never a real, drawable row: a fold before the active
+/// member lands on the active member's first row, and one after it lands a row
+/// past the end of the area. Borrow an already-valid row instead. The last
+/// collapsed bar before the fold if there is one, whose pane now reads as part
+/// of the fold and so joins the count; otherwise the active member's near edge,
+/// whose pane stays visible in its own rect and so does not. A fold with no bar
+/// before it is always followed immediately by the active member, because
+/// `stack_rects` never folds the active member itself.
 fn close_fold_run(bars: &mut Vec<StackBar>, run: ZeroRun, successor: Option<Rect>) {
     match run.predecessor {
         Some(FoldAnchor::Bar(index)) => {
@@ -668,9 +719,9 @@ fn close_fold_run(bars: &mut Vec<StackBar>, run: ZeroRun, successor: Option<Rect
                     below_active: false,
                 });
             }
-            // No predecessor and no successor is geometrically unreachable —
-            // `stack_rects` always keeps the active member present — but
-            // skip rather than draw an invalid rect if that ever changes.
+            // Neither anchor is geometrically reachable, since `stack_rects`
+            // always keeps the active member present, but skip rather than draw
+            // an invalid rect if that ever changes.
         }
     }
 }
@@ -694,33 +745,40 @@ fn render_stack_bar(
         StackBarKind::Pane(pane_id) => pane_label(app, ws, pane_id),
         StackBarKind::Summary { count } => format!("+{count} more"),
     };
-    let text = pane_border_title(&label, bar.rect.width, false).unwrap_or_default();
-    let border_style = Style::default().fg(app.palette.overlay0);
+    // Direct buffer indexing below panics outside the frame, so clamp first
+    let rect = bar.rect.intersection(frame.area());
+    if rect.is_empty() {
+        return;
+    }
+    let text = pane_border_title(&label, rect.width, false).unwrap_or_default();
+    let border_style = Style::default()
+        .fg(app.palette.overlay0)
+        .bg(app.palette.panel_bg);
     let label_style = Style::default()
         .fg(app.palette.subtext0)
+        .bg(app.palette.panel_bg)
         .add_modifier(Modifier::BOLD);
     // A collapsed member is one row tall, so its top and bottom borders share
-    // that row. Closing both ends with corners keeps a hidden pane readable as
+    // that row; closing both ends with corners keeps a hidden pane readable as
     // a box rather than a bare label, which matters most for floats with no
-    // neighbouring pane border to sit against. The corners face the expanded
-    // member so a bar below it doesn't read as a box opening off-screen.
+    // neighbouring pane border to sit against; the corners face the expanded
+    // member so a bar below it does not read as a box opening off-screen
     let (left, right) = if bar.below_active {
-        ("└", "┘")
+        ("\u{2514}", "\u{2518}")
     } else {
-        ("┌", "┐")
+        ("\u{250c}", "\u{2510}")
     };
-    let fill = (bar.rect.width as usize).saturating_sub(2 + display_width(text.as_str()));
-    frame.render_widget(Clear, bar.rect);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(left, border_style),
-            Span::styled(text, label_style),
-            Span::styled("─".repeat(fill), border_style),
-            Span::styled(right, border_style),
-        ]))
-        .style(Style::default().bg(app.palette.panel_bg)),
-        bar.rect,
-    );
+    let buf = frame.buffer_mut();
+    let y = rect.y;
+    let last_x = rect.right() - 1;
+    for x in rect.x..=last_x {
+        buf[(x, y)].set_symbol("\u{2500}").set_style(border_style);
+    }
+    buf[(rect.x, y)].set_symbol(left);
+    buf[(last_x, y)].set_symbol(right);
+    if rect.width > 2 {
+        buf.set_stringn(rect.x + 1, y, &text, (rect.width - 2) as usize, label_style);
+    }
 }
 
 pub(crate) fn popup_pane_rects(app: &AppState, area: Rect) -> Option<(Rect, Rect)> {
@@ -754,36 +812,6 @@ pub(super) fn resize_popup_pane(
     }
 }
 
-pub(super) fn render_popup_pane(
-    app: &AppState,
-    terminal_runtimes: &TerminalRuntimeRegistry,
-    frame: &mut Frame,
-    area: Rect,
-) {
-    let Some(popup) = app.popup_pane.as_ref() else {
-        return;
-    };
-    let Some((outer, inner)) = popup_pane_rects(app, area) else {
-        return;
-    };
-    let Some(rt) = terminal_runtimes.get(&popup.terminal_id) else {
-        return;
-    };
-    let title = app
-        .terminals
-        .get(&popup.terminal_id)
-        .and_then(|terminal| terminal.manual_label.as_deref())
-        .unwrap_or("popup");
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(app.palette.accent))
-        .title(pane_border_title(title, outer.width, true).unwrap_or_default())
-        .style(Style::default().bg(app.palette.panel_bg));
-    frame.render_widget(Clear, outer);
-    frame.render_widget(block, outer);
-    rt.render(frame, inner, !pane_is_scrolled_back(rt));
-}
-
 #[derive(Clone, Copy, Default)]
 struct LineCell {
     up: bool,
@@ -792,70 +820,22 @@ struct LineCell {
     right: bool,
 }
 
-/// The bounding box of the floating layer — every float's own rect, expanded
-/// or collapsed, plus any externally supplied `stack_bars`. Tiled-pane border
-/// decorations must avoid drawing into this area so they don't punch through
-/// the floats, which are drawn earlier in `render_panes`. Folded members have
-/// a zero-height `PaneInfo` of their own, so a `+N more` summary row's rect
-/// (borrowed from a neighbour, see `close_fold_run`) always lands inside the
-/// union already.
-fn float_rect(
-    ws: &crate::workspace::Workspace,
-    pane_infos: &[PaneInfo],
-    stack_bars: &[StackBar],
-) -> Option<Rect> {
-    pane_infos
-        .iter()
-        .filter(|info| ws.is_float(info.id))
-        .map(|info| info.rect)
-        .chain(stack_bars.iter().map(|bar| bar.rect))
-        .reduce(union_rect)
-}
-
-fn union_rect(a: Rect, b: Rect) -> Rect {
-    let x = a.x.min(b.x);
-    let y = a.y.min(b.y);
-    let right = a.x.saturating_add(a.width).max(b.x.saturating_add(b.width));
-    let bottom =
-        a.y.saturating_add(a.height)
-            .max(b.y.saturating_add(b.height));
-    Rect::new(x, y, right.saturating_sub(x), bottom.saturating_sub(y))
-}
-
-fn rect_contains(rect: Rect, x: u16, y: u16) -> bool {
-    x >= rect.x
-        && x < rect.x.saturating_add(rect.width)
-        && y >= rect.y
-        && y < rect.y.saturating_add(rect.height)
-}
-
 fn render_pane_borders(
     app: &AppState,
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
     split_borders: &[crate::layout::SplitBorder],
-    stack_bars: &[StackBar],
     frame: &mut Frame,
 ) {
-    if !app.pane_borders || pane_infos.iter().all(|info| info.borders.is_empty()) {
+    if !app.pane_borders.draws_borders() || pane_infos.iter().all(|info| info.borders.is_empty()) {
         return;
     }
 
-    let tiled_bars = tiled_stack_bars(ws, pane_infos);
-
     let mut cells = std::collections::HashMap::<(u16, u16), LineCell>::new();
     for info in pane_infos {
-        // The float draws its own Block border; feeding it into the line-join
-        // merge would corrupt the tiled joins underneath it. A collapsed or
-        // folded stack member draws as a bar instead, with its own left/right
-        // border chars — same reasoning applies.
-        if ws.is_float(info.id) || info.rect.height <= 1 {
-            continue;
-        }
         add_pane_border_cells(&mut cells, info);
     }
     add_split_border_cells(app.pane_gaps, split_borders, &mut cells);
-    let float_rect = float_rect(ws, pane_infos, stack_bars);
 
     let buf = frame.buffer_mut();
     let area = buf.area;
@@ -867,18 +847,9 @@ fn render_pane_borders(
         {
             continue;
         }
-        if float_rect.is_some_and(|rect| rect_contains(rect, x, y)) {
-            continue;
-        }
-        // Stack bars can sit anywhere in the tab, so each is checked on its
-        // own rect rather than unioned like the float — a union could wrongly
-        // swallow real dividers between unrelated stacks elsewhere on screen.
-        if tiled_bars.iter().any(|bar| rect_contains(bar.rect, x, y)) {
-            continue;
-        }
-        let focused = pane_infos.iter().any(|info| {
-            !ws.is_float(info.id) && info.is_focused && line_touches_pane(x, y, info, app.pane_gaps)
-        });
+        let focused = pane_infos
+            .iter()
+            .any(|info| info.is_focused && line_touches_pane(x, y, info, app.pane_gaps));
         let symbol = line_cell_symbol(line);
         if symbol.is_empty() {
             continue;
@@ -893,7 +864,7 @@ fn render_pane_borders(
         cell.set_style(Style::default().fg(color));
     }
 
-    render_pane_border_titles(app, ws, pane_infos, stack_bars, &tiled_bars, frame);
+    render_pane_border_titles(app, ws, pane_infos, frame);
 }
 
 fn add_split_border_cells(
@@ -1022,18 +993,12 @@ fn render_pane_border_titles(
     app: &AppState,
     ws: &crate::workspace::Workspace,
     pane_infos: &[PaneInfo],
-    stack_bars: &[StackBar],
-    tiled_bars: &[StackBar],
     frame: &mut Frame,
 ) {
     let buf = frame.buffer_mut();
     let area = buf.area;
-    let float_rect = float_rect(ws, pane_infos, stack_bars);
     for info in pane_infos {
-        // A collapsed or folded stack member draws its label via
-        // `render_stack_bar` instead, styled for a 1-row bar rather than a
-        // pane's top border.
-        if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 || info.rect.height <= 1 {
+        if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
             continue;
         }
         let Some(title) = ws
@@ -1056,27 +1021,6 @@ fn render_pane_border_titles(
             .saturating_sub(1)
             .min(area.x.saturating_add(area.width));
         if start_x >= end_x {
-            continue;
-        }
-        if !ws.is_float(info.id)
-            && float_rect.is_some_and(|rect| {
-                y >= rect.y
-                    && y < rect.y.saturating_add(rect.height)
-                    && start_x < rect.x.saturating_add(rect.width)
-                    && end_x > rect.x
-            })
-        {
-            continue;
-        }
-        // A fold with no collapsed bar to repurpose borrows the active
-        // member's own top row instead (see `close_fold_run`) — that row's
-        // title must give way to the fold's own label.
-        if tiled_bars.iter().any(|bar| {
-            y >= bar.rect.y
-                && y < bar.rect.y.saturating_add(bar.rect.height)
-                && start_x < bar.rect.x.saturating_add(bar.rect.width)
-                && end_x > bar.rect.x
-        }) {
             continue;
         }
         let color = if info.is_focused {
@@ -1119,147 +1063,31 @@ fn line_cell_symbol(line: LineCell) -> &'static str {
     }
 }
 
-fn render_copy_mode_cursor(app: &AppState, frame: &mut Frame, info: &PaneInfo) {
-    if app.mode != Mode::Copy {
-        return;
-    }
-    let Some(copy_mode) = app.copy_mode.as_ref() else {
-        return;
-    };
-    if copy_mode.pane_id != info.id
-        || copy_mode.cursor_row >= info.inner_rect.height
-        || copy_mode.cursor_col >= info.inner_rect.width
-    {
-        return;
-    }
-
-    let x = info.inner_rect.x + copy_mode.cursor_col;
-    let y = info.inner_rect.y + copy_mode.cursor_row;
-    let cell = &mut frame.buffer_mut()[(x, y)];
-    cell.set_style(
-        Style::default()
-            .fg(panel_contrast_fg(&app.palette))
-            .bg(app.palette.accent)
-            .add_modifier(Modifier::BOLD),
-    );
-}
-
-fn validated_copy_mode_search_matches(
-    app: &AppState,
-    info: &PaneInfo,
-    rt: &crate::terminal::TerminalRuntime,
-) -> (u32, u32, Vec<(usize, crate::pane::TerminalTextMatch)>) {
-    let Some(copy_mode) = app.copy_mode.as_ref() else {
-        return (0, 0, Vec::new());
-    };
-    if copy_mode.pane_id != info.id {
-        return (0, 0, Vec::new());
-    }
-    let Some(metrics) = rt.scroll_metrics() else {
-        return (0, 0, Vec::new());
-    };
-    let top = metrics
-        .max_offset_from_bottom
-        .saturating_sub(metrics.offset_from_bottom)
-        .min(u32::MAX as usize) as u32;
-    let bottom = top.saturating_add(u32::from(info.inner_rect.height.saturating_sub(1)));
-    let first_visible = copy_mode
-        .search
-        .matches
-        .partition_point(|text_match| text_match.end.row < top);
-    let visible = &copy_mode.search.matches[first_visible..];
-    let visible_len = visible.partition_point(|text_match| text_match.start.row <= bottom);
-    let candidates = visible[..visible_len].to_vec();
-    let validity = rt.text_matches_are_current(&candidates);
-
-    let matches = candidates
-        .into_iter()
-        .zip(validity)
-        .enumerate()
-        .filter_map(|(offset, (text_match, is_current))| {
-            is_current.then_some((first_visible + offset, text_match))
-        })
-        .collect();
-    (top, bottom, matches)
-}
-
-fn render_copy_mode_search_highlights(
-    app: &AppState,
-    frame: &mut Frame,
-    info: &PaneInfo,
-    top: u32,
-    bottom: u32,
-    matches: &[(usize, crate::pane::TerminalTextMatch)],
-    current_only: bool,
-) {
-    let Some(copy_mode) = app.copy_mode.as_ref() else {
-        return;
-    };
-    let current = copy_mode.search.current;
-    let style = if current_only {
-        Style::default()
-            .fg(panel_contrast_fg(&app.palette))
-            .bg(app.palette.accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(app.palette.text)
-            .bg(app.palette.surface1)
-    };
-
-    for &(index, text_match) in matches {
-        if (current == Some(index)) != current_only {
-            continue;
-        }
-        let start_row = text_match.start.row.max(top);
-        let end_row = text_match.end.row.min(bottom);
-        for absolute_row in start_row..=end_row {
-            let viewport_row = absolute_row.saturating_sub(top) as u16;
-            let start_col = if absolute_row == text_match.start.row {
-                text_match.start.col
-            } else {
-                0
-            };
-            let end_col = if absolute_row == text_match.end.row {
-                text_match.end.col
-            } else {
-                info.inner_rect.width.saturating_sub(1)
-            };
-            for col in start_col..=end_col.min(info.inner_rect.width.saturating_sub(1)) {
-                let x = info.inner_rect.x.saturating_add(col);
-                let y = info.inner_rect.y.saturating_add(viewport_row);
-                frame.buffer_mut()[(x, y)].set_style(style);
-            }
-        }
-    }
-}
-
-fn render_selection_highlight(
-    selection: &Option<crate::selection::Selection>,
-    frame: &mut Frame,
-    pane_id: crate::layout::PaneId,
+pub(crate) fn render_selection_highlight<P: PartialEq>(
+    selection: Option<&crate::selection::Selection<P>>,
+    buffer: &mut Buffer,
+    pane_id: &P,
     inner: Rect,
     scroll_metrics: Option<crate::pane::ScrollMetrics>,
     p: &Palette,
     host_theme: crate::terminal_theme::TerminalTheme,
 ) {
-    if let Some(sel) = selection {
-        if sel.is_visible() && sel.pane_id == pane_id {
-            let buf = frame.buffer_mut();
-            let style = automatic_selection_style(p, host_theme);
-            for y in 0..inner.height {
-                for x in 0..inner.width {
-                    if sel.contains(y, x, scroll_metrics) {
-                        let cell = &mut buf[(inner.x + x, inner.y + y)];
-                        cell.set_style(style);
-                    }
-                }
+    let Some(selection) =
+        selection.filter(|selection| selection.is_visible() && &selection.pane_id == pane_id)
+    else {
+        return;
+    };
+    let style = automatic_selection_style(p, host_theme);
+    for y in 0..inner.height {
+        for x in 0..inner.width {
+            if selection.contains(y, x, scroll_metrics) {
+                buffer[(inner.x + x, inner.y + y)].set_style(style);
             }
         }
     }
 }
 
-type Rgb = (u8, u8, u8);
+pub(crate) type Rgb = (u8, u8, u8);
 
 fn automatic_selection_style(
     p: &Palette,
@@ -1270,8 +1098,16 @@ fn automatic_selection_style(
 }
 
 fn automatic_selection_bg(p: &Palette, host_theme: crate::terminal_theme::TerminalTheme) -> Color {
-    let Some(background) = host_theme.background.map(terminal_theme_to_rgb) else {
-        return selection_palette_background(p);
+    let fallback = selection_palette_background(p);
+    let Some(background) = host_theme
+        .background
+        .map(|color| (color.r, color.g, color.b))
+        .or(match fallback {
+            Color::Rgb(r, g, b) => Some((r, g, b)),
+            _ => None,
+        })
+    else {
+        return fallback;
     };
 
     let target = if relative_luminance(background) < 0.5 {
@@ -1291,11 +1127,18 @@ fn selection_palette_background(p: &Palette) -> Color {
     }
 }
 
-fn terminal_theme_to_rgb(color: crate::terminal_theme::RgbColor) -> Rgb {
-    (color.r, color.g, color.b)
-}
-
 fn selection_fg_for_bg(bg: Color, p: &Palette) -> Color {
+    if let Color::Rgb(r, g, b) = bg {
+        let luminance = relative_luminance((r, g, b));
+        let black_contrast = (luminance + 0.05) / 0.05;
+        let white_contrast = 1.05 / (luminance + 0.05);
+        return if black_contrast > white_contrast {
+            Color::Rgb(0, 0, 0)
+        } else {
+            Color::Rgb(255, 255, 255)
+        };
+    }
+
     color_to_rgb(bg)
         .map(|bg| {
             if relative_luminance(bg) < 0.5 {
@@ -1307,7 +1150,7 @@ fn selection_fg_for_bg(bg: Color, p: &Palette) -> Color {
         .unwrap_or_else(|| panel_contrast_fg(p))
 }
 
-fn mix_rgb(base: Rgb, target: Rgb, amount: f32) -> Rgb {
+pub(crate) fn mix_rgb(base: Rgb, target: Rgb, amount: f32) -> Rgb {
     fn channel(base: u8, target: u8, amount: f32) -> u8 {
         (f32::from(base) + (f32::from(target) - f32::from(base)) * amount).round() as u8
     }
@@ -1354,65 +1197,24 @@ fn color_to_rgb(color: Color) -> Option<Rgb> {
     }
 }
 
-pub(super) fn render_empty(app: &AppState, frame: &mut Frame, area: Rect) {
-    let p = &app.palette;
-    let lines = vec![
-        Line::from(""),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  No workspaces yet",
-            Style::default().fg(p.overlay0),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "  A workspace is one project context.",
-            Style::default().fg(p.overlay1),
-        )),
-        Line::from(Span::styled(
-            "  Its root pane (top-left) sets the default repo or folder name.",
-            Style::default().fg(p.overlay1),
-        )),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  Press ", Style::default().fg(p.overlay0)),
-            Span::styled(
-                app.keybinds
-                    .new_workspace
-                    .label()
-                    .unwrap_or_else(|| "unset".to_string()),
-                Style::default().fg(p.accent).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" to create one", Style::default().fg(p.overlay0)),
-        ]),
-    ];
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(p.surface_dim)),
-        ),
-        area,
-    );
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::text::display_width;
     use super::*;
+    use crate::config::PaneBordersConfig;
     use crate::layout::PaneId;
     use crate::selection::Selection;
     use crate::terminal::TerminalRuntime;
     use crate::terminal::TerminalState;
     use crate::workspace::Workspace;
 
-    fn render_view_pane_borders(app: &AppState, ws: &Workspace, frame: &mut Frame) {
-        render_pane_borders(
-            app,
-            ws,
-            &app.view.pane_infos,
-            &app.view.split_borders,
-            &app.view.stack_bars,
-            frame,
-        );
+    fn render_view_pane_borders(
+        app: &AppState,
+        ws: &Workspace,
+        split_borders: &[crate::layout::SplitBorder],
+        frame: &mut Frame,
+    ) {
+        render_pane_borders(app, ws, &app.view.pane_infos, split_borders, frame);
     }
 
     #[test]
@@ -1448,7 +1250,6 @@ mod tests {
     #[test]
     fn pane_border_renderer_places_adjacent_cjk_by_display_width() {
         let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
         app.view.terminal_area = Rect::new(0, 0, 12, 3);
         let ws = Workspace::test_new("test");
         let pane_id = ws.tabs[0].root_pane;
@@ -1469,7 +1270,7 @@ mod tests {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3)).unwrap();
         terminal
-            .draw(|frame| render_view_pane_borders(&app, &ws, frame))
+            .draw(|frame| render_view_pane_borders(&app, &ws, &[], frame))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -1487,7 +1288,7 @@ mod tests {
 
         let infos = apply_pane_chrome(
             workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
-            true,
+            PaneBordersConfig::Auto,
             false,
             true,
         );
@@ -1508,7 +1309,7 @@ mod tests {
 
         let infos = apply_pane_chrome(
             workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
-            true,
+            PaneBordersConfig::Auto,
             false,
             true,
         );
@@ -1529,7 +1330,7 @@ mod tests {
 
         let infos = apply_pane_chrome(
             workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
-            true,
+            PaneBordersConfig::Auto,
             false,
             false,
         );
@@ -1549,7 +1350,7 @@ mod tests {
 
         let infos = apply_pane_chrome(
             workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
-            true,
+            PaneBordersConfig::Auto,
             true,
             true,
         );
@@ -1570,7 +1371,7 @@ mod tests {
 
         let infos = apply_pane_chrome(
             workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
-            false,
+            PaneBordersConfig::Off,
             true,
             true,
         );
@@ -1590,7 +1391,7 @@ mod tests {
 
         let infos = apply_pane_chrome(
             workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
-            false,
+            PaneBordersConfig::Off,
             false,
             true,
         );
@@ -1602,9 +1403,67 @@ mod tests {
     }
 
     #[test]
+    fn always_pane_borders_frame_lone_pane() {
+        let workspace = Workspace::test_new("test");
+        let area = Rect::new(0, 0, 100, 20);
+
+        let default_infos = apply_pane_chrome(
+            workspace.tabs[0].layout.panes(area),
+            PaneBordersConfig::Auto,
+            false,
+            true,
+        );
+        assert_eq!(default_infos[0].borders, LONE_PANE_BORDERS);
+
+        let framed_infos = apply_pane_chrome(
+            workspace.tabs[0].layout.panes(area),
+            PaneBordersConfig::Always,
+            false,
+            true,
+        );
+        assert_eq!(framed_infos[0].borders, Borders::ALL);
+
+        let no_outer_infos = apply_pane_chrome(
+            workspace.tabs[0].layout.panes(area),
+            PaneBordersConfig::Always,
+            false,
+            false,
+        );
+        assert_eq!(no_outer_infos[0].borders, Borders::NONE);
+    }
+
+    #[test]
+    fn a_lone_pane_gets_a_title_strip_in_auto_mode() {
+        let area = Rect::new(0, 0, 40, 12);
+        let lone = vec![PaneInfo {
+            id: crate::layout::PaneId::from_raw(1),
+            rect: area,
+            inner_rect: area,
+            scrollbar_rect: None,
+            borders: Borders::NONE,
+            is_focused: true,
+        }];
+        let auto = apply_pane_chrome(
+            lone.clone(),
+            crate::config::PaneBordersConfig::Auto,
+            false,
+            true,
+        );
+        assert_eq!(auto[0].borders, LONE_PANE_BORDERS);
+        let off = apply_pane_chrome(
+            lone.clone(),
+            crate::config::PaneBordersConfig::Off,
+            false,
+            true,
+        );
+        assert_eq!(off[0].borders, Borders::NONE);
+        let always = apply_pane_chrome(lone, crate::config::PaneBordersConfig::Always, false, true);
+        assert_eq!(always[0].borders, Borders::ALL);
+    }
+
+    #[test]
     fn global_pane_border_renderer_composes_junctions_and_focus_style() {
         let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
         app.view.terminal_area = Rect::new(0, 0, 4, 4);
         app.view.pane_infos = vec![
             PaneInfo {
@@ -1640,7 +1499,7 @@ mod tests {
                 is_focused: false,
             },
         ];
-        app.view.split_borders = vec![
+        let split_borders = vec![
             crate::layout::SplitBorder {
                 pos: 2,
                 direction: ratatui::layout::Direction::Horizontal,
@@ -1661,7 +1520,7 @@ mod tests {
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 4)).unwrap();
 
         terminal
-            .draw(|frame| render_view_pane_borders(&app, &ws, frame))
+            .draw(|frame| render_view_pane_borders(&app, &ws, &split_borders, frame))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -1672,134 +1531,8 @@ mod tests {
     }
 
     #[test]
-    fn tiled_split_borders_do_not_draw_over_a_float() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 4, 4);
-        let float_id = PaneId::from_raw(99);
-        app.view.pane_infos = vec![
-            PaneInfo {
-                id: PaneId::from_raw(1),
-                rect: Rect::new(0, 0, 2, 2),
-                inner_rect: Rect::default(),
-                scrollbar_rect: None,
-                borders: Borders::TOP | Borders::LEFT,
-                is_focused: false,
-            },
-            PaneInfo {
-                id: PaneId::from_raw(2),
-                rect: Rect::new(2, 0, 2, 2),
-                inner_rect: Rect::default(),
-                scrollbar_rect: None,
-                borders: Borders::TOP | Borders::LEFT | Borders::RIGHT,
-                is_focused: false,
-            },
-            PaneInfo {
-                id: PaneId::from_raw(3),
-                rect: Rect::new(0, 2, 2, 2),
-                inner_rect: Rect::default(),
-                scrollbar_rect: None,
-                borders: Borders::TOP | Borders::LEFT | Borders::BOTTOM,
-                is_focused: false,
-            },
-            PaneInfo {
-                id: PaneId::from_raw(4),
-                rect: Rect::new(2, 2, 2, 2),
-                inner_rect: Rect::default(),
-                scrollbar_rect: None,
-                borders: Borders::ALL,
-                is_focused: false,
-            },
-            // The float covers the cross-junction the tiled split would
-            // otherwise draw at (2, 2) / (2, 1).
-            PaneInfo {
-                id: float_id,
-                rect: Rect::new(1, 1, 2, 2),
-                inner_rect: Rect::default(),
-                scrollbar_rect: None,
-                borders: Borders::ALL,
-                is_focused: true,
-            },
-        ];
-        app.view.split_borders = vec![
-            crate::layout::SplitBorder {
-                pos: 2,
-                direction: ratatui::layout::Direction::Horizontal,
-                ratio: 0.5,
-                area: Rect::new(0, 0, 4, 4),
-                path: vec![],
-            },
-            crate::layout::SplitBorder {
-                pos: 2,
-                direction: ratatui::layout::Direction::Vertical,
-                ratio: 0.5,
-                area: Rect::new(0, 0, 4, 4),
-                path: vec![false],
-            },
-        ];
-        let mut ws = Workspace::test_new("test");
-        ws.tabs[0].push_float(
-            float_id,
-            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
-        );
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 4)).unwrap();
-
-        terminal
-            .draw(|frame| render_view_pane_borders(&app, &ws, frame))
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(2, 2)].symbol(), " ", "junction hidden under float");
-        assert_eq!(buffer[(2, 1)].symbol(), " ", "divider hidden under float");
-        // Outside the float's rect, the tiled join still draws normally.
-        assert_eq!(buffer[(2, 0)].symbol(), "┬");
-    }
-
-    #[test]
-    fn float_rect_unions_the_popup_with_every_stack_bar_including_the_summary_row() {
-        let hidden_id = PaneId::from_raw(1);
-        let float_id = PaneId::from_raw(2);
-        let pane_infos = vec![PaneInfo {
-            id: float_id,
-            rect: Rect::new(5, 4, 20, 6),
-            inner_rect: Rect::default(),
-            scrollbar_rect: None,
-            borders: Borders::ALL,
-            is_focused: true,
-        }];
-        let stack_bars = vec![
-            crate::popup_size::StackBar {
-                rect: Rect::new(5, 2, 20, 1),
-                kind: crate::popup_size::StackBarKind::Summary { count: 2 },
-                below_active: false,
-            },
-            crate::popup_size::StackBar {
-                rect: Rect::new(5, 3, 20, 1),
-                kind: crate::popup_size::StackBarKind::Pane(hidden_id),
-                below_active: false,
-            },
-        ];
-        let mut ws = Workspace::test_new("test");
-        ws.tabs[0].push_float(
-            hidden_id,
-            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
-        );
-        ws.tabs[0].push_float(
-            float_id,
-            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
-        );
-
-        assert_eq!(
-            float_rect(&ws, &pane_infos, &stack_bars),
-            Some(Rect::new(5, 2, 20, 8))
-        );
-    }
-
-    #[test]
     fn gapped_pane_focus_does_not_color_neighbor_border() {
         let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
         app.pane_gaps = true;
         app.view.terminal_area = Rect::new(0, 0, 4, 3);
         app.view.pane_infos = vec![
@@ -1825,7 +1558,7 @@ mod tests {
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(4, 3)).unwrap();
 
         terminal
-            .draw(|frame| render_view_pane_borders(&app, &ws, frame))
+            .draw(|frame| render_view_pane_borders(&app, &ws, &[], frame))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -1858,8 +1591,314 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        // One row goes to the lone pane's title strip.
+        // One row goes to the lone pane's title strip
         assert_eq!(info.inner_rect, Rect::new(10, 4, 39, 7));
+    }
+
+    fn stacked_pane_infos(
+        ws: &mut Workspace,
+        count: usize,
+        active_index: usize,
+        area: Rect,
+    ) -> Vec<PaneInfo> {
+        let tab = &mut ws.tabs[0];
+        for _ in 1..count {
+            tab.layout
+                .split_focused(ratatui::layout::Direction::Horizontal);
+        }
+        let ids = tab.layout.pane_ids();
+        assert_eq!(ids.len(), count);
+        tab.layout.focus_pane(ids[active_index]);
+        tab.arrangement = crate::layout::Arrangement::Stacked;
+        tab.needs_reflow = true;
+        tab.reflow(area, None);
+        tab.layout.panes(area)
+    }
+
+    fn render_stacked(pane_infos: &[PaneInfo], app: &AppState, area: Rect) -> Vec<String> {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    Some(super::super::tab_surface::TabSurfaceTarget {
+                        workspace_index: 0,
+                        tab_index: 0,
+                    }),
+                    pane_infos,
+                    &[],
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..area.height)
+            .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_float_draws_its_own_thick_frame_over_the_tiled_panes() {
+        let area = Rect::new(0, 0, 40, 12);
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("test");
+        let float_id = crate::layout::PaneId::alloc();
+        let number = ws.next_public_pane_number;
+        ws.register_new_pane_with_number(float_id, number);
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(20, 6, 1024, b"floating\n"),
+        );
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let float = pane_infos
+            .iter()
+            .find(|info| info.id == float_id)
+            .expect("float info");
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .unwrap();
+        terminal
+            .draw(|frame| {
+                render_panes(
+                    &app,
+                    &TerminalRuntimeRegistry::new(),
+                    frame,
+                    Some(super::super::tab_surface::TabSurfaceTarget {
+                        workspace_index: 0,
+                        tab_index: 0,
+                    }),
+                    &pane_infos,
+                    &[],
+                )
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let corner = buffer[(float.rect.x, float.rect.y)].symbol().to_string();
+        assert_eq!(
+            corner, "\u{250f}",
+            "a float takes a thick corner, not a junction-table line"
+        );
+        assert_eq!(
+            buffer[(float.rect.x, float.rect.y)].bg,
+            app.palette.panel_bg,
+            "the frame is opaque over whatever it covers"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_zoomed_tab_still_lays_out_and_sizes_its_floats() {
+        let area = Rect::new(0, 0, 60, 20);
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("zoom");
+        let tiled = ws.tabs[0].root_pane;
+        let float_id = crate::layout::PaneId::alloc();
+        let number = ws.next_public_pane_number;
+        ws.register_new_pane_with_number(float_id, number);
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(10, 3, 1024, b"floating\n"),
+        );
+        ws.tabs[0].zoomed = true;
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let ids: Vec<_> = pane_infos.iter().map(|info| info.id).collect();
+        assert_eq!(
+            ids,
+            vec![tiled, float_id],
+            "zoomed tiled pane, then the float"
+        );
+        let float = &pane_infos[1];
+        assert!(float.is_focused, "the pushed float holds focus");
+        let size = app.workspaces[0].tabs[0].runtimes[&float_id].current_size();
+        assert_eq!(
+            size,
+            (float.inner_rect.height, float.inner_rect.width),
+            "the float PTY follows its box even while the tab is zoomed"
+        );
+    }
+
+    #[test]
+    fn drawing_outside_the_frame_clips_instead_of_panicking() {
+        let app = AppState::test_new();
+        let ws = Workspace::test_new("test");
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 10)).unwrap();
+
+        // A rect one row past the bottom, and one starting beyond the right edge.
+        for rect in [Rect::new(0, 10, 20, 1), Rect::new(24, 2, 8, 1)] {
+            let bar = StackBar {
+                rect,
+                kind: StackBarKind::Summary { count: 2 },
+                below_active: false,
+            };
+            terminal
+                .draw(|frame| render_stack_bar(&app, &ws, frame, &bar))
+                .expect("a bar outside the frame must not panic the render");
+        }
+
+        let info = PaneInfo {
+            id: crate::layout::PaneId::from_raw(1),
+            rect: Rect::new(4, 4, 40, 20),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused: false,
+        };
+        terminal
+            .draw(|frame| render_float_chrome(&app, &ws, frame, &info))
+            .expect("a float larger than the frame must not panic the render");
+    }
+
+    #[test]
+    fn collapsed_bars_point_their_corners_at_the_active_member() {
+        let area = Rect::new(0, 0, 20, 10);
+        let mut ws = Workspace::test_new("test");
+        let pane_infos = stacked_pane_infos(&mut ws, 3, 1, area);
+
+        let mut app = AppState::test_new();
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let rows = render_stacked(&pane_infos, &app, area);
+        assert!(
+            rows[0].starts_with('\u{250c}') && rows[0].ends_with('\u{2510}'),
+            "bar above the active member: {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[9].starts_with('\u{2514}') && rows[9].ends_with('\u{2518}'),
+            "bar below the active member: {:?}",
+            rows[9]
+        );
+    }
+
+    #[test]
+    fn a_fold_before_the_active_member_absorbs_the_bar_it_lands_on() {
+        let pane = |id: u32, y: u16, height: u16| PaneInfo {
+            id: crate::layout::PaneId::from_raw(id),
+            rect: Rect::new(0, y, 20, height),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::NONE,
+            is_focused: false,
+        };
+        // Two folded members land on the row the collapsed bar already owns, so
+        // that pane joins the count rather than keeping its own row.
+        let bars =
+            stack_bars_for([pane(1, 0, 1), pane(2, 1, 0), pane(3, 1, 0), pane(4, 1, 8)].iter());
+
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].kind, StackBarKind::Summary { count: 3 });
+        assert!(!bars[0].below_active);
+    }
+
+    #[test]
+    fn a_fold_after_the_active_member_borrows_its_bottom_edge() {
+        let pane = |id: u32, y: u16, height: u16| PaneInfo {
+            id: crate::layout::PaneId::from_raw(id),
+            rect: Rect::new(0, y, 20, height),
+            inner_rect: Rect::default(),
+            scrollbar_rect: None,
+            borders: Borders::NONE,
+            is_focused: false,
+        };
+        let bars = stack_bars_for([pane(1, 0, 9), pane(2, 9, 0), pane(3, 9, 0)].iter());
+
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].kind, StackBarKind::Summary { count: 2 });
+        assert!(
+            bars[0].below_active,
+            "it reads as the active member's bottom edge"
+        );
+        assert_eq!(bars[0].rect, Rect::new(0, 8, 20, 1));
+    }
+
+    #[tokio::test]
+    async fn a_collapsed_stack_member_keeps_its_runtime_size() {
+        let area = Rect::new(0, 0, 40, 12);
+        let mut app = AppState::test_new();
+        let mut workspace = Workspace::test_new("stack");
+        let collapsed_id = workspace.tabs[0].root_pane;
+        let active_id = workspace.tabs[0]
+            .layout
+            .split_focused(ratatui::layout::Direction::Horizontal);
+        workspace.tabs[0].panes.insert(
+            active_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        workspace.tabs[0].arrangement = crate::layout::Arrangement::Stacked;
+        workspace.tabs[0].needs_reflow = true;
+        workspace.tabs[0].reflow(area, None);
+        workspace.tabs[0].runtimes.insert(
+            collapsed_id,
+            TerminalRuntime::test_with_scrollback_bytes(40, 10, 1024, b"vim\n"),
+        );
+        workspace.tabs[0].runtimes.insert(
+            active_id,
+            TerminalRuntime::test_with_scrollback_bytes(40, 10, 1024, b"shell\n"),
+        );
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+
+        let infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            true,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        let collapsed = infos
+            .iter()
+            .find(|info| info.id == collapsed_id)
+            .expect("collapsed member");
+        assert_eq!(collapsed.rect.height, 1);
+        assert_eq!(
+            app.workspaces[0].tabs[0].runtimes[&collapsed_id].current_size(),
+            (10, 40),
+            "reflowing a collapsed member destroys an alt screen with no scrollback"
+        );
+
+        let active = infos
+            .iter()
+            .find(|info| info.id == active_id)
+            .expect("active member");
+        assert!(active.rect.height > 1);
+        assert_ne!(
+            app.workspaces[0].tabs[0].runtimes[&active_id].current_size(),
+            (10, 40),
+            "the expanded member still tracks its box"
+        );
     }
 
     #[tokio::test]
@@ -1889,7 +1928,7 @@ mod tests {
                 true,
                 crate::kitty_graphics::HostCellSize::default(),
             );
-            // One row goes to the lone pane's title strip.
+            // One row goes to the lone pane's title strip
             assert_eq!(
                 infos[0].inner_rect,
                 Rect::new(area.x, area.y + 1, expected_width, area.height - 1)
@@ -1934,8 +1973,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        // One row goes to the lone pane's title strip.
-        assert_eq!(info.inner_rect, Rect::new(10, 4, 39, 7));
+        assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
     }
 
     #[tokio::test]
@@ -1993,7 +2031,8 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, pane_inner_rect(area, LONE_PANE_BORDERS));
+        // One row goes to the lone pane's title strip
+        assert_eq!(info.inner_rect, Rect::new(10, 4, 4, 7));
     }
 
     #[tokio::test]
@@ -2025,6 +2064,7 @@ mod tests {
         let info = &infos[0];
 
         assert_eq!(info.rect, area);
+        // One row goes to the lone pane's title strip
         assert_eq!(info.scrollbar_rect, Some(Rect::new(49, 4, 1, 7)));
         assert_eq!(info.inner_rect, Rect::new(10, 4, 39, 7));
 
@@ -2040,465 +2080,8 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, pane_inner_rect(area, LONE_PANE_BORDERS));
-    }
-
-    #[tokio::test]
-    async fn a_lone_pane_keeps_a_title_strip_naming_its_agent_task() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        let area = Rect::new(0, 0, 40, 12);
-        app.view.terminal_area = area;
-
-        let mut ws = Workspace::test_new("test");
-        let root_pane = ws.tabs[0].root_pane;
-        ws.tabs[0].runtimes.insert(
-            root_pane,
-            TerminalRuntime::test_with_scrollback_bytes(40, 11, 1024, b""),
-        );
-        let terminal_id = ws.terminal_id(root_pane).cloned().expect("terminal id");
-        let mut terminal_state = TerminalState::new(terminal_id.clone(), "/home/user/herdr".into());
-        terminal_state.set_detected_state(
-            Some(crate::detect::Agent::Claude),
-            crate::detect::AgentState::Working,
-        );
-        terminal_state.set_terminal_title(Some("✳ Wiring the title strip".into()));
-        app.terminals.insert(terminal_id, terminal_state);
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
-        let pane_infos = compute_pane_infos(
-            &app,
-            &terminal_runtimes,
-            area,
-            false,
-            crate::kitty_graphics::HostCellSize::default(),
-        );
-        let info = &pane_infos[0];
-        assert_eq!(info.borders, LONE_PANE_BORDERS);
-        assert_eq!(info.inner_rect.y, area.y + 1);
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
-        terminal
-            .draw(|frame| render_panes(&app, &terminal_runtimes, frame, &pane_infos, &[], &[]))
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let row: String = (area.x..area.x + area.width)
-            .map(|x| buffer[(x, area.y)].symbol())
-            .collect();
-        assert!(row.contains("Wiring the title strip"), "top row: {row:?}");
-    }
-
-    #[tokio::test]
-    async fn render_panes_falls_back_to_cwd_basename_for_an_unlabeled_float() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 40, 12);
-
-        let mut ws = Workspace::test_new("test");
-        let float_id = PaneId::from_raw(60);
-        let float_terminal_id = crate::terminal::TerminalId::alloc();
-        ws.tabs[0].push_float(
-            float_id,
-            crate::pane::PaneState::new(float_terminal_id.clone()),
-        );
-        ws.tabs[0].runtimes.insert(
-            float_id,
-            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b""),
-        );
-
-        let terminal_state =
-            TerminalState::new(float_terminal_id.clone(), "/home/user/zellij".into());
-        app.terminals.insert(float_terminal_id, terminal_state);
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let area = app.view.terminal_area;
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
-        let pane_infos = compute_pane_infos(
-            &app,
-            &terminal_runtimes,
-            area,
-            false,
-            crate::kitty_graphics::HostCellSize::default(),
-        );
-        let float_rect = pane_infos
-            .iter()
-            .find(|info| info.id == float_id)
-            .expect("float pane info")
-            .rect;
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
-        terminal
-            .draw(|frame| render_panes(&app, &terminal_runtimes, frame, &pane_infos, &[], &[]))
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let row: String = (float_rect.x..float_rect.x + float_rect.width)
-            .map(|x| buffer[(x, float_rect.y)].symbol())
-            .collect();
-        assert!(row.contains("zellij"), "float border row: {row:?}");
-    }
-
-    #[tokio::test]
-    async fn render_panes_prefers_foreground_process_name_over_cwd_basename_for_an_unlabeled_float()
-    {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 40, 12);
-
-        let mut ws = Workspace::test_new("test");
-        let float_id = PaneId::from_raw(61);
-        let float_terminal_id = crate::terminal::TerminalId::alloc();
-        ws.tabs[0].push_float(
-            float_id,
-            crate::pane::PaneState::new(float_terminal_id.clone()),
-        );
-        ws.tabs[0].runtimes.insert(
-            float_id,
-            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b""),
-        );
-
-        let mut terminal_state =
-            TerminalState::new(float_terminal_id.clone(), "/home/user/herdr".into());
-        terminal_state.foreground_process_name = Some("nvim".to_string());
-        app.terminals.insert(float_terminal_id, terminal_state);
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let area = app.view.terminal_area;
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
-        let pane_infos = compute_pane_infos(
-            &app,
-            &terminal_runtimes,
-            area,
-            false,
-            crate::kitty_graphics::HostCellSize::default(),
-        );
-        let float_rect = pane_infos
-            .iter()
-            .find(|info| info.id == float_id)
-            .expect("float pane info")
-            .rect;
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
-        terminal
-            .draw(|frame| render_panes(&app, &terminal_runtimes, frame, &pane_infos, &[], &[]))
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let row: String = (float_rect.x..float_rect.x + float_rect.width)
-            .map(|x| buffer[(x, float_rect.y)].symbol())
-            .collect();
-        assert!(row.contains("nvim"), "float border row: {row:?}");
-        assert!(!row.contains("herdr"), "float border row: {row:?}");
-    }
-
-    #[tokio::test]
-    async fn render_panes_prefers_osc_title_over_cwd_basename_for_an_unlabeled_float() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 40, 12);
-
-        let mut ws = Workspace::test_new("test");
-        let float_id = PaneId::from_raw(62);
-        let float_terminal_id = crate::terminal::TerminalId::alloc();
-        ws.tabs[0].push_float(
-            float_id,
-            crate::pane::PaneState::new(float_terminal_id.clone()),
-        );
-        ws.tabs[0].runtimes.insert(
-            float_id,
-            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b""),
-        );
-
-        let mut terminal_state =
-            TerminalState::new(float_terminal_id.clone(), "/home/user/herdr".into());
-        terminal_state.set_terminal_title(Some("ssh remote-host".to_string()));
-        app.terminals.insert(float_terminal_id, terminal_state);
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let area = app.view.terminal_area;
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
-        let pane_infos = compute_pane_infos(
-            &app,
-            &terminal_runtimes,
-            area,
-            false,
-            crate::kitty_graphics::HostCellSize::default(),
-        );
-        let float_rect = pane_infos
-            .iter()
-            .find(|info| info.id == float_id)
-            .expect("float pane info")
-            .rect;
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
-        terminal
-            .draw(|frame| render_panes(&app, &terminal_runtimes, frame, &pane_infos, &[], &[]))
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let row: String = (float_rect.x..float_rect.x + float_rect.width)
-            .map(|x| buffer[(x, float_rect.y)].symbol())
-            .collect();
-        assert!(row.contains("ssh remote-host"), "float border row: {row:?}");
-        assert!(!row.contains("herdr"), "float border row: {row:?}");
-    }
-
-    #[tokio::test]
-    async fn render_panes_prefers_foreground_process_name_over_a_shell_set_osc_title() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 40, 12);
-
-        let mut ws = Workspace::test_new("test");
-        let float_id = PaneId::from_raw(63);
-        let float_terminal_id = crate::terminal::TerminalId::alloc();
-        ws.tabs[0].push_float(
-            float_id,
-            crate::pane::PaneState::new(float_terminal_id.clone()),
-        );
-        ws.tabs[0].runtimes.insert(
-            float_id,
-            TerminalRuntime::test_with_scrollback_bytes(40, 8, 1024, b""),
-        );
-
-        // A shell prompt commonly sets the OSC title on every command (to the
-        // command it just ran, here an alias) even while something else is
-        // the actual foreground process — the process name must still win.
-        let mut terminal_state =
-            TerminalState::new(float_terminal_id.clone(), "/home/user/herdr".into());
-        terminal_state.set_terminal_title(Some("lg ~/herdr".to_string()));
-        terminal_state.foreground_process_name = Some("lazygit".to_string());
-        app.terminals.insert(float_terminal_id, terminal_state);
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let area = app.view.terminal_area;
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
-        let pane_infos = compute_pane_infos(
-            &app,
-            &terminal_runtimes,
-            area,
-            false,
-            crate::kitty_graphics::HostCellSize::default(),
-        );
-        let float_rect = pane_infos
-            .iter()
-            .find(|info| info.id == float_id)
-            .expect("float pane info")
-            .rect;
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
-        terminal
-            .draw(|frame| render_panes(&app, &terminal_runtimes, frame, &pane_infos, &[], &[]))
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let row: String = (float_rect.x..float_rect.x + float_rect.width)
-            .map(|x| buffer[(x, float_rect.y)].symbol())
-            .collect();
-        assert!(row.contains("lazygit"), "float border row: {row:?}");
-        assert!(!row.contains("lg "), "float border row: {row:?}");
-    }
-
-    #[test]
-    fn render_panes_draws_a_stack_bar_with_its_pane_label_above_the_popup() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 30, 10);
-
-        let mut ws = Workspace::test_new("test");
-        let hidden_id = PaneId::from_raw(50);
-        let top_id = PaneId::from_raw(51);
-        let hidden_terminal_id = crate::terminal::TerminalId::alloc();
-        ws.tabs[0].push_float(
-            hidden_id,
-            crate::pane::PaneState::new(hidden_terminal_id.clone()),
-        );
-        ws.tabs[0].push_float(
-            top_id,
-            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
-        );
-
-        let mut terminal_state = TerminalState::new(hidden_terminal_id.clone(), "/tmp".into());
-        terminal_state.set_manual_label("claude".into());
-        app.terminals.insert(hidden_terminal_id, terminal_state);
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let bar = crate::popup_size::StackBar {
-            rect: Rect::new(5, 3, 20, 1),
-            kind: crate::popup_size::StackBarKind::Pane(hidden_id),
-            below_active: false,
-        };
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_panes(
-                    &app,
-                    &TerminalRuntimeRegistry::new(),
-                    frame,
-                    &[],
-                    &[],
-                    std::slice::from_ref(&bar),
-                )
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let row: String = (5..25).map(|x| buffer[(x, 3)].symbol()).collect();
-        assert!(row.contains("claude"), "bar row: {row:?}");
-        assert_eq!(buffer[(5, 3)].symbol(), "┌");
-        assert_eq!(buffer[(24, 3)].symbol(), "┐");
-    }
-
-    #[test]
-    fn tiled_split_borders_do_not_draw_over_stack_bars_or_the_summary_row() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 20, 12);
-
-        let left_id = PaneId::from_raw(60);
-        let right_id = PaneId::from_raw(61);
-        let hidden_id = PaneId::from_raw(62);
-        let top_id = PaneId::from_raw(63);
-
-        // A 50/50 vertical divider running down column 10, straight through
-        // the columns the centred popup and its stack bars occupy.
-        let pane_infos = vec![
-            PaneInfo {
-                id: left_id,
-                rect: Rect::new(0, 0, 10, 12),
-                inner_rect: Rect::new(1, 1, 8, 10),
-                scrollbar_rect: None,
-                borders: Borders::TOP | Borders::LEFT | Borders::BOTTOM,
-                is_focused: false,
-            },
-            PaneInfo {
-                id: right_id,
-                rect: Rect::new(10, 0, 10, 12),
-                inner_rect: Rect::new(11, 1, 8, 10),
-                scrollbar_rect: None,
-                borders: Borders::ALL,
-                is_focused: false,
-            },
-            PaneInfo {
-                id: top_id,
-                rect: Rect::new(2, 4, 16, 6),
-                inner_rect: Rect::new(3, 5, 14, 4),
-                scrollbar_rect: None,
-                borders: Borders::ALL,
-                is_focused: true,
-            },
-        ];
-        let split_borders = vec![crate::layout::SplitBorder {
-            pos: 10,
-            direction: ratatui::layout::Direction::Horizontal,
-            ratio: 0.5,
-            area: Rect::new(0, 0, 20, 12),
-            path: vec![],
-        }];
-        let stack_bars = vec![
-            crate::popup_size::StackBar {
-                rect: Rect::new(2, 2, 16, 1),
-                kind: crate::popup_size::StackBarKind::Summary { count: 2 },
-                below_active: false,
-            },
-            crate::popup_size::StackBar {
-                rect: Rect::new(2, 3, 16, 1),
-                kind: crate::popup_size::StackBarKind::Pane(hidden_id),
-                below_active: false,
-            },
-        ];
-
-        let mut ws = Workspace::test_new("test");
-        for (offset, id) in [hidden_id, top_id].into_iter().enumerate() {
-            ws.tabs[0].push_float(
-                id,
-                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
-            );
-            ws.register_new_pane_with_number(id, 2 + offset);
-        }
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 12)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_panes(
-                    &app,
-                    &TerminalRuntimeRegistry::new(),
-                    frame,
-                    &pane_infos,
-                    &split_borders,
-                    &stack_bars,
-                )
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        // The divider is real: it draws above the stack and below the popup.
-        assert_eq!(buffer[(10, 1)].symbol(), "│");
-        assert_eq!(buffer[(10, 10)].symbol(), "│");
-        // ...but never inside it, on the summary row or on a real bar row.
-        for y in 2..=3 {
-            assert_ne!(
-                buffer[(10, y)].symbol(),
-                "│",
-                "tiled divider punched through stack row {y}"
-            );
-        }
-        let summary_row: String = (2..18).map(|x| buffer[(x, 2)].symbol()).collect();
-        assert!(summary_row.contains("+2 more"), "summary: {summary_row:?}");
-        let bar_row: String = (2..18).map(|x| buffer[(x, 3)].symbol()).collect();
-        assert!(bar_row.contains("pane 2"), "bar: {bar_row:?}");
-    }
-
-    #[test]
-    fn render_panes_draws_a_summary_bar_with_the_folded_count() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 30, 10);
-        app.workspaces = vec![Workspace::test_new("test")];
-        app.active = Some(0);
-
-        let bar = crate::popup_size::StackBar {
-            rect: Rect::new(5, 3, 20, 1),
-            kind: crate::popup_size::StackBarKind::Summary { count: 3 },
-            below_active: false,
-        };
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_panes(
-                    &app,
-                    &TerminalRuntimeRegistry::new(),
-                    frame,
-                    &[],
-                    &[],
-                    std::slice::from_ref(&bar),
-                )
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let row: String = (5..25).map(|x| buffer[(x, 3)].symbol()).collect();
-        assert!(row.contains("+3 more"), "bar row: {row:?}");
+        // One row goes to the lone pane's title strip
+        assert_eq!(info.inner_rect, Rect::new(10, 4, 40, 7));
     }
 
     #[test]
@@ -2514,7 +2097,11 @@ mod tests {
             ..Default::default()
         };
         let expected_style = automatic_selection_style(&palette, host_theme);
-        let selection = Some(Selection::range(PaneId::from_raw(1), 0, 0, 2, None));
+        let selection = Some(Selection::absolute_range(
+            PaneId::from_raw(1),
+            (0, 0),
+            (0, 2),
+        ));
         let backend = ratatui::backend::TestBackend::new(4, 1);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
 
@@ -2534,9 +2121,9 @@ mod tests {
                 );
                 buf[(2, 0)].set_style(Style::default().fg(Color::Blue).bg(Color::Reset));
                 render_selection_highlight(
-                    &selection,
-                    frame,
-                    PaneId::from_raw(1),
+                    selection.as_ref(),
+                    frame.buffer_mut(),
+                    &PaneId::from_raw(1),
                     Rect::new(0, 0, 4, 1),
                     None,
                     &palette,
@@ -2587,841 +2174,182 @@ mod tests {
         assert!(relative_luminance((r, g, b)) > relative_luminance((12, 14, 16)));
     }
 
-    // Task 2's invariant: cycling arrangements must preserve pane order and
-    // focus. These two are geometry-only regression anchors for that
-    // invariant as it applies to Stacked; they exercise Task 5-8 code, not
-    // this task's renderer, and are expected to already pass.
     #[test]
-    fn collapsed_stack_members_render_as_single_row_bars() {
-        let area = Rect::new(0, 0, 80, 10);
-        let mut workspace = Workspace::test_new("arrangements");
-        let tab = &mut workspace.tabs[0];
-        let first = tab.layout.focused();
-        let second = tab
-            .layout
-            .split_focused(ratatui::layout::Direction::Horizontal);
-        tab.arrangement = crate::layout::Arrangement::Stacked;
-        tab.needs_reflow = true;
-        tab.reflow(area, None);
+    fn automatic_selection_rgb_style_is_readable_with_or_without_host_background() {
+        for (background, selected_bg, selected_fg) in [
+            ((239, 241, 245), (172, 174, 176), (0, 0, 0)),
+            ((26, 27, 38), (90, 91, 99), (255, 255, 255)),
+            ((45, 53, 59), (104, 110, 114), (255, 255, 255)),
+        ] {
+            let mut palette = Palette::catppuccin();
+            let (r, g, b) = background;
+            palette.panel_bg = Color::Rgb(r, g, b);
+            let expected = Style::reset()
+                .bg(Color::Rgb(selected_bg.0, selected_bg.1, selected_bg.2))
+                .fg(Color::Rgb(selected_fg.0, selected_fg.1, selected_fg.2));
 
-        let infos = tab.layout.panes(area);
-        let bars: Vec<_> = infos.iter().filter(|p| p.rect.height == 1).collect();
-        assert_eq!(bars.len(), 1);
-        assert_eq!(bars[0].id, first);
-        let expanded: Vec<_> = infos.iter().filter(|p| p.rect.height > 1).collect();
-        assert_eq!(expanded.len(), 1);
-        assert_eq!(expanded[0].id, second);
+            assert_eq!(
+                automatic_selection_style(&palette, Default::default()),
+                expected
+            );
+            assert_eq!(
+                automatic_selection_style(
+                    &Palette::terminal(),
+                    crate::terminal_theme::TerminalTheme {
+                        background: Some(crate::terminal_theme::RgbColor { r, g, b }),
+                        ..Default::default()
+                    },
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn automatic_selection_preserves_symbolic_palette_fallbacks() {
+        let mut palette = Palette::terminal();
+        assert_eq!(
+            automatic_selection_style(&palette, Default::default()),
+            Style::reset().fg(Color::White).bg(Color::DarkGray)
+        );
+        for fallback in [Color::Blue, Color::White, Color::Indexed(42), Color::Reset] {
+            palette.surface_dim = fallback;
+            assert_eq!(
+                automatic_selection_bg(&palette, Default::default()),
+                fallback
+            );
+        }
     }
 
     #[tokio::test]
-    async fn a_collapsed_stack_member_keeps_its_runtime_size() {
-        let area = Rect::new(0, 0, 40, 12);
+    async fn tiled_split_lines_do_not_draw_through_a_float() {
+        let area = Rect::new(0, 0, 60, 20);
         let mut app = AppState::test_new();
-        let mut ws = Workspace::test_new("stack");
-        let collapsed_id = ws.tabs[0].root_pane;
-        let active_id = ws.tabs[0]
-            .layout
-            .split_focused(ratatui::layout::Direction::Horizontal);
-        ws.tabs[0].panes.insert(
-            active_id,
-            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
-        );
-        ws.tabs[0].arrangement = crate::layout::Arrangement::Stacked;
+        let mut ws = Workspace::test_new("split-under-float");
+        let _right = ws.test_split(ratatui::layout::Direction::Horizontal);
+        ws.tabs[0].arrangement = crate::layout::Arrangement::Vertical;
         ws.tabs[0].needs_reflow = true;
         ws.tabs[0].reflow(area, None);
-        ws.tabs[0].runtimes.insert(
-            collapsed_id,
-            TerminalRuntime::test_with_scrollback_bytes(40, 10, 1024, b"vim\n"),
-        );
-        ws.tabs[0].runtimes.insert(
-            active_id,
-            TerminalRuntime::test_with_scrollback_bytes(40, 10, 1024, b"shell\n"),
-        );
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let infos = compute_pane_infos(
-            &app,
-            &TerminalRuntimeRegistry::new(),
-            area,
-            true,
-            crate::kitty_graphics::HostCellSize::default(),
-        );
-
-        let collapsed = infos
-            .iter()
-            .find(|info| info.id == collapsed_id)
-            .expect("collapsed member");
-        assert_eq!(collapsed.rect.height, 1);
-        // Reflowing the collapsed member down to the clamped minimum destroys
-        // an alternate screen that has no scrollback to come back from.
-        assert_eq!(
-            app.workspaces[0].tabs[0].runtimes[&collapsed_id].current_size(),
-            (10, 40)
-        );
-
-        let active = infos
-            .iter()
-            .find(|info| info.id == active_id)
-            .expect("active member");
-        assert_eq!(
-            app.workspaces[0].tabs[0].runtimes[&active_id].current_size(),
-            (active.inner_rect.height, active.inner_rect.width)
-        );
-    }
-
-    #[test]
-    fn zooming_a_stack_member_shows_only_that_pane() {
-        let area = Rect::new(0, 0, 80, 10);
-        let mut workspace = Workspace::test_new("arrangements");
-        let tab = &mut workspace.tabs[0];
-        let second = tab
-            .layout
-            .split_focused(ratatui::layout::Direction::Horizontal);
-        tab.arrangement = crate::layout::Arrangement::Stacked;
-        tab.needs_reflow = true;
-        tab.reflow(area, None);
-        tab.zoomed = true;
-
-        // Zoom already renders only the focused pane, and the focused pane is
-        // always the stack's active member, so no stack-specific handling is
-        // needed. This test exists to catch a regression if that changes.
-        assert_eq!(tab.layout.focused(), second);
-        let infos = tab.layout.panes(area);
-        let focused = infos.iter().find(|p| p.is_focused).expect("a focused pane");
-        assert_eq!(focused.id, second);
-    }
-
-    #[tokio::test]
-    async fn render_panes_draws_terminal_content_for_the_active_member_and_a_bar_for_the_collapsed_one(
-    ) {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 30, 10);
-
-        let active_id = PaneId::from_raw(70);
-        let collapsed_id = PaneId::from_raw(71);
-        let mut ws = Workspace::test_new("test");
-        ws.tabs[0].panes.insert(
-            active_id,
+        let float_id = crate::layout::PaneId::alloc();
+        let number = ws.next_public_pane_number;
+        ws.register_new_pane_with_number(float_id, number);
+        ws.tabs[0].push_float(
+            float_id,
             crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
         );
-        let collapsed_terminal_id = crate::terminal::TerminalId::alloc();
-        ws.tabs[0].panes.insert(
-            collapsed_id,
-            crate::pane::PaneState::new(collapsed_terminal_id.clone()),
-        );
         ws.tabs[0].runtimes.insert(
-            active_id,
-            TerminalRuntime::test_with_screen_bytes(28, 7, b"ACTIVE"),
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(20, 6, 1024, b"floating\n"),
         );
-
-        let mut terminal_state = TerminalState::new(collapsed_terminal_id.clone(), "/tmp".into());
-        terminal_state.set_manual_label("collapsed".into());
-        app.terminals.insert(collapsed_terminal_id, terminal_state);
         app.workspaces = vec![ws];
         app.active = Some(0);
 
-        let pane_infos = vec![
-            PaneInfo {
-                id: active_id,
-                rect: Rect::new(0, 0, 30, 9),
-                inner_rect: Rect::new(1, 1, 28, 7),
-                scrollbar_rect: None,
-                borders: Borders::ALL,
-                is_focused: true,
-            },
-            PaneInfo {
-                id: collapsed_id,
-                rect: Rect::new(0, 9, 30, 1),
-                inner_rect: Rect::new(0, 9, 30, 1),
-                scrollbar_rect: None,
-                borders: Borders::ALL,
-                is_focused: false,
-            },
-        ];
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_panes(
-                    &app,
-                    &TerminalRuntimeRegistry::new(),
-                    frame,
-                    &pane_infos,
-                    &[],
-                    &[],
-                )
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let collapsed_row: String = (0..30).map(|x| buffer[(x, 9)].symbol()).collect();
-        assert!(
-            collapsed_row.contains("collapsed"),
-            "bar row: {collapsed_row:?}"
-        );
-        // Distinguishes an actual bar draw from a leftover generic border
-        // title: a plain bordered pane on a 1-row rect draws "─" at its left
-        // edge from the junction table, not the corner render_stack_bar uses.
-        // The bar follows the active member, so its corners face back up at it.
-        assert_eq!(buffer[(0, 9)].symbol(), "└", "bar row: {collapsed_row:?}");
-        assert_eq!(buffer[(29, 9)].symbol(), "┘", "bar row: {collapsed_row:?}");
-
-        let content: String = (0..9)
-            .flat_map(|y| (0..30).map(move |x| (x, y)))
-            .map(|(x, y)| buffer[(x, y)].symbol())
-            .collect();
-        assert!(
-            content.contains("ACTIVE"),
-            "active content missing: {content:?}"
-        );
-    }
-
-    #[test]
-    fn every_float_gets_a_rect_inside_the_region() {
-        let region = Rect::new(10, 5, 40, 10);
-        let mut workspace = Workspace::test_new("floats");
-        let tab = workspace.tabs.get_mut(0).expect("a tab");
-        let ids: Vec<_> = (0..3).map(|_| PaneId::alloc()).collect();
-        for id in &ids {
-            tab.push_float(
-                *id,
-                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
-            );
-        }
-        tab.float_arrangement = crate::layout::Arrangement::Stacked;
-        tab.needs_reflow = true;
-        tab.reflow(Rect::new(0, 0, 80, 20), Some(region));
-
-        let infos = tab
-            .float_layout
-            .as_ref()
-            .expect("a float layout")
-            .panes(region);
-        assert_eq!(
-            infos.len(),
-            3,
-            "every float is laid out, not just the top one"
-        );
-        for info in &infos {
-            assert!(info.rect.y >= region.y);
-            assert!(info.rect.y + info.rect.height <= region.y + region.height);
-        }
-        let expanded: Vec<_> = infos.iter().filter(|i| i.rect.height > 1).collect();
-        assert_eq!(
-            expanded.len(),
-            1,
-            "stacked shows exactly one expanded member"
-        );
-    }
-
-    #[test]
-    fn compute_pane_infos_appends_every_float_after_the_tiled_panes_with_its_own_rect() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        let area = Rect::new(0, 0, 60, 20);
-        app.view.terminal_area = area;
-
-        let mut ws = Workspace::test_new("test");
-        let root_pane = ws.tabs[0].root_pane;
-        let float_ids: Vec<_> = (0..3).map(|_| PaneId::alloc()).collect();
-        for id in &float_ids {
-            ws.tabs[0].push_float(
-                *id,
-                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
-            );
-        }
-        ws.tabs[0].float_arrangement = crate::layout::Arrangement::Grid;
-        let float_region =
-            resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
-                .map(|geometry| geometry.outer);
-        ws.tabs[0].needs_reflow = true;
-        ws.tabs[0].reflow(area, float_region);
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
-        let pane_infos = compute_pane_infos(
+        let surface = super::super::tab_surface::compute_tab_surface(
             &app,
-            &terminal_runtimes,
+            &TerminalRuntimeRegistry::new(),
             area,
             false,
             crate::kitty_graphics::HostCellSize::default(),
         );
-
-        // The tiled root pane comes first; every float comes after it, so a
-        // reverse-order hit test finds any float before the tiled pane it covers.
-        assert_eq!(pane_infos[0].id, root_pane);
-        let float_infos: Vec<_> = pane_infos[1..].iter().collect();
-        assert_eq!(float_infos.len(), 3);
-        let ids: std::collections::HashSet<_> = float_infos.iter().map(|info| info.id).collect();
-        assert_eq!(ids, float_ids.iter().copied().collect());
-
-        // Grid keeps every float expanded at once, each with a real, distinct box.
-        for info in &float_infos {
-            assert!(
-                info.rect.height > 1,
-                "float {:?} should be expanded",
-                info.id
-            );
-        }
-        let rects: std::collections::HashSet<_> = float_infos
+        let float = surface
+            .pane_infos
             .iter()
-            .map(|info| (info.rect.x, info.rect.y, info.rect.width, info.rect.height))
-            .collect();
-        assert_eq!(
-            rects.len(),
-            3,
-            "every float gets its own rect, not a shared one"
-        );
-    }
-
-    #[tokio::test]
-    async fn compute_pane_infos_resizes_every_visible_floats_runtime_to_its_own_box() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        let area = Rect::new(0, 0, 60, 20);
-        app.view.terminal_area = area;
-
-        let mut ws = Workspace::test_new("test");
-        let float_ids: Vec<_> = (0..2).map(|_| PaneId::alloc()).collect();
-        for id in &float_ids {
-            ws.tabs[0].push_float(
-                *id,
-                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
-            );
-        }
-        ws.tabs[0].float_arrangement = crate::layout::Arrangement::Grid;
-        let float_region =
-            resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
-                .map(|geometry| geometry.outer);
-        ws.tabs[0].needs_reflow = true;
-        ws.tabs[0].reflow(area, float_region);
-
-        // Seed both runtimes at a row count no real box in this layout could
-        // produce, so a per-float resize is the only way their viewport ends
-        // up matching the layout.
-        for id in &float_ids {
-            ws.tabs[0]
-                .runtimes
-                .insert(*id, TerminalRuntime::test_with_screen_bytes(5, 1, b""));
-        }
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
-        let cell_size = crate::kitty_graphics::HostCellSize::default();
-        let pane_infos = compute_pane_infos(&app, &terminal_runtimes, area, true, cell_size);
-
-        let float_infos: Vec<_> = pane_infos
-            .iter()
-            .filter(|info| float_ids.contains(&info.id))
-            .collect();
-        assert_eq!(
-            float_infos.len(),
-            2,
-            "grid keeps both floats expanded at once"
-        );
-
-        for info in float_infos {
-            assert!(
-                info.rect.height > 1,
-                "float {:?} should be expanded",
-                info.id
-            );
-            let rt = app
-                .runtime_for_pane_in_workspace(&terminal_runtimes, 0, info.id)
-                .expect("runtime");
-            let metrics = rt.scroll_metrics().expect("scroll metrics");
-            assert_eq!(
-                metrics.viewport_rows, info.inner_rect.height as usize,
-                "float {:?} was not resized to its own box",
-                info.id
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn render_panes_draws_every_floats_content_not_just_one() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 40, 10);
-
-        let left_id = PaneId::from_raw(700);
-        let right_id = PaneId::from_raw(701);
-        let mut ws = Workspace::test_new("test");
-        for id in [left_id, right_id] {
-            ws.tabs[0].push_float(
-                id,
-                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
-            );
-        }
-        ws.tabs[0].runtimes.insert(
-            left_id,
-            TerminalRuntime::test_with_screen_bytes(18, 8, b"LEFTFLOAT"),
-        );
-        ws.tabs[0].runtimes.insert(
-            right_id,
-            TerminalRuntime::test_with_screen_bytes(18, 8, b"RIGHTFLOAT"),
-        );
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        // Two members that would come from a Stacked layout with only the
-        // bar collapsed away — both above height 1, so both must draw.
-        let pane_infos = vec![
-            PaneInfo {
-                id: left_id,
-                rect: Rect::new(0, 0, 20, 10),
-                inner_rect: Rect::new(1, 1, 18, 8),
-                scrollbar_rect: None,
-                borders: Borders::ALL,
-                is_focused: false,
-            },
-            PaneInfo {
-                id: right_id,
-                rect: Rect::new(20, 0, 20, 10),
-                inner_rect: Rect::new(21, 1, 18, 8),
-                scrollbar_rect: None,
-                borders: Borders::ALL,
-                is_focused: true,
-            },
-        ];
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_panes(
-                    &app,
-                    &TerminalRuntimeRegistry::new(),
-                    frame,
-                    &pane_infos,
-                    &[],
-                    &[],
-                )
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let content: String = (0..10)
-            .flat_map(|y| (0..40).map(move |x| (x, y)))
-            .map(|(x, y)| buffer[(x, y)].symbol())
-            .collect();
+            .find(|info| info.id == float_id)
+            .expect("float info")
+            .clone();
+        let split = surface.split_borders.first().expect("one vertical split");
+        let column = split.pos;
         assert!(
-            content.contains("LEFTFLOAT"),
-            "left float missing: {content:?}"
-        );
-        assert!(
-            content.contains("RIGHTFLOAT"),
-            "right float missing: {content:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn render_panes_highlights_a_selection_inside_a_float() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 40, 10);
-
-        let float_id = PaneId::from_raw(710);
-        let mut ws = Workspace::test_new("test");
-        ws.tabs[0].push_float(
-            float_id,
-            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
-        );
-        ws.tabs[0].runtimes.insert(
-            float_id,
-            TerminalRuntime::test_with_screen_bytes(18, 8, b"FLOATTEXT"),
-        );
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-        app.selection = Some(Selection::range(float_id, 0, 0, 2, None));
-
-        let inner_rect = Rect::new(1, 1, 18, 8);
-        let pane_infos = vec![PaneInfo {
-            id: float_id,
-            rect: Rect::new(0, 0, 20, 10),
-            inner_rect,
-            scrollbar_rect: None,
-            borders: Borders::ALL,
-            is_focused: true,
-        }];
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 10)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_panes(
-                    &app,
-                    &TerminalRuntimeRegistry::new(),
-                    frame,
-                    &pane_infos,
-                    &[],
-                    &[],
-                )
-            })
-            .unwrap();
-
-        let expected = automatic_selection_style(&app.palette, app.host_terminal_theme);
-        let buffer = terminal.backend().buffer();
-        for col in 0..3u16 {
-            let style = buffer[(inner_rect.x + col, inner_rect.y)].style();
-            assert_eq!(style.bg, expected.bg, "column {col} not highlighted");
-            assert_eq!(style.fg, expected.fg, "column {col} not highlighted");
-        }
-    }
-
-    #[tokio::test]
-    async fn a_hidden_float_layer_is_neither_laid_out_nor_drawn() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        let area = Rect::new(0, 0, 40, 12);
-        app.view.terminal_area = area;
-
-        let float_id = PaneId::from_raw(720);
-        let mut ws = Workspace::test_new("test");
-        let root_pane = ws.tabs[0].root_pane;
-        let float_terminal_id = crate::terminal::TerminalId::alloc();
-        ws.tabs[0].push_float(
-            float_id,
-            crate::pane::PaneState::new(float_terminal_id.clone()),
-        );
-        ws.tabs[0].runtimes.insert(
-            float_id,
-            TerminalRuntime::test_with_screen_bytes(18, 8, b"HIDDENFLOAT"),
-        );
-        let mut float_terminal = TerminalState::new(float_terminal_id.clone(), "/tmp".into());
-        float_terminal.set_manual_label("hiddenlabel".into());
-        app.terminals.insert(float_terminal_id, float_terminal);
-
-        // `assert_invariants_for_test` permits a hidden layer that still holds
-        // its layout, so this state is legal and must render nothing.
-        ws.tabs[0].set_floats_hidden(true);
-        let float_region =
-            resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
-                .map(|geometry| geometry.outer);
-        ws.tabs[0].reflow(area, float_region);
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let terminal_runtimes = TerminalRuntimeRegistry::new();
-        let pane_infos = compute_pane_infos(
-            &app,
-            &terminal_runtimes,
-            area,
-            true,
-            crate::kitty_graphics::HostCellSize::default(),
-        );
-        assert_eq!(
-            pane_infos.iter().map(|info| info.id).collect::<Vec<_>>(),
-            vec![root_pane],
-            "a hidden float layer contributes no pane info"
+            column > float.rect.x && column < float.rect.right() - 1,
+            "the split column must run under the float for this test to mean anything"
         );
 
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 12)).unwrap();
-        terminal
-            .draw(|frame| render_panes(&app, &terminal_runtimes, frame, &pane_infos, &[], &[]))
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let content: String = (0..12)
-            .flat_map(|y| (0..40).map(move |x| (x, y)))
-            .map(|(x, y)| buffer[(x, y)].symbol())
-            .collect();
-        assert!(
-            !content.contains("HIDDENFLOAT"),
-            "hidden float content drawn: {content:?}"
-        );
-        assert!(
-            !content.contains("hiddenlabel"),
-            "hidden float title drawn: {content:?}"
-        );
-        // The lone tiled pane draws no border, so any box corner on screen can
-        // only have come from the float's block.
-        assert!(
-            !content.contains('┌'),
-            "hidden float border drawn: {content:?}"
-        );
-    }
-
-    #[test]
-    fn render_panes_draws_a_bar_for_a_collapsed_float_without_an_external_stack_bar() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 30, 10);
-
-        let mut ws = Workspace::test_new("test");
-        let collapsed_id = PaneId::from_raw(710);
-        let active_id = PaneId::from_raw(711);
-        let collapsed_terminal_id = crate::terminal::TerminalId::alloc();
-        ws.tabs[0].push_float(
-            collapsed_id,
-            crate::pane::PaneState::new(collapsed_terminal_id.clone()),
-        );
-        ws.tabs[0].push_float(
-            active_id,
-            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
-        );
-        let mut terminal_state = TerminalState::new(collapsed_terminal_id.clone(), "/tmp".into());
-        terminal_state.set_manual_label("hidden-float".into());
-        app.terminals.insert(collapsed_terminal_id, terminal_state);
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        // Hand-built as `stack_rects` would lay out a two-member stack: one
-        // expanded, one collapsed to a single row. Passing `&[]` for the
-        // external `stack_bars` proves the bar is derived from `pane_infos`
-        // at render time instead.
-        let pane_infos = vec![
-            PaneInfo {
-                id: collapsed_id,
-                rect: Rect::new(5, 3, 20, 1),
-                inner_rect: Rect::new(5, 3, 20, 1),
-                scrollbar_rect: None,
-                borders: Borders::ALL,
-                is_focused: false,
-            },
-            PaneInfo {
-                id: active_id,
-                rect: Rect::new(5, 4, 20, 6),
-                inner_rect: Rect::new(6, 5, 18, 4),
-                scrollbar_rect: None,
-                borders: Borders::ALL,
-                is_focused: true,
-            },
-        ];
-
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(30, 10)).unwrap();
-        terminal
-            .draw(|frame| {
-                render_panes(
-                    &app,
-                    &TerminalRuntimeRegistry::new(),
-                    frame,
-                    &pane_infos,
-                    &[],
-                    &[],
-                )
-            })
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        let row: String = (5..25).map(|x| buffer[(x, 3)].symbol()).collect();
-        assert!(row.contains("hidden-float"), "bar row: {row:?}");
-    }
-
-    /// Builds a real `count`-member stack, focuses the member that ends up
-    /// at `active_index` in `TileLayout::pane_ids()` order, reflows it under
-    /// `area`, and returns the resulting `PaneInfo`s straight from
-    /// `stack_rects` — geometry a hand-built fixture can't be trusted to
-    /// reproduce, since `stack_rects` always consumes the whole area once
-    /// any folding happens (a spare row a fixture might leave never exists).
-    fn stacked_pane_infos(
-        ws: &mut Workspace,
-        count: usize,
-        active_index: usize,
-        area: Rect,
-    ) -> Vec<PaneInfo> {
-        let tab = &mut ws.tabs[0];
-        for _ in 1..count {
-            tab.layout
-                .split_focused(ratatui::layout::Direction::Horizontal);
-        }
-        let ids = tab.layout.pane_ids();
-        assert_eq!(ids.len(), count);
-        tab.layout.focus_pane(ids[active_index]);
-        tab.arrangement = crate::layout::Arrangement::Stacked;
-        tab.needs_reflow = true;
-        tab.reflow(area, None);
-        tab.layout.panes(area)
-    }
-
-    fn render_stacked(pane_infos: &[PaneInfo], app: &AppState, area: Rect) -> Vec<String> {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
                 .unwrap();
         terminal
             .draw(|frame| {
                 render_panes(
-                    app,
+                    &app,
                     &TerminalRuntimeRegistry::new(),
                     frame,
-                    pane_infos,
-                    &[],
-                    &[],
+                    Some(super::super::tab_surface::TabSurfaceTarget {
+                        workspace_index: 0,
+                        tab_index: 0,
+                    }),
+                    &surface.pane_infos,
+                    &surface.split_borders,
                 )
             })
             .unwrap();
+
         let buffer = terminal.backend().buffer();
-        (0..area.height)
-            .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
-            .collect()
+        let inside = float.inner_rect.y + 1;
+        assert_ne!(
+            buffer[(column, inside)].symbol(),
+            "│",
+            "a tiled split line must not bleed through the float"
+        );
+        assert_eq!(buffer[(column, inside)].bg, app.palette.panel_bg);
     }
 
-    #[test]
-    fn collapsed_bars_point_their_corners_at_the_active_member() {
-        let area = Rect::new(0, 0, 20, 10);
-        let mut ws = Workspace::test_new("test");
-        let pane_infos = stacked_pane_infos(&mut ws, 3, 1, area);
-
+    #[tokio::test]
+    async fn a_floats_painted_background_survives_the_transparent_cell_backfill() {
+        let area = Rect::new(0, 0, 40, 12);
         let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
+        let mut ws = Workspace::test_new("test");
+        let float_id = crate::layout::PaneId::alloc();
+        let number = ws.next_public_pane_number;
+        ws.register_new_pane_with_number(float_id, number);
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.tabs[0].runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(20, 6, 1024, b"\x1b[48;5;4m\x1b[K"),
+        );
         app.workspaces = vec![ws];
         app.active = Some(0);
 
-        let rows = render_stacked(&pane_infos, &app, area);
-        assert!(
-            rows[0].starts_with('┌') && rows[0].ends_with('┐'),
-            "bar above the active member: {:?}",
-            rows[0]
+        let pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
         );
-        assert!(
-            rows[9].starts_with('└') && rows[9].ends_with('┘'),
-            "bar below the active member: {:?}",
-            rows[9]
-        );
-    }
-
-    #[test]
-    fn folding_with_no_room_for_any_bar_still_shows_a_truthful_summary() {
-        // count=5, active=0, height=3: MIN_ACTIVE_STACK_HEIGHT alone consumes
-        // the whole area, so every other member folds to height 0 with no
-        // collapsed bar anywhere to repurpose. The single fold must borrow
-        // the active member's own row rather than panic or draw nothing.
-        let area = Rect::new(0, 0, 20, 3);
-        let mut ws = Workspace::test_new("test");
-        let pane_infos = stacked_pane_infos(&mut ws, 5, 0, area);
-        assert_eq!(
-            pane_infos.iter().filter(|p| p.rect.height == 0).count(),
-            4,
-            "every non-active member should have folded"
-        );
-
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let rows = render_stacked(&pane_infos, &app, area);
-        assert!(
-            rows.iter().any(|row| row.contains("+4 more")),
-            "no truthful summary shown: {rows:?}"
-        );
-    }
-
-    #[test]
-    fn folding_around_the_active_member_produces_two_separate_truthful_summaries() {
-        // count=20, active=15, height=10: enough real bars exist before the
-        // active member to leave a genuine leading fold (repurposes its last
-        // collapsed bar, so that pane's own row joins the count) and a
-        // trailing fold with no bar left to repurpose (borrows the active
-        // member's own row instead, so its count stays unchanged).
-        let area = Rect::new(0, 0, 20, 10);
-        let mut ws = Workspace::test_new("test");
-        let pane_infos = stacked_pane_infos(&mut ws, 20, 15, area);
-        assert_eq!(
-            pane_infos.iter().filter(|p| p.rect.height == 0).count(),
-            12,
-            "8 leading + 4 trailing folded members"
-        );
-
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.workspaces = vec![ws];
-        app.active = Some(0);
-
-        let rows = render_stacked(&pane_infos, &app, area);
-        assert!(
-            rows.iter().any(|row| row.contains("+9 more")),
-            "leading fold's repurposed bar missing: {rows:?}"
-        );
-        assert!(
-            rows.iter().any(|row| row.contains("+4 more")),
-            "trailing fold's borrowed active row missing: {rows:?}"
-        );
-    }
-
-    #[test]
-    fn render_pane_borders_does_not_draw_over_a_collapsed_stack_bar() {
-        let mut app = AppState::test_new();
-        app.mode = Mode::Terminal;
-        app.view.terminal_area = Rect::new(0, 0, 20, 10);
-
-        let active_id = PaneId::from_raw(90);
-        let collapsed_id = PaneId::from_raw(91);
-
-        let pane_infos = vec![
-            PaneInfo {
-                id: active_id,
-                rect: Rect::new(0, 0, 20, 9),
-                inner_rect: Rect::new(1, 1, 18, 7),
-                scrollbar_rect: None,
-                borders: Borders::TOP | Borders::LEFT | Borders::RIGHT,
-                is_focused: true,
-            },
-            PaneInfo {
-                id: collapsed_id,
-                rect: Rect::new(0, 9, 20, 1),
-                inner_rect: Rect::new(0, 9, 20, 1),
-                scrollbar_rect: None,
-                // Real chrome (`apply_pane_chrome`) hands a collapsed bar the
-                // same full border set as any bordered pane; the renderer
-                // must ignore it rather than let it fight the bar's own
-                // border characters.
-                borders: Borders::ALL,
-                is_focused: false,
-            },
-        ];
-
-        let mut ws = Workspace::test_new("test");
-        let collapsed_terminal_id = crate::terminal::TerminalId::alloc();
-        ws.tabs[0].panes.insert(
-            collapsed_id,
-            crate::pane::PaneState::new(collapsed_terminal_id.clone()),
-        );
-        let mut terminal_state = TerminalState::new(collapsed_terminal_id.clone(), "/tmp".into());
-        terminal_state.set_manual_label("collapsed".into());
-        app.terminals.insert(collapsed_terminal_id, terminal_state);
-        app.workspaces = vec![ws];
-        app.active = Some(0);
+        let float = pane_infos
+            .iter()
+            .find(|info| info.id == float_id)
+            .expect("float info");
 
         let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(20, 10)).unwrap();
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(area.width, area.height))
+                .unwrap();
         terminal
             .draw(|frame| {
                 render_panes(
                     &app,
                     &TerminalRuntimeRegistry::new(),
                     frame,
+                    Some(super::super::tab_surface::TabSurfaceTarget {
+                        workspace_index: 0,
+                        tab_index: 0,
+                    }),
                     &pane_infos,
-                    &[],
                     &[],
                 )
             })
             .unwrap();
 
         let buffer = terminal.backend().buffer();
-        let bar_row: String = (0..20).map(|x| buffer[(x, 9)].symbol()).collect();
-        assert!(bar_row.contains("collapsed"), "bar row: {bar_row:?}");
-        // The generic per-pane junction table turns a lone TOP+BOTTOM+LEFT
-        // border on a 1-row rect into a plain "─" at the left edge, not the
-        // corner render_stack_bar draws there — a leftover generic draw would
-        // show up as this row's leftmost cell reverting to a horizontal dash.
-        // The bar follows the active member, so its corners face back up at it.
+        let painted = buffer[(float.inner_rect.x, float.inner_rect.y)].bg;
         assert_eq!(
-            buffer[(0, 9)].symbol(),
-            "└",
-            "generic border drew over the bar's own left edge"
+            painted,
+            Color::Indexed(4),
+            "a float's own explicit background must survive the transparent-cell backfill"
         );
-        assert_eq!(
-            buffer[(19, 9)].symbol(),
-            "┘",
-            "collapsed bar did not close its right edge"
-        );
+        assert_ne!(painted, app.palette.panel_bg);
     }
 }

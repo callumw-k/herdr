@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use ratatui::layout::Direction;
 
 use crate::api::schema::{
-    ArrangementSchema, EventData, EventEnvelope, EventKind, LayoutApplyParams, LayoutDescription,
-    LayoutExportParams, LayoutNode, LayoutPane, LayoutSetSplitRatioParams, ResponseResult,
-    SplitDirection,
+    EventData, EventEnvelope, EventKind, LayoutApplyParams, LayoutArrangementSchema,
+    LayoutDescription, LayoutExportParams, LayoutNode, LayoutPane, LayoutSetSplitRatioParams,
+    ResponseResult, SplitDirection,
 };
 use crate::app::{App, Mode};
 use crate::layout::{Arrangement, Node, PaneId, TileLayout};
@@ -719,11 +719,8 @@ impl App {
         let pane_number = self.state.workspaces[ws_idx].next_public_pane_number;
         let workspace_id = self.public_workspace_id(ws_idx);
         let tab_number = self.state.workspaces[ws_idx].tabs[tab_idx].number;
-        let launch_env = crate::pane::PaneLaunchEnv::from_extra(extra_env).with_identity(
-            workspace_id.clone(),
-            crate::workspace::public_tab_id_for_number(&workspace_id, tab_number),
-            crate::workspace::public_pane_id_for_number(&workspace_id, pane_number),
-        );
+        let launch_env =
+            crate::app::identity_launch_env(&workspace_id, tab_number, pane_number, extra_env);
         let default_shell = self.state.default_shell.clone();
         let scrollback_limit_bytes = self.state.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;
@@ -960,12 +957,12 @@ fn rebuild_layout_node_as_stack(node: &Node, members: &[PaneId], active: usize) 
     }
 }
 
-fn arrangement_schema(arrangement: Arrangement) -> ArrangementSchema {
+fn arrangement_schema(arrangement: Arrangement) -> LayoutArrangementSchema {
     match arrangement {
-        Arrangement::Vertical => ArrangementSchema::Vertical,
-        Arrangement::Horizontal => ArrangementSchema::Horizontal,
-        Arrangement::Grid => ArrangementSchema::Grid,
-        Arrangement::Stacked => ArrangementSchema::Stacked,
+        Arrangement::Vertical => LayoutArrangementSchema::Vertical,
+        Arrangement::Horizontal => LayoutArrangementSchema::Horizontal,
+        Arrangement::Grid => LayoutArrangementSchema::Grid,
+        Arrangement::Stacked => LayoutArrangementSchema::Stacked,
     }
 }
 
@@ -984,7 +981,7 @@ mod tests {
         let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut app = App::new(
             &Config::default(),
-            true,
+            crate::app::AppPolicy::TEST,
             None,
             api_rx,
             crate::api::EventHub::default(),
@@ -1049,7 +1046,7 @@ mod tests {
         };
         assert_eq!(pane.label.as_deref(), Some("tests"));
         assert_eq!(pane.pane_id, Some(app.public_pane_id(0, right).unwrap()));
-        assert_eq!(layout.arrangement, ArrangementSchema::Grid);
+        assert_eq!(layout.arrangement, LayoutArrangementSchema::Grid);
     }
 
     #[test]
@@ -1082,7 +1079,7 @@ mod tests {
         let ResponseResult::LayoutExport { layout } = success.result else {
             panic!("expected layout export response");
         };
-        assert_eq!(layout.arrangement, ArrangementSchema::Stacked);
+        assert_eq!(layout.arrangement, LayoutArrangementSchema::Stacked);
         let LayoutNode::Stack { panes, active } = layout.root else {
             panic!("expected stack layout root");
         };
@@ -1223,7 +1220,7 @@ mod tests {
             panic!("expected layout export response");
         };
         assert!(matches!(layout.root, LayoutNode::Stack { .. }));
-        assert_eq!(layout.arrangement, ArrangementSchema::Stacked);
+        assert_eq!(layout.arrangement, LayoutArrangementSchema::Stacked);
 
         // A mismatched arrangement would survive the render re-flow guard only
         // to be re-flowed away by the next pane create or close.
@@ -1298,7 +1295,7 @@ mod tests {
         let ResponseResult::LayoutApply { layout } = success.result else {
             panic!("expected layout apply response");
         };
-        assert_eq!(layout.float_arrangement, ArrangementSchema::Stacked);
+        assert_eq!(layout.float_arrangement, LayoutArrangementSchema::Stacked);
         let LayoutNode::Stack { panes, active } = layout.float_root.expect("float root") else {
             panic!("expected stack float root");
         };
@@ -1581,7 +1578,7 @@ mod tests {
                     second: Box::new(LayoutNode::Pane {
                         pane: LayoutPane {
                             label: Some("tests".into()),
-                            command: Some(vec!["sh".into(), "-c".into(), "true".into()]),
+                            command: Some(vec![exiting_test_command().into()]),
                             env: std::collections::HashMap::from([(
                                 "HERDR_ROLE".into(),
                                 "tests".into(),
@@ -1624,7 +1621,7 @@ mod tests {
         assert_eq!(second_pane.label.as_deref(), Some("tests"));
         assert_eq!(
             second_pane.command,
-            Some(vec!["sh".into(), "-c".into(), "true".into()])
+            Some(vec![exiting_test_command().into()])
         );
         assert!(matches!(
             &app.event_hub.events_after(0).last().expect("layout event").1.data,

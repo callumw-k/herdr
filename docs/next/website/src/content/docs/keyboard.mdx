@@ -43,7 +43,8 @@ Panes:
 | Resize mode | `prefix+r` |
 | Copy mode | `prefix+u` |
 | New floating pane | `prefix+f` |
-| Show/hide floating panes | `prefix+shift+f` |
+| Focus or hide the floating layer | `prefix+ctrl+f` |
+| Show / hide floating panes | `prefix+shift+f` |
 
 Tabs:
 
@@ -62,11 +63,11 @@ Workspaces and session:
 | Rename workspace | `prefix+shift+w` |
 | Close workspace | `prefix+shift+d` |
 | Goto picker | `prefix+g` |
-| Pin workspace path | `prefix+.` |
-| Declare / undeclare repo | `prefix+>` |
 | Toggle sidebar | `prefix+b` |
 
-The goto picker opens with the search field focused. `ctrl+a` leaves search for the single-key commands, `/` returns to search, and `esc` closes the picker from either mode. `ctrl+o` opens the new-workspace dialog with a name and a path field, and `p` edits the pinned path of the highlighted row. `p` only acts on a workspace row, so it does nothing while a search query is narrowing the list to panes.
+The goto picker opens with the search box focused. Press `esc` once to leave search, then `p` on any row to edit that workspace's pinned path, or `ctrl+o` to create a workspace with a name and path.
+
+The workspace dialog has a name and a path field. `tab` switches between them, and the path pins the workspace (see [Concepts](/docs/concepts/)).
 
 The full keymap and the binding syntax live in the [keybinding reference](/docs/configuration/#keybindings).
 
@@ -86,13 +87,11 @@ Press `prefix+u` to enter copy mode for the focused pane. Use `h/j/k/l`, tmux-st
 
 ## Floating panes
 
-The floating layer sits above the tab's normal split layout in a centred region, instead of taking slots in the grid. Press `prefix+f` to open a float. A tab's floats share that one region and are laid out inside it under the floating layer's own arrangement, so more than one can be visible at once. The layer starts stacked, which fills the region with the focused float and collapses the others to single-row title bars, and `prefix+]` and `prefix+[` cycle it through the same four arrangements the tiled panes use while the layer holds focus. `prefix+ctrl+f` moves focus into the floating layer, or back out of it if you are already there. `prefix+shift+f` hides or shows the whole floating layer for the tab without closing anything underneath it. Once the layer holds focus, walk it with the same keys as tiled panes: `prefix+h/j/k/l` and `prefix+tab`.
+The floating layer sits above the tab's normal split layout in a centred region, instead of taking slots in the grid. Press `prefix+f` to open a float. A tab's floats share that one region and are laid out inside it under the floating layer's own arrangement, so more than one can be visible at once. The layer starts stacked, which fills the region with the focused float and collapses the others to single rows, and `prefix+]` and `prefix+[` cycle it through the same four arrangements the tiled panes use while the layer holds focus.
 
-`toggle_float`, bound to `prefix+ctrl+f`, combines opening and hiding into one key: it opens a float if none exists, focuses the floating layer if it's hidden, or hides it if it's already focused and visible. Nothing is ever closed by this action.
+`prefix+ctrl+f` combines opening, focusing and hiding into one key: it opens a float when the tab has none, moves focus into the layer when the layer is not focused, and hides the layer when it already holds focus. Nothing is ever closed by this action. `prefix+shift+f` hides or shows the whole floating layer without closing anything.
 
-While a floating pane is visible, `prefix+c` opens another floating pane instead of a new tab. Hide the floating layer first if you want `prefix+c` to create a tab as usual.
-
-`prefix+enter` follows a stricter rule than `prefix+c`: it needs the floating layer *focused*, not merely visible, before it adds another float. If a tiled pane is focused while a float sits visible behind it, `prefix+enter` adds a tiled pane instead. Cycling the arrangement (`prefix+]` / `prefix+[`) and the split keys (`prefix+v` / `prefix+minus`) follow the same focus rule. When the floating layer holds focus, `focus_pane_up` and `focus_pane_down` move between floats rather than tiled panes, following the layer's own geometry. Directional movement never crosses between the layers; use the float toggles for that.
+Once the layer holds focus, walk it with the same keys as tiled panes: `prefix+h/j/k/l` and `prefix+tab`. Directional movement never crosses between the layers, so use the float keys for that. `prefix+enter` needs the floating layer focused, not merely visible, before it adds another float; with a tiled pane focused it adds a tiled pane instead.
 
 Floats persist across a server restart along with their scrollback, and Herdr treats them as ordinary panes for agent detection. This is different from the session-modal popup opened by a `type = "popup"` custom command (see [Custom command keybindings](/docs/configuration/#custom-command-keybindings)): that popup takes over all terminal input until its command exits, while a floating pane is a regular interactive pane you can leave running.
 
