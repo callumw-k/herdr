@@ -391,9 +391,10 @@ pub(super) fn render_agent_row(
         rect.y = rect.y.saturating_add(1);
         rect.height = rect.height.saturating_sub(1);
     }
-    // Column 0 belongs to the focus marker, so the first row starts one column in.
+    // Column 0 belongs to the focus marker. Every row keeps the same indent so
+    // labels stay in one column instead of stepping right on continuation rows.
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
-        let indent = if index == 0 { 2 } else { 3 };
+        let indent = 2;
         let context = if index == 0 { leading } else { secondary };
         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
         spans.extend(crate::ui::resolved_token_spans(
