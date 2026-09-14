@@ -279,9 +279,7 @@ pub(super) fn render_pane_surface(
             let workspace = app.state.workspaces.get(target.workspace_index)?;
             let tab = workspace.tabs.get(target.tab_index)?;
             Some(
-                tab.layout
-                    .pane_ids()
-                    .into_iter()
+                tab.all_pane_ids()
                     .filter_map(|pane_id| {
                         app.state
                             .runtime_for_pane_in_workspace(
@@ -642,6 +640,68 @@ mod tests {
         app.state.integration_recommendations[0].state =
             crate::integration::IntegrationStatusKind::Outdated;
         assert!(snapshot(&app, "boot", 2, None, None).integration_updates_available);
+    }
+
+    #[tokio::test]
+    async fn a_float_gets_a_coherent_content_revision_like_a_tiled_pane() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let mut ws = crate::workspace::Workspace::test_new("test");
+        let tiled_id = ws.tabs[0].layout.pane_ids()[0];
+        let float_id = crate::layout::PaneId::alloc();
+        let number = ws.next_public_pane_number;
+        ws.register_new_pane_with_number(float_id, number);
+        ws.tabs[0].push_float(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        for pane_id in [tiled_id, float_id] {
+            ws.tabs[0].runtimes.insert(
+                pane_id,
+                crate::terminal::TerminalRuntime::test_with_scrollback_bytes(
+                    20, 6, 1024, b"text\n",
+                ),
+            );
+        }
+        app.state.workspaces = vec![ws];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        let tiled_public = app.public_pane_id(0, tiled_id).expect("tiled pane id");
+        let float_public = app.public_pane_id(0, float_id).expect("float pane id");
+
+        let rendered = render_pane_surface(
+            &mut app,
+            Some(crate::ui::TabSurfaceTarget {
+                workspace_index: 0,
+                tab_index: 0,
+            }),
+            Rect::new(0, 0, 60, 20),
+            false,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+            &crate::kitty_graphics::surface::DeliveryCache::default(),
+            1,
+        );
+
+        let revision_for = |pane_id: &str| {
+            rendered
+                .panes
+                .iter()
+                .find(|pane| pane.pane_id == pane_id)
+                .map(|pane| pane.content_revision)
+                .expect("pane in surface")
+        };
+        assert!(revision_for(&tiled_public).is_multiple_of(2));
+        assert!(
+            revision_for(&float_public).is_multiple_of(2),
+            "an odd revision makes every selection read from the float fail as stale"
+        );
     }
 
     #[test]
