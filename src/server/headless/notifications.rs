@@ -715,14 +715,16 @@ impl HeadlessServer {
     /// `self.app.handle_internal_event()` directly for any internal event
     /// in the headless server — use this method instead.
     ///
-    /// A cwd report can move a pane into the workspace pinned to its
-    /// directory and close the one it left. Shell clients that were sitting in that pane follow it,
+    /// A cwd report, or any later event that lets a deferred reclaim fire, can
+    /// move a pane into the workspace pinned to its directory and close the
+    /// one it left. Shell clients that were sitting in that pane follow it,
     /// and one whose location still names a closed workspace is re-pointed
     /// the way a pane death does it.
     ///
     /// Returns true if the event changed visual state (requiring a re-render).
     pub(super) fn handle_internal_event_with_forwarding(&mut self, ev: AppEvent) -> bool {
-        let mut candidates: Vec<crate::layout::PaneId> = Vec::new();
+        let mut candidates: Vec<crate::layout::PaneId> =
+            self.app.pending_cwd_reclaims.keys().copied().collect();
         if let AppEvent::TerminalCwdReported { pane_id, .. } = &ev {
             candidates.push(*pane_id);
         }

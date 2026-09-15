@@ -188,6 +188,10 @@ impl TerminalState {
         }
     }
 
+    pub fn is_idle_shell(&self) -> bool {
+        self.foreground_process_name.is_none() && self.detected_agent.is_none()
+    }
+
     pub fn set_detected_agent_process_at(
         &mut self,
         agent: Agent,

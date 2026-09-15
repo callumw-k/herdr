@@ -357,6 +357,7 @@ impl App {
             self.render_dirty.request_generic();
             self.render_notify.notify_one();
         }
+        self.retry_pending_cwd_reclaims();
         for update in &pane_updates {
             self.refresh_new_herdr_toast_context_for_update(update, &previous_toast);
             self.emit_pane_state_update(update);

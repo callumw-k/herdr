@@ -6743,6 +6743,52 @@ async fn a_shell_client_following_a_cwd_auto_moved_pane_lands_on_its_new_tab_not
 }
 
 #[tokio::test]
+async fn a_shell_client_follows_a_cwd_auto_move_deferred_until_the_foreground_process_exits() {
+    let pinned = std::env::temp_dir().join(format!("herdr-cwd-deferred-{}", std::process::id()));
+    std::fs::create_dir_all(&pinned).unwrap();
+    let (mut server, moving_pane) = cwd_auto_move_server(&pinned);
+    server.app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    server.app.state.workspaces[0].tabs[0]
+        .layout
+        .focus_pane(moving_pane);
+    server.app.state.ensure_test_terminals();
+
+    let (control, _render) = connect_test_shell(&mut server, 71, 100, 30);
+    let _ = control.recv().expect("initial snapshot");
+    let source_tab = server.shell_target_for_client(71);
+    server.handle_internal_event_with_forwarding(AppEvent::ForegroundProcessReported {
+        pane_id: moving_pane,
+        name: Some("git".to_string()),
+    });
+    server.handle_internal_event_with_forwarding(AppEvent::TerminalCwdReported {
+        pane_id: moving_pane,
+        cwd: pinned.clone(),
+    });
+    assert_eq!(
+        server.shell_target_for_client(71),
+        source_tab,
+        "a busy pane stays where it is"
+    );
+
+    server.handle_internal_event_with_forwarding(AppEvent::ForegroundProcessReported {
+        pane_id: moving_pane,
+        name: None,
+    });
+    std::fs::remove_dir_all(&pinned).ok();
+
+    assert_eq!(
+        server.app.find_pane(moving_pane).map(|(ws, _)| ws),
+        Some(1),
+        "the pane moves once the foreground process exits"
+    );
+    assert_eq!(
+        server.shell_target_for_client(71),
+        Some(tab_holding_pane(&server, moving_pane)),
+        "the client follows the deferred move"
+    );
+}
+
+#[tokio::test]
 async fn a_shell_client_looking_elsewhere_stays_put_when_a_pane_cwd_auto_moves() {
     let pinned = std::env::temp_dir().join(format!("herdr-cwd-elsewhere-{}", std::process::id()));
     std::fs::create_dir_all(&pinned).unwrap();

@@ -595,8 +595,11 @@ impl App {
     /// directory jump relocates the pane the way opening it there would have.
     /// Only fires at an idle shell prompt: a foreground process or a detected
     /// agent means something is running that should not be moved out from
-    /// under the user.
+    /// under the user. A busy pane keeps the claim pending until it goes idle,
+    /// because the process probe that clears those fields runs on a timer and
+    /// a `cd` right behind a subprocess otherwise arrives while they are stale.
     pub(crate) fn reclaim_pane_after_cwd_change(&mut self, pane_id: PaneId, cwd: &std::path::Path) {
+        self.pending_cwd_reclaims.remove(&pane_id);
         let Some((ws_idx, pane)) = self.find_pane(pane_id) else {
             return;
         };
@@ -619,7 +622,8 @@ impl App {
         if terminal.cwd != cwd {
             return;
         }
-        if terminal.foreground_process_name.is_some() || terminal.detected_agent.is_some() {
+        if !terminal.is_idle_shell() {
+            self.pending_cwd_reclaims.insert(pane_id, cwd.to_path_buf());
             return;
         }
         // Follow the pane only when it is the one the user is sitting in: a
@@ -671,6 +675,25 @@ impl App {
             return;
         }
         self.create_declared_repo_workspace_for_pane(ws_idx, pane_id, &repo);
+    }
+
+    pub(crate) fn retry_pending_cwd_reclaims(&mut self) {
+        if self.pending_cwd_reclaims.is_empty() {
+            return;
+        }
+        let ready: Vec<(PaneId, std::path::PathBuf)> = self
+            .pending_cwd_reclaims
+            .iter()
+            .filter(|(pane_id, _)| {
+                self.find_pane(**pane_id)
+                    .and_then(|(_, pane)| self.state.terminals.get(&pane.attached_terminal_id))
+                    .is_none_or(|terminal| terminal.is_idle_shell())
+            })
+            .map(|(pane_id, cwd)| (*pane_id, cwd.clone()))
+            .collect();
+        for (pane_id, cwd) in ready {
+            self.reclaim_pane_after_cwd_change(pane_id, &cwd);
+        }
     }
 
     /// Move `pane_id` into a fresh workspace pinned to `repo`, the workspace a

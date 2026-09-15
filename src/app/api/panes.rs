@@ -5119,6 +5119,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cwd_report_blocked_by_a_foreground_process_moves_the_pane_once_it_exits() {
+        let pinned = unique_temp_path("reclaim-deferred");
+        let claimed_cwd = pinned.join("sub");
+        std::fs::create_dir_all(&claimed_cwd).unwrap();
+        let (mut app, _) = app_with_source_and_pinned_workspace(&pinned);
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+        set_pane_terminal(&mut app, 0, |terminal| {
+            terminal.foreground_process_name = Some("git".to_string());
+        });
+        app.handle_internal_event(crate::events::AppEvent::TerminalCwdReported {
+            pane_id: source_pane,
+            cwd: claimed_cwd.clone(),
+        });
+        assert_eq!(app.state.workspaces.len(), 2);
+
+        app.handle_internal_event(crate::events::AppEvent::ForegroundProcessReported {
+            pane_id: source_pane,
+            name: None,
+        });
+
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(
+            app.state.workspaces[0].pinned_path.as_deref(),
+            Some(pinned.as_path())
+        );
+        assert_eq!(app.state.workspaces[0].tabs.len(), 2);
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&pinned);
+    }
+
+    #[tokio::test]
+    async fn a_deferred_cwd_reclaim_follows_the_latest_directory_not_the_first() {
+        let pinned = unique_temp_path("reclaim-deferred-latest");
+        let claimed_cwd = pinned.join("sub");
+        let elsewhere = unique_temp_path("reclaim-deferred-elsewhere");
+        std::fs::create_dir_all(&claimed_cwd).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let (mut app, _) = app_with_source_and_pinned_workspace(&pinned);
+        let source_pane = app.state.workspaces[0].tabs[0].root_pane;
+        set_pane_terminal(&mut app, 0, |terminal| {
+            terminal.foreground_process_name = Some("git".to_string());
+        });
+        app.handle_internal_event(crate::events::AppEvent::TerminalCwdReported {
+            pane_id: source_pane,
+            cwd: claimed_cwd.clone(),
+        });
+        app.handle_internal_event(crate::events::AppEvent::TerminalCwdReported {
+            pane_id: source_pane,
+            cwd: elsewhere.clone(),
+        });
+
+        app.handle_internal_event(crate::events::AppEvent::ForegroundProcessReported {
+            pane_id: source_pane,
+            name: None,
+        });
+
+        assert_eq!(app.state.workspaces.len(), 2);
+        assert_eq!(app.state.workspaces[1].tabs.len(), 1);
+        assert_eq!(app.state.workspaces[0].tabs[0].panes.len(), 1);
+        shutdown_test_runtimes(&mut app);
+        let _ = std::fs::remove_dir_all(&pinned);
+        let _ = std::fs::remove_dir_all(&elsewhere);
+    }
+
+    #[tokio::test]
     async fn cwd_report_leaves_a_pane_running_a_detected_agent() {
         let pinned = unique_temp_path("reclaim-agent");
         let claimed_cwd = pinned.join("sub");
