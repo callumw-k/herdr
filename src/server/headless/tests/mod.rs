@@ -6642,3 +6642,137 @@ async fn a_cwd_auto_move_that_closes_the_workspace_repoints_shell_clients() {
         "the client must be told it now sits in the pinned workspace"
     );
 }
+
+fn cwd_auto_move_server(pinned: &std::path::Path) -> (HeadlessServer, crate::layout::PaneId) {
+    let mut server = test_headless_server();
+    let mut source = crate::workspace::Workspace::test_new("source");
+    let moving_pane = source.tabs[0].root_pane;
+    source.insert_test_runtime(
+        moving_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"MOVING"),
+    );
+    let mut target = crate::workspace::Workspace::test_new("pinned");
+    target.pinned_path = Some(pinned.to_path_buf());
+    server.app.state.workspaces = vec![source, target];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    (server, moving_pane)
+}
+
+fn tab_holding_pane(
+    server: &HeadlessServer,
+    pane_id: crate::layout::PaneId,
+) -> crate::ui::TabSurfaceTarget {
+    let (workspace_index, _) = server.app.find_pane(pane_id).expect("moved pane exists");
+    let tab_index = server.app.state.workspaces[workspace_index]
+        .find_tab_index_for_pane(pane_id)
+        .expect("moved pane has a tab");
+    crate::ui::TabSurfaceTarget {
+        workspace_index,
+        tab_index,
+    }
+}
+
+#[tokio::test]
+async fn a_shell_client_sitting_in_a_cwd_auto_moved_pane_follows_it_when_the_source_workspace_stays(
+) {
+    let pinned = std::env::temp_dir().join(format!("herdr-cwd-follow-{}", std::process::id()));
+    std::fs::create_dir_all(&pinned).unwrap();
+    let (mut server, moving_pane) = cwd_auto_move_server(&pinned);
+    server.app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+    server.app.state.workspaces[0].tabs[0]
+        .layout
+        .focus_pane(moving_pane);
+    server.app.state.ensure_test_terminals();
+    let source_tab_id = server.app.public_tab_id(0, 0).expect("source tab id");
+
+    let (control, _render) = connect_test_shell(&mut server, 71, 100, 30);
+    let _ = control.recv().expect("initial snapshot");
+
+    server.handle_internal_event_with_forwarding(AppEvent::TerminalCwdReported {
+        pane_id: moving_pane,
+        cwd: pinned.clone(),
+    });
+    std::fs::remove_dir_all(&pinned).ok();
+
+    assert_eq!(server.app.state.workspaces.len(), 2);
+    assert_eq!(
+        server.app.public_tab_id(0, 0).as_deref(),
+        Some(source_tab_id.as_str()),
+        "the source tab survives with its sibling pane"
+    );
+    assert_eq!(
+        server.shell_target_for_client(71),
+        Some(tab_holding_pane(&server, moving_pane)),
+        "the client keeps looking at the pane it was sitting in"
+    );
+}
+
+#[tokio::test]
+async fn a_shell_client_following_a_cwd_auto_moved_pane_lands_on_its_new_tab_not_a_stale_one() {
+    let pinned = std::env::temp_dir().join(format!("herdr-cwd-stale-tab-{}", std::process::id()));
+    std::fs::create_dir_all(&pinned).unwrap();
+    let (mut server, moving_pane) = cwd_auto_move_server(&pinned);
+    let target_id = server.app.public_workspace_id(1);
+    let stale_tab_id = server.app.public_tab_id(1, 0).expect("target tab id");
+
+    let (control, _render) = connect_test_shell(&mut server, 71, 100, 30);
+    let _ = control.recv().expect("initial snapshot");
+    server
+        .clients
+        .get_mut(&71)
+        .and_then(|client| client.shell_location.as_mut())
+        .expect("shell location")
+        .active_tab_ids
+        .insert(target_id, stale_tab_id);
+
+    server.handle_internal_event_with_forwarding(AppEvent::TerminalCwdReported {
+        pane_id: moving_pane,
+        cwd: pinned.clone(),
+    });
+    std::fs::remove_dir_all(&pinned).ok();
+
+    assert_eq!(server.app.state.workspaces.len(), 1);
+    assert_eq!(
+        server.shell_target_for_client(71),
+        Some(tab_holding_pane(&server, moving_pane)),
+        "the client lands on the tab holding the moved pane"
+    );
+}
+
+#[tokio::test]
+async fn a_shell_client_looking_elsewhere_stays_put_when_a_pane_cwd_auto_moves() {
+    let pinned = std::env::temp_dir().join(format!("herdr-cwd-elsewhere-{}", std::process::id()));
+    std::fs::create_dir_all(&pinned).unwrap();
+    let (mut server, moving_pane) = cwd_auto_move_server(&pinned);
+    let other_tab = server.app.state.workspaces[0].test_add_tab(Some("elsewhere"));
+    let other_tab_id = server
+        .app
+        .public_tab_id(0, other_tab)
+        .expect("other tab id");
+
+    let (control, _render) = connect_test_shell(&mut server, 71, 100, 30);
+    let _ = control.recv().expect("initial snapshot");
+    assert!(server.focus_shell_client_on_tab(71, &other_tab_id));
+    server.app.state.switch_workspace_tab(0, other_tab);
+
+    server.handle_internal_event_with_forwarding(AppEvent::TerminalCwdReported {
+        pane_id: moving_pane,
+        cwd: pinned.clone(),
+    });
+    std::fs::remove_dir_all(&pinned).ok();
+
+    assert_eq!(server.app.state.workspaces.len(), 2);
+    assert_eq!(
+        server
+            .shell_target_for_client(71)
+            .and_then(|target| server
+                .app
+                .public_tab_id(target.workspace_index, target.tab_index))
+            .as_deref(),
+        Some(other_tab_id.as_str()),
+        "a client that was not in the moved pane does not get dragged along"
+    );
+}

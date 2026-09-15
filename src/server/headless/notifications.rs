@@ -311,16 +311,7 @@ impl HeadlessServer {
         )
     }
 
-    /// Handles a single internal event with forwarding logic for clipboard,
-    /// sound, and toast notifications to connected clients.
-    ///
-    /// ALL internal events MUST be routed through this method to ensure
-    /// clipboard/notify forwarding is never bypassed. Do not call
-    /// `self.app.handle_internal_event()` directly for any internal event
-    /// in the headless server — use this method instead.
-    ///
-    /// Returns true if the event changed visual state (requiring a re-render).
-    pub(super) fn handle_internal_event_with_forwarding(&mut self, mut ev: AppEvent) -> bool {
+    fn handle_internal_event_with_forwarding_inner(&mut self, mut ev: AppEvent) -> bool {
         let mut focused_worktree_response = if let AppEvent::WorktreeAddFinished(result) = &mut ev {
             result
                 .api_request
@@ -712,25 +703,77 @@ impl HeadlessServer {
 
                 true
             }
-            AppEvent::TerminalCwdReported { .. } => {
-                // A cwd report can move the pane into the workspace pinned to
-                // that directory and close the one it left. A shell client whose
-                // location still names the closed workspace would keep sending
-                // requests for it, so re-point it the way a pane death does.
-                let workspace_ids_before = self.workspace_id_list();
-                let focus_before = self.shell_focus_targets();
-                let focused_tabs_before = self.focused_shell_tabs();
-                let changed = self.app.handle_internal_event_with_render_impact(ev);
-                if self.workspace_id_list() == workspace_ids_before {
-                    return changed;
-                }
-                self.reconcile_client_shell_locations();
-                self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
-                self.reapply_controlled_shell_tab_geometry(false);
-                true
-            }
             _ => self.app.handle_internal_event_with_render_impact(ev),
         }
+    }
+
+    /// Handles a single internal event with forwarding logic for clipboard,
+    /// sound, and toast notifications to connected clients.
+    ///
+    /// ALL internal events MUST be routed through this method to ensure
+    /// clipboard/notify forwarding is never bypassed. Do not call
+    /// `self.app.handle_internal_event()` directly for any internal event
+    /// in the headless server — use this method instead.
+    ///
+    /// A cwd report can move a pane into the workspace pinned to its
+    /// directory and close the one it left. Shell clients that were sitting in that pane follow it,
+    /// and one whose location still names a closed workspace is re-pointed
+    /// the way a pane death does it.
+    ///
+    /// Returns true if the event changed visual state (requiring a re-render).
+    pub(super) fn handle_internal_event_with_forwarding(&mut self, ev: AppEvent) -> bool {
+        let mut candidates: Vec<crate::layout::PaneId> = Vec::new();
+        if let AppEvent::TerminalCwdReported { pane_id, .. } = &ev {
+            candidates.push(*pane_id);
+        }
+        if candidates.is_empty() {
+            return self.handle_internal_event_with_forwarding_inner(ev);
+        }
+        let tabs_before: Vec<(crate::layout::PaneId, Option<String>)> = candidates
+            .into_iter()
+            .map(|pane_id| (pane_id, self.tab_id_holding_pane(pane_id)))
+            .collect();
+        let workspace_ids_before = self.workspace_id_list();
+        let focus_before = self.shell_focus_targets();
+        let focused_tabs_before = self.focused_shell_tabs();
+        let changed = self.handle_internal_event_with_forwarding_inner(ev);
+        let mut moved = false;
+        for (pane_id, tab_before) in tabs_before {
+            let tab_after = self.tab_id_holding_pane(pane_id);
+            if tab_after == tab_before {
+                continue;
+            }
+            moved = true;
+            let Some(tab_after) = tab_after else {
+                continue;
+            };
+            let followers: Vec<u64> = focus_before
+                .iter()
+                .filter(|(_, target)| {
+                    target.as_ref().is_some_and(|target| {
+                        target.pane_id == pane_id && Some(&target.tab_id) == tab_before.as_ref()
+                    })
+                })
+                .map(|(client_id, _)| *client_id)
+                .collect();
+            for client_id in followers {
+                self.focus_shell_client_on_tab(client_id, &tab_after);
+            }
+        }
+        if !moved && self.workspace_id_list() == workspace_ids_before {
+            return changed;
+        }
+        self.reconcile_client_shell_locations();
+        self.finish_shell_location_reconciliation(focus_before, &focused_tabs_before);
+        self.reapply_controlled_shell_tab_geometry(false);
+        true
+    }
+
+    fn tab_id_holding_pane(&self, pane_id: crate::layout::PaneId) -> Option<String> {
+        let (workspace_index, _) = self.app.find_pane(pane_id)?;
+        let tab_index =
+            self.app.state.workspaces[workspace_index].find_tab_index_for_pane(pane_id)?;
+        self.app.public_tab_id(workspace_index, tab_index)
     }
 
     fn workspace_id_list(&self) -> Vec<String> {
