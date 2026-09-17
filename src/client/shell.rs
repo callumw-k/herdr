@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 mod actions;
 mod agent_sidebar;
 mod aggregate_navigation;
+mod workspace_navigation;
+use workspace_navigation::WorkspaceNavigationTarget;
 mod composition;
 mod config;
 mod context_menu;
@@ -18,6 +20,7 @@ mod global_menu;
 mod graphics;
 mod input;
 mod input_source;
+mod link_hover;
 mod mobile;
 mod mouse;
 mod notification_policy;
@@ -29,7 +32,11 @@ mod scroll;
 mod settings;
 mod state;
 mod surface_patch;
+mod text_editor;
+mod word_selection;
 mod worktrees;
+use text_editor::TextEditor;
+use word_selection::ClientWordSelection;
 
 pub(in crate::client::shell) use render::sidebar;
 pub(crate) use state::*;
@@ -59,34 +66,10 @@ use crate::protocol::{
 #[cfg(test)]
 use crate::raw_input::RawInputEvent;
 
-fn overlay_field_input(rename: &mut ClientRenameOverlay) -> &mut String {
+fn overlay_field_input(rename: &mut ClientRenameOverlay) -> &mut TextEditor {
     match rename.field {
         ClientRenameField::Name => &mut rename.input,
         ClientRenameField::Path => &mut rename.path_input,
-    }
-}
-
-fn delete_overlay_word(rename: &mut ClientRenameOverlay) {
-    if rename.replace_on_type && rename.field == ClientRenameField::Name {
-        rename.input.clear();
-        rename.replace_on_type = false;
-        return;
-    }
-    let input = overlay_field_input(rename);
-    while input.chars().last().is_some_and(char::is_whitespace) {
-        input.pop();
-    }
-    let Some(word) = input
-        .chars()
-        .last()
-        .map(|character| character.is_alphanumeric() || character == '_')
-    else {
-        return;
-    };
-    while input.chars().last().is_some_and(|character| {
-        !character.is_whitespace() && (character.is_alphanumeric() || character == '_') == word
-    }) {
-        input.pop();
     }
 }
 

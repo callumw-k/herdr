@@ -89,71 +89,96 @@ fn list(args: &[String]) -> std::io::Result<i32> {
     Ok(0)
 }
 
-fn add(args: &[String]) -> std::io::Result<i32> {
+#[derive(Debug, PartialEq, Eq)]
+struct AddArgs {
+    target: String,
+    label: String,
+    session: String,
+}
+
+fn parse_add_args(args: &[String]) -> Result<AddArgs, String> {
     let args = super::expand_equals_args(args, &["--label", "--remote-session"]);
-    let Some(target) = args.first().filter(|value| !value.starts_with('-')) else {
-        eprintln!(
-            "usage: herdr machine add <ssh-target> --label <label> [--remote-session <name>]"
-        );
-        return Ok(2);
-    };
+    let mut target = None;
     let mut label = None;
     let mut session = None;
-    let mut index = 1;
+    let mut index = 0;
     while index < args.len() {
         let (name, value) = match args[index].as_str() {
             "--label" | "--remote-session" => {
                 let Some(value) = args.get(index + 1) else {
-                    eprintln!("missing value for {}", args[index]);
-                    return Ok(2);
+                    return Err(format!("missing value for {}", args[index]));
                 };
                 index += 2;
                 (args[index - 2].as_str(), value.clone())
             }
+            positional if !positional.starts_with('-') && target.is_none() => {
+                target = Some(positional.to_owned());
+                index += 1;
+                continue;
+            }
             unknown => {
-                eprintln!("unknown machine add option: {unknown}");
-                return Ok(2);
+                return Err(format!("unknown machine add option: {unknown}"));
             }
         };
         match name {
             "--label" if label.is_none() => label = Some(value),
             "--remote-session" if session.is_none() => session = Some(value),
             "--remote-session" => {
-                eprintln!("--remote-session can only be specified once");
-                return Ok(2);
+                return Err("--remote-session can only be specified once".into());
             }
             "--label" => {
-                eprintln!("--label can only be specified once");
-                return Ok(2);
+                return Err("--label can only be specified once".into());
             }
             _ => unreachable!("validated machine add option"),
         }
     }
-    let Some(label) = label else {
-        eprintln!("--label is required");
-        return Ok(2);
-    };
+    let target = target.ok_or_else(|| {
+        "usage: herdr machine add <ssh-target> --label <label> [--remote-session <name>]".to_owned()
+    })?;
+    let label = label.ok_or_else(|| "--label is required".to_owned())?;
     let session = session.unwrap_or_else(|| crate::session::DEFAULT_SESSION_NAME.to_owned());
+    Ok(AddArgs {
+        target,
+        label,
+        session,
+    })
+}
+
+fn add(args: &[String]) -> std::io::Result<i32> {
+    let AddArgs {
+        target,
+        label,
+        session,
+    } = match parse_add_args(args) {
+        Ok(args) => args,
+        Err(error) => {
+            eprintln!("{error}");
+            return Ok(2);
+        }
+    };
     let mut catalog = load_catalog()?;
-    match catalog.add_ssh(label.clone(), target, session.clone()) {
+    match catalog.add_ssh(label.clone(), &target, session.clone()) {
         Ok(_) => {}
         Err(error) => {
             eprintln!("error: {error}");
             return Ok(2);
         }
     }
-    if let Err(error) = crate::remote::prepare_saved_ssh(target, &session) {
-        eprintln!("error: {error}; machine was not saved");
-        crate::remote::print_saved_ssh_error_hint(&error, target);
-        return Ok(1);
-    }
+    let metadata = match crate::remote::prepare_saved_ssh(&target, &session) {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            eprintln!("error: {error}; machine was not saved");
+            crate::remote::print_saved_ssh_error_hint(&error, &target);
+            return Ok(1);
+        }
+    };
     // Setup can wait for human approval. Do not overwrite catalog edits made meanwhile.
     let mut catalog = load_catalog().map_err(|error| {
         std::io::Error::other(format!(
             "remote prepared, but machine was not saved: {error}"
         ))
     })?;
-    let id = match catalog.add_ssh(label, target, session) {
+    let id = match catalog.add_ssh(label, &target, &session) {
         Ok(id) => id,
         Err(error) => {
             eprintln!("error: {error}");
@@ -165,6 +190,10 @@ fn add(args: &[String]) -> std::io::Result<i32> {
             "remote prepared, but machine was not saved: {error}"
         ))
     })?;
+    if let Some(metadata) = metadata {
+        crate::client::endpoint::SshMetadataCache::new(id.as_str(), &target, &session)?
+            .store(&metadata);
+    }
     println!("Saved SSH machine {id}. Remote server is ready.");
     println!("Open Herdr clients connect automatically.");
     Ok(0)
@@ -210,11 +239,26 @@ fn remove(args: &[String]) -> std::io::Result<i32> {
     };
     let mut catalog = load_catalog()?;
     let previous_selection = catalog.selected_profile.clone();
+    let metadata_cache = catalog
+        .ssh
+        .iter()
+        .find(|profile| profile.id == id)
+        .map(|profile| {
+            crate::client::endpoint::SshMetadataCache::new(
+                id.as_str(),
+                &profile.target,
+                &profile.session,
+            )
+        })
+        .transpose()?;
     if !catalog.remove_ssh(&id) {
         eprintln!("machine profile {id} was not found");
         return Ok(1);
     }
     store_catalog(&catalog)?;
+    if let Some(cache) = metadata_cache {
+        cache.invalidate();
+    }
     if catalog.selected_profile != previous_selection {
         catalog.store_selection().map_err(std::io::Error::other)?;
     }
@@ -270,6 +314,70 @@ fn store_catalog(catalog: &EndpointCatalog) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_parser_preserves_values_across_argument_orders() {
+        for (args, session) in [
+            (vec!["--label", "coder", "workstation.coder"], "default"),
+            (vec!["workstation.coder", "--label", "coder"], "default"),
+            (
+                vec![
+                    "--remote-session",
+                    "agents",
+                    "workstation.coder",
+                    "--label",
+                    "coder",
+                ],
+                "agents",
+            ),
+            (
+                vec![
+                    "--label=coder",
+                    "--remote-session=agents",
+                    "workstation.coder",
+                ],
+                "agents",
+            ),
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(
+                parse_add_args(&args).unwrap(),
+                AddArgs {
+                    target: "workstation.coder".into(),
+                    label: "coder".into(),
+                    session: session.into(),
+                },
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn add_parser_rejects_incomplete_duplicate_and_extra_arguments() {
+        for args in [
+            vec![],
+            vec!["--label", "coder"],
+            vec!["workstation.coder"],
+            vec!["workstation.coder", "--label"],
+            vec!["workstation.coder", "--label", "coder", "--remote-session"],
+            vec!["--label", "coder", "--label", "other", "workstation.coder"],
+            vec![
+                "workstation.coder",
+                "--label",
+                "coder",
+                "--remote-session",
+                "a",
+                "--remote-session",
+                "b",
+            ],
+            vec!["--label", "coder", "workstation.coder", "other-host"],
+            vec!["--unknown", "workstation.coder", "--label", "coder"],
+            vec!["--label", "--remote-session", "agents", "workstation.coder"],
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert!(parse_add_args(&args).is_err(), "{args:?}");
+        }
+    }
 
     #[test]
     fn profile_id_parser_rejects_target_text() {

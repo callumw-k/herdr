@@ -258,79 +258,99 @@ pub(super) fn agent_rows(
     ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
         .into_iter()
         .filter_map(|pane_id| {
-            let agent = snapshot
+            let mut row = agent_row(snapshot, &pane_id, config, machine)?;
+            let workspace = snapshot
                 .agents
                 .iter()
-                .find(|agent| agent.pane_id == pane_id)?;
-            let workspace = snapshot
-                .workspaces
-                .iter()
-                .find(|workspace| workspace.workspace_id == agent.workspace_id)?;
-            let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == agent.tab_id);
-            let pane = snapshot
-                .panes
-                .iter()
-                .find(|pane| pane.pane_id == agent.pane_id);
-            let tab_count = snapshot
-                .tabs
-                .iter()
-                .filter(|candidate| candidate.workspace_id == agent.workspace_id)
-                .count();
-            let tab_label = tab
-                .filter(|tab| tab_count > 1 || tab.custom_label)
-                .map(|tab| tab.label.as_str());
-            let agent_label = agent
-                .display_agent
-                .as_deref()
-                .or(agent.name.as_deref())
-                .or(agent.agent.as_deref())
-                .or(agent.title.as_deref());
-            let labels = agent
-                .state_labels
-                .iter()
-                .cloned()
-                .collect::<HashMap<_, _>>();
-            let tokens = agent.tokens.iter().cloned().collect::<HashMap<_, _>>();
-            let state_text = labels
-                .get(status_text(agent.agent_status))
-                .map(String::as_str)
-                .unwrap_or_else(|| sidebar_status_text(agent.agent_status));
-            let canonical_agent = agent
-                .agent
-                .as_deref()
-                .and_then(crate::detect::parse_agent_label);
-            let rows = crate::ui::sidebar_agent_rows(
-                &config.agents,
-                crate::ui::AgentTokenContext {
-                    machine,
-                    workspace: &workspace.label,
-                    tab: tab_label,
-                    pane: agent
-                        .title
-                        .as_deref()
-                        .or_else(|| pane.and_then(|pane| pane.label.as_deref())),
-                    agent_label,
-                    terminal_title: agent.terminal_title.as_deref(),
-                    terminal_title_stripped: agent.terminal_title_stripped.as_deref(),
-                    canonical_agent,
-                    tokens: &tokens,
-                },
-                state_text,
-            );
-            let group = (grouped && previous_workspace != Some(workspace.workspace_id.as_str()))
+                .find(|agent| agent.pane_id == pane_id)
+                .and_then(|agent| {
+                    snapshot
+                        .workspaces
+                        .iter()
+                        .find(|workspace| workspace.workspace_id == agent.workspace_id)
+                })?;
+            row.group = (grouped && previous_workspace != Some(workspace.workspace_id.as_str()))
                 .then(|| workspace.label.clone());
-            let group_gap = group.is_some() && previous_workspace.is_some();
+            row.group_gap = row.group.is_some() && previous_workspace.is_some();
             previous_workspace = Some(workspace.workspace_id.as_str());
-            Some(AgentRow {
-                pane_id: agent.pane_id.clone(),
-                status: agent.agent_status,
-                focused: agent.focused,
-                group,
-                group_gap,
-                rows,
-            })
+            Some(row)
         })
         .collect()
+}
+
+pub(super) fn agent_row(
+    snapshot: &ClientShellSnapshot,
+    pane_id: &str,
+    config: &ClientShellConfig,
+    machine: Option<&str>,
+) -> Option<AgentRow> {
+    let agent = snapshot
+        .agents
+        .iter()
+        .find(|agent| agent.pane_id == pane_id)?;
+    let workspace = snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id == agent.workspace_id)?;
+    let tab = snapshot.tabs.iter().find(|tab| tab.tab_id == agent.tab_id);
+    let pane = snapshot
+        .panes
+        .iter()
+        .find(|pane| pane.pane_id == agent.pane_id);
+    let tab_count = snapshot
+        .tabs
+        .iter()
+        .filter(|candidate| candidate.workspace_id == agent.workspace_id)
+        .count();
+    let tab_label = tab
+        .filter(|tab| tab_count > 1 || tab.custom_label)
+        .map(|tab| tab.label.as_str());
+    let agent_label = agent
+        .display_agent
+        .as_deref()
+        .or(agent.name.as_deref())
+        .or(agent.agent.as_deref())
+        .or(agent.title.as_deref());
+    let labels = agent
+        .state_labels
+        .iter()
+        .cloned()
+        .collect::<HashMap<_, _>>();
+    let tokens = agent.tokens.iter().cloned().collect::<HashMap<_, _>>();
+    let state_text = labels
+        .get(status_text(agent.agent_status))
+        .map(String::as_str)
+        .unwrap_or_else(|| sidebar_status_text(agent.agent_status));
+    let canonical_agent = agent
+        .agent
+        .as_deref()
+        .and_then(crate::detect::parse_agent_label);
+    let rows = crate::ui::sidebar_agent_rows(
+        &config.agents,
+        crate::ui::AgentTokenContext {
+            machine,
+            workspace: &workspace.label,
+            tab: tab_label,
+            pane: agent
+                .title
+                .as_deref()
+                .or_else(|| pane.and_then(|pane| pane.label.as_deref())),
+            agent_label,
+            terminal_title: agent.terminal_title.as_deref(),
+            terminal_title_stripped: agent.terminal_title_stripped.as_deref(),
+            canonical_agent,
+            tokens: &tokens,
+        },
+        state_text,
+    );
+    Some(AgentRow {
+        pane_id: agent.pane_id.clone(),
+        status: agent.agent_status,
+        focused: agent.focused,
+        group: None,
+        group_gap: false,
+        rows,
+    })
 }
 
 pub(super) fn render_agent_row(
@@ -350,16 +370,8 @@ pub(super) fn render_agent_row(
             .fg(palette.subtext0)
             .add_modifier(Modifier::BOLD)
     };
-    let status_style = Style::default()
-        .fg(status_color(row.status, palette))
-        .add_modifier(if row.focused {
-            Modifier::empty()
-        } else {
-            Modifier::DIM
-        });
-    let secondary = Style::default()
-        .fg(palette.overlay0)
-        .add_modifier(Modifier::DIM);
+    let status_style = Style::default().fg(status_color(row.status, palette));
+    let secondary = Style::default().fg(palette.overlay0);
     // Context tokens on the entry's first row are the label when a layout has
     // no workspace token there, so they read at full strength; later rows stay
     // dim as supporting detail. Regular weight in `text` keeps the label in a

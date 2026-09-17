@@ -45,7 +45,7 @@ fn opening_the_workspace_editor_looks_up_the_pinned_path() {
     let Some(ClientShellOverlay::Rename(rename)) = state.overlay.as_ref() else {
         panic!("editor open");
     };
-    assert_eq!(rename.path_input, "/repos/herdr");
+    assert_eq!(rename.path_input.as_str(), "/repos/herdr");
     assert_eq!(rename.field, ClientRenameField::Path);
 }
 
@@ -81,7 +81,7 @@ fn a_failed_path_lookup_still_unlocks_the_field_and_keeps_typed_text() {
         rename.path_loaded,
         "a failed lookup must still unlock the field instead of leaving it stuck on the placeholder"
     );
-    assert_eq!(rename.path_input, "/tmp/typed");
+    assert_eq!(rename.path_input.as_str(), "/tmp/typed");
 
     let saved = state.handle_raw_events(vec![key(KeyCode::Enter, KeyModifiers::NONE)]);
     assert!(matches!(
@@ -327,7 +327,7 @@ fn a_late_lookup_answer_keeps_a_path_the_user_already_typed() {
     let Some(ClientShellOverlay::Rename(rename)) = state.overlay.as_ref() else {
         panic!("editor open");
     };
-    assert_eq!(rename.path_input, "/tmp/typed");
+    assert_eq!(rename.path_input.as_str(), "/tmp/typed");
     assert_eq!(
         rename.original_path, "/repos/herdr",
         "the answer is still the baseline the save compares against"

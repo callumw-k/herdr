@@ -5,6 +5,8 @@ mod worktree_overlays;
 
 #[derive(Default)]
 pub(crate) struct OverlayRender {
+    pub(crate) area: Rect,
+    pub(crate) menu_rows: Vec<(Rect, usize)>,
     pub(crate) primary: Rect,
     pub(crate) clear: Rect,
     pub(crate) cancel: Rect,
@@ -87,7 +89,7 @@ pub(crate) fn render_global_menu(
     menu: &ClientGlobalMenuOverlay,
     snapshot: &ClientShellSnapshot,
     palette: &Palette,
-) -> Option<Vec<(Rect, usize)>> {
+) -> Option<OverlayRender> {
     let items = super::super::global_menu::global_menu_items(snapshot);
     let screen = buffer.area;
     let width = items
@@ -110,12 +112,8 @@ pub(crate) fn render_global_menu(
         .saturating_sub(width)
         .min(screen.right().saturating_sub(width));
     let y = launcher.y.saturating_sub(height).max(screen.y);
-    let inner = panel(
-        buffer,
-        Rect::new(x, y, width, height),
-        palette.accent,
-        palette.panel_bg,
-    )?;
+    let rect = Rect::new(x, y, width, height);
+    let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
     let mut rows = Vec::new();
     for (index, (label, action)) in items.iter().enumerate() {
         let row_y = inner.y.saturating_add(index as u16);
@@ -157,14 +155,18 @@ pub(crate) fn render_global_menu(
         }
         rows.push((row, index));
     }
-    Some(rows)
+    Some(OverlayRender {
+        area: rect,
+        menu_rows: rows,
+        ..OverlayRender::default()
+    })
 }
 
 pub(crate) fn render_context_menu(
     buffer: &mut Buffer,
     menu: &ClientContextMenuOverlay,
     palette: &Palette,
-) -> Option<Vec<(Rect, usize)>> {
+) -> Option<OverlayRender> {
     let items = menu.items();
     let screen = buffer.area;
     let max_item_width = items
@@ -209,7 +211,11 @@ pub(crate) fn render_context_menu(
         put_text(buffer, row.x, row.y, row.width, item.label, style);
         rows.push((row, index));
     }
-    Some(rows)
+    Some(OverlayRender {
+        area: rect,
+        menu_rows: rows,
+        ..OverlayRender::default()
+    })
 }
 
 fn panel(
@@ -308,7 +314,10 @@ fn render_release_notes_overlay(
     )?;
     let inner = panel(b, outer, p.accent, p.panel_bg)?;
     if inner.height < 8 || inner.width < 20 {
-        return Some(OverlayRender::default());
+        return Some(OverlayRender {
+            area: outer,
+            ..OverlayRender::default()
+        });
     }
 
     let stack = crate::ui::modal_stack_areas(inner, 2, 1, 0, 1);
@@ -399,6 +408,7 @@ fn render_release_notes_overlay(
     }
 
     Some(OverlayRender {
+        area: outer,
         primary: close,
         release_notes_scrollbar: track.unwrap_or_default(),
         release_notes_scroll_metrics: Some(metrics),
@@ -419,7 +429,10 @@ fn render_product_announcement_overlay(
     )?;
     let inner = panel(b, outer, p.accent, p.panel_bg)?;
     if inner.height < 8 || inner.width < 20 {
-        return Some(OverlayRender::default());
+        return Some(OverlayRender {
+            area: outer,
+            ..OverlayRender::default()
+        });
     }
 
     let stack = crate::ui::modal_stack_areas(inner, 2, 1, 0, 1);
@@ -511,6 +524,7 @@ fn render_product_announcement_overlay(
     }
 
     Some(OverlayRender {
+        area: outer,
         primary: close,
         product_announcement_scrollbar: track.unwrap_or_default(),
         product_announcement_scroll_metrics: Some(metrics),
@@ -523,7 +537,10 @@ fn render_onboarding_overlay(b: &mut Buffer, p: &Palette) -> Option<OverlayRende
     let outer = popup(b.area, 64, 16)?;
     let inner = panel(b, outer, p.accent, p.panel_bg)?;
     if inner.height < 11 {
-        return Some(OverlayRender::default());
+        return Some(OverlayRender {
+            area: outer,
+            ..OverlayRender::default()
+        });
     }
     let stack = crate::ui::modal_stack_areas(inner, 2, 0, 1, 1);
     let base = Style::default()
@@ -604,6 +621,7 @@ fn render_onboarding_overlay(b: &mut Buffer, p: &Palette) -> Option<OverlayRende
             .remove_modifier(Modifier::DIM),
     );
     Some(OverlayRender {
+        area: outer,
         primary,
         ..OverlayRender::default()
     })
@@ -631,45 +649,35 @@ fn render_rename_overlay(
             .bg(p.panel_bg)
             .add_modifier(Modifier::BOLD),
     );
-    let mut fields = vec![(2, "name", v.input.as_str(), ClientRenameField::Name)];
+    let mut fields = vec![(2, "name", &v.input, ClientRenameField::Name)];
     if two_fields {
-        let shown = if v.path_loaded {
-            v.path_input.as_str()
-        } else {
-            "…"
-        };
-        fields.push((4, "path", shown, ClientRenameField::Path));
+        fields.push((4, "path", &v.path_input, ClientRenameField::Path));
     }
     let mut rename_fields = Vec::new();
     let mut cursor = None;
-    for (offset, label, value, field) in fields {
+    for (offset, label, editor, field) in fields {
         let rect = Rect::new(i.x, i.y + offset, i.width, 1);
         let focused = v.field == field || !two_fields;
-        let text = if two_fields {
-            format!(" {label:<5} {value}")
-        } else {
-            format!(" {value}")
-        };
         let style = Style::default()
             .fg(p.text)
             .bg(if focused { p.surface0 } else { p.surface1 });
         b.set_style(rect, style);
-        put_text(
-            b,
-            rect.x,
-            rect.y,
-            rect.width.saturating_sub(1),
-            &text,
-            style,
-        );
+        let mut value = Rect::new(rect.x + 1, rect.y, rect.width.saturating_sub(1), 1);
+        if two_fields {
+            let prefix = format!("{label:<5} ");
+            put_text(b, value.x, value.y, value.width, &prefix, style);
+            let used = display_width(&prefix).min(value.width);
+            value = Rect::new(value.x + used, value.y, value.width - used, 1);
+        }
+        let field_cursor = if field == ClientRenameField::Path && !v.path_loaded {
+            put_text(b, value.x, value.y, value.width, "…", style);
+            None
+        } else {
+            text_editor::render(b, value, editor, style)
+        };
         rename_fields.push((rect, field));
         if focused {
-            cursor = Some(crate::protocol::CursorState {
-                x: (rect.x + display_width(&text)).min(rect.right() - 1),
-                y: rect.y,
-                visible: true,
-                shape: 0,
-            });
+            cursor = field_cursor;
         }
     }
     let rs = row(i, &[8, 10, 12], 2, if two_fields { 6 } else { 3 });
@@ -692,13 +700,37 @@ fn render_rename_overlay(
     button(b, *clear, " ^c clear ", n);
     button(b, *cancel, " esc cancel ", n);
     Some(OverlayRender {
+        area: q,
         primary: *save,
         clear: *clear,
         cancel: *cancel,
         rename_fields,
+        navigator_popup: Rect::default(),
+        navigator_search: Rect::default(),
+        navigator_rows: Vec::new(),
+        worktree_search: Rect::default(),
+        worktree_rows: Vec::new(),
         cursor,
         ..OverlayRender::default()
     })
+}
+
+/// Mark following siblings in preorder without rescanning descendants for each row.
+/// The reverse stack contains at most one entry per depth; every entry is pushed
+/// and popped at most once, so this pass is linear in the number of rows.
+fn navigator_following_siblings(rows: &[ClientNavigatorRow]) -> Vec<bool> {
+    let mut following = vec![false; rows.len()];
+    let mut depths = Vec::new();
+    for (index, row) in rows.iter().enumerate().rev() {
+        while depths.last().is_some_and(|depth| *depth > row.depth) {
+            depths.pop();
+        }
+        following[index] = depths.last() == Some(&row.depth);
+        if !following[index] {
+            depths.push(row.depth);
+        }
+    }
+    following
 }
 
 fn render_navigator_overlay(
@@ -717,11 +749,12 @@ fn render_navigator_overlay(
         a.y + my,
         a.width.saturating_sub(mx * 2).max(4),
         a.height.saturating_sub(my * 2).max(4),
-    );
+    )
+    .intersection(a);
     let i = panel(b, q, p.accent, p.panel_bg)?;
     let rows = super::aggregate_navigation::navigator_rows(endpoints, active_endpoint_id, n);
     let search = if n.search_focused {
-        format!(" / {}", n.query)
+        " / ".to_owned()
     } else if let Some(f) = n.filter {
         format!(
             " / {}",
@@ -747,16 +780,32 @@ fn render_navigator_overlay(
             .fg(if n.search_focused { p.text } else { p.overlay0 })
             .bg(p.panel_bg),
     );
+    let count = format!(
+        "{} panes",
+        rows.iter()
+            .filter(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+            .count()
+    );
+    let cursor = if n.search_focused {
+        text_editor::render(
+            b,
+            Rect::new(
+                i.x + 3,
+                i.y,
+                i.width.saturating_sub(4 + display_width(&count)),
+                1,
+            ),
+            &n.query,
+            Style::default().fg(p.text).bg(p.panel_bg),
+        )
+    } else {
+        None
+    };
     put_right_text(
         b,
         i,
         i.y,
-        &format!(
-            "{} panes",
-            rows.iter()
-                .filter(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
-                .count()
-        ),
+        &count,
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
     put_text(
@@ -775,15 +824,17 @@ fn render_navigator_overlay(
         .max(selected.saturating_sub(body.height.saturating_sub(1) as usize))
         .min(selected)
         .min(max);
+    let following_siblings = navigator_following_siblings(&rows);
+    let mut ancestor_siblings = Vec::new();
+    let federated = endpoints.len() > 1;
     let mut row_hits = Vec::new();
-    for (vis, (ix, r)) in rows
-        .iter()
-        .enumerate()
-        .skip(scroll)
-        .take(body.height as usize)
-        .enumerate()
-    {
-        let rect = Rect::new(body.x, body.y + vis as u16, body.width, 1);
+    for (ix, r) in rows.iter().enumerate().take(scroll + body.height as usize) {
+        ancestor_siblings.truncate(usize::from(r.depth));
+        ancestor_siblings.push(following_siblings[ix]);
+        if ix < scroll {
+            continue;
+        }
+        let rect = Rect::new(body.x, body.y + (ix - scroll) as u16, body.width, 1);
         row_hits.push((rect, r.target.clone()));
         let st = if r.stale {
             Style::default()
@@ -806,10 +857,10 @@ fn render_navigator_overlay(
         };
         b.set_style(rect, st);
         let tree = if !n.query.trim().is_empty() {
-            ""
+            String::new()
         } else {
             match &r.target {
-                ClientNavigatorTarget::Machine { .. } => "▾",
+                ClientNavigatorTarget::Machine { .. } => "▾".to_owned(),
                 ClientNavigatorTarget::Workspace {
                     endpoint_id,
                     workspace_id,
@@ -817,32 +868,28 @@ fn render_navigator_overlay(
                     .expanded_workspaces
                     .contains(&(endpoint_id.clone(), workspace_id.clone())) =>
                 {
-                    if r.depth == 0 {
-                        "▾"
-                    } else {
-                        "  ▾"
-                    }
+                    if r.depth == 0 { "▾" } else { "  ▾" }.to_owned()
                 }
                 ClientNavigatorTarget::Workspace { .. } => {
-                    if r.depth == 0 {
-                        "▸"
-                    } else {
-                        "  ▸"
-                    }
+                    if r.depth == 0 { "▸" } else { "  ▸" }.to_owned()
                 }
-                ClientNavigatorTarget::Tab { .. } => {
-                    if r.depth == 1 {
+                ClientNavigatorTarget::Tab { .. } | ClientNavigatorTarget::Pane { .. } => {
+                    // Machines and workspaces keep their existing caret decoration.
+                    // Connected branches begin below each workspace.
+                    let mut prefix = if federated { "    " } else { "" }.to_owned();
+                    for &following in ancestor_siblings
+                        .iter()
+                        .take(usize::from(r.depth))
+                        .skip(if federated { 2 } else { 1 })
+                    {
+                        prefix.push_str(if following { "│  " } else { "   " });
+                    }
+                    prefix.push_str(if following_siblings[ix] {
+                        "├──"
+                    } else {
                         "└──"
-                    } else {
-                        "    └──"
-                    }
-                }
-                ClientNavigatorTarget::Pane { .. } => {
-                    if r.depth == 2 {
-                        "   └──"
-                    } else {
-                        "        └──"
-                    }
+                    });
+                    prefix
                 }
             }
         };
@@ -929,6 +976,7 @@ fn render_navigator_overlay(
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
     Some(OverlayRender {
+        area: q,
         primary: Rect::default(),
         clear: Rect::default(),
         cancel: Rect::default(),
@@ -937,12 +985,7 @@ fn render_navigator_overlay(
         navigator_rows: row_hits,
         worktree_search: Rect::default(),
         worktree_rows: Vec::new(),
-        cursor: n.search_focused.then(|| crate::protocol::CursorState {
-            x: i.x + 3 + display_width(&n.query),
-            y: i.y,
-            visible: true,
-            shape: 0,
-        }),
+        cursor,
         ..OverlayRender::default()
     })
 }
@@ -1056,7 +1099,7 @@ fn render_help_overlay(
         sy,
         i.width,
         &if h.search_focused {
-            format!(" / {}", h.query)
+            " / ".to_owned()
         } else {
             " / press / to filter by command or shortcut".to_owned()
         },
@@ -1064,6 +1107,16 @@ fn render_help_overlay(
             .fg(if h.search_focused { p.text } else { p.overlay0 })
             .bg(p.panel_bg),
     );
+    let cursor = if h.search_focused {
+        text_editor::render(
+            b,
+            Rect::new(i.x + 3, sy, i.width.saturating_sub(3), 1),
+            &h.query,
+            Style::default().fg(p.text).bg(p.panel_bg),
+        )
+    } else {
+        None
+    };
 
     let body = Rect::new(i.x, i.y + 3, i.width, i.height.saturating_sub(5));
     let lines = help_lines(k, &h.query, p);
@@ -1123,24 +1176,20 @@ fn render_help_overlay(
         i.bottom() - 1,
         i.width,
         if h.search_focused {
-            " filter type/backspace · clear ctrl+u · scroll ↑↓/pgup/pgdn · back esc"
+            " edit ←→/home/end · kill ^u/^k · yank ^y · scroll ↑↓ · back esc"
         } else {
             " search / · scroll j/k/↑↓/pgup/pgdn · close esc/enter"
         },
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
     Some(OverlayRender {
+        area: q,
         cancel: close,
         help_popup: q,
         help_scrollbar: scrollbar.unwrap_or_default(),
         help_scroll_metrics: Some(metrics),
         help_max_scroll: max_scroll,
-        cursor: h.search_focused.then(|| crate::protocol::CursorState {
-            x: (i.x + 3 + display_width(&h.query)).min(i.right() - 1),
-            y: sy,
-            visible: true,
-            shape: 0,
-        }),
+        cursor,
         ..OverlayRender::default()
     })
 }
@@ -1193,6 +1242,7 @@ fn render_confirm_close_overlay(
             .add_modifier(Modifier::BOLD),
     );
     Some(OverlayRender {
+        area: q,
         primary: *ok,
         clear: Rect::default(),
         cancel: *cancel,

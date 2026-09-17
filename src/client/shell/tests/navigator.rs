@@ -41,7 +41,7 @@ fn rows_for(state: &mut ClientShellState, query: &str) -> Vec<ClientNavigatorRow
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("navigator open");
     };
-    navigator.query = query.to_owned();
+    navigator.query = TextEditor::from(query);
     render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
 }
 
