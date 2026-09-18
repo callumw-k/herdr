@@ -974,6 +974,10 @@ pub struct UiConfig {
     pub sidebar_start_collapsed: bool,
     /// Collapsed sidebar presentation. Default: compact.
     pub sidebar_collapsed_mode: SidebarCollapsedModeConfig,
+    /// Hide panes without a detected agent in the navigator. Default: true.
+    pub navigator_agents_only: bool,
+    /// Open the navigator when the client attaches. Default: false.
+    pub navigator_on_start: bool,
     /// Terminal width at or below which Herdr uses the mobile single-column layout. Default: 64.
     pub mobile_width_threshold: u16,
     /// Capture mouse input for Herdr's mouse UI. Default: true.
@@ -1243,6 +1247,8 @@ impl Default for UiConfig {
             sidebar_max_width: 36,
             sidebar_start_collapsed: false,
             sidebar_collapsed_mode: SidebarCollapsedModeConfig::Compact,
+            navigator_agents_only: true,
+            navigator_on_start: false,
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,
@@ -1742,6 +1748,22 @@ sidebar_start_collapsed = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.ui.sidebar_start_collapsed);
+    }
+
+    #[test]
+    fn navigator_options_default_and_parse() {
+        let default_config = Config::default();
+        assert!(default_config.ui.navigator_agents_only);
+        assert!(!default_config.ui.navigator_on_start);
+
+        let toml = r#"
+[ui]
+navigator_agents_only = false
+navigator_on_start = true
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(!config.ui.navigator_agents_only);
+        assert!(config.ui.navigator_on_start);
     }
 
     #[test]

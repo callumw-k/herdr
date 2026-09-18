@@ -18,6 +18,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) sidebar_max_width: u16,
     pub(super) sidebar_start_collapsed: bool,
     pub(super) sidebar_collapsed_mode: SidebarCollapsedModeConfig,
+    pub(super) navigator_agents_only: bool,
     pub(super) mobile_width_threshold: u16,
     pub(super) tab_bar_position: TabBarPositionConfig,
     pub(super) hide_tab_bar_when_single_tab: bool,
@@ -868,6 +869,8 @@ pub(crate) struct ClientShellState {
     pub(super) popup_terminal_id: Option<String>,
     pub(super) sidebar_collapsed: bool,
     pub(super) sidebar_collapsed_manual: bool,
+    pub(super) navigator_agents_only: bool,
+    pub(super) navigator_agents_only_manual: bool,
     pub(super) sidebar_width: u16,
     pub(super) sidebar_width_manual: bool,
     pub(super) sidebar_section_split: f32,
@@ -992,6 +995,9 @@ impl ClientShellState {
         let sidebar_collapsed = preferences
             .sidebar_collapsed
             .unwrap_or(config.sidebar_start_collapsed);
+        let navigator_agents_only = preferences
+            .navigator_agents_only
+            .unwrap_or(config.navigator_agents_only);
         let (min_width, max_width) = crate::config::validated_sidebar_bounds(
             config.sidebar_min_width,
             config.sidebar_max_width,
@@ -1034,6 +1040,8 @@ impl ClientShellState {
             popup_terminal_id: None,
             sidebar_collapsed,
             sidebar_collapsed_manual: preferences.sidebar_collapsed.is_some(),
+            navigator_agents_only,
+            navigator_agents_only_manual: preferences.navigator_agents_only.is_some(),
             sidebar_width,
             sidebar_width_manual: preferences.sidebar_width.is_some(),
             sidebar_section_split,

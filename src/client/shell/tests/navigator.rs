@@ -162,3 +162,16 @@ fn a_user_label_beats_the_terminal_title_and_a_bare_pane_falls_back_to_its_numbe
     state.set_snapshot(Box::new(snapshot()));
     assert_eq!(pane_rows(&rows_for(&mut state, ""))[0].label, "pane 1");
 }
+
+#[test]
+fn agents_only_seeds_from_config_and_prefers_the_saved_preference() {
+    let state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    assert!(state.navigator_agents_only);
+    assert!(!state.navigator_agents_only_manual);
+
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.preferences.navigator_agents_only = Some(false);
+    let state = ClientShellState::new(config);
+    assert!(!state.navigator_agents_only);
+    assert!(state.navigator_agents_only_manual);
+}
