@@ -1143,7 +1143,7 @@ fn render_navigator_preview(
             Some(preview) if &preview.pane_id == pane_id && &preview.endpoint_id == endpoint_id => {
                 match &preview.error {
                     Some(error) => Some(format!(" preview unavailable: {error}")),
-                    None if preview.in_flight() && preview.lines.is_empty() => {
+                    None if preview.lines.is_empty() && preview.received_at.is_none() => {
                         Some(" loading".to_owned())
                     }
                     None => None,

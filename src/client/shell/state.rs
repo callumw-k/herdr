@@ -378,11 +378,13 @@ pub(super) struct ClientNavigatorPreview {
     pub(super) pane_id: String,
     pub(super) lines: Vec<String>,
     pub(super) error: Option<String>,
+    #[cfg(test)]
     pub(super) requested_at: Option<std::time::Instant>,
     pub(super) received_at: Option<std::time::Instant>,
 }
 
 impl ClientNavigatorPreview {
+    #[cfg(test)]
     pub(super) fn in_flight(&self) -> bool {
         match (self.requested_at, self.received_at) {
             (Some(requested), Some(received)) => received < requested,

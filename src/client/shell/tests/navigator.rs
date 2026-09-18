@@ -460,3 +460,27 @@ fn the_preview_column_shows_the_selected_pane_lines_and_placeholders() {
         "narrow layout drops the preview"
     );
 }
+
+#[test]
+fn in_flight_is_true_only_while_a_request_has_no_newer_reply() {
+    let now = std::time::Instant::now();
+    let later = now + std::time::Duration::from_secs(1);
+    let preview = |requested_at, received_at| ClientNavigatorPreview {
+        endpoint_id: ClientEndpointId::Local,
+        pane_id: "pane_1".into(),
+        lines: Vec::new(),
+        error: None,
+        requested_at,
+        received_at,
+    };
+    assert!(!preview(None, None).in_flight(), "never requested");
+    assert!(preview(Some(now), None).in_flight(), "awaiting a reply");
+    assert!(
+        preview(Some(later), Some(now)).in_flight(),
+        "the reply predates the latest request"
+    );
+    assert!(
+        !preview(Some(now), Some(later)).in_flight(),
+        "the reply answers the latest request"
+    );
+}
