@@ -87,6 +87,7 @@ fn modal_paste_target_requires_a_focused_editable_client_field() {
         selected: None,
         scroll: 0,
         filter: None,
+        agents_only: false,
         expanded_workspaces: HashSet::new(),
     }));
     assert!(!state.modal_paste_target_active());

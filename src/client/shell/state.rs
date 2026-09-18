@@ -379,6 +379,7 @@ pub(super) struct ClientNavigatorOverlay {
     pub(super) selected: Option<ClientNavigatorTarget>,
     pub(super) scroll: usize,
     pub(super) filter: Option<ClientNavigatorFilter>,
+    pub(super) agents_only: bool,
     pub(super) expanded_workspaces: HashSet<(ClientEndpointId, String)>,
 }
 

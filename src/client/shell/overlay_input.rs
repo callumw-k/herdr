@@ -205,6 +205,7 @@ impl ClientShellState {
             selected: None,
             scroll: 0,
             filter: None,
+            agents_only: self.navigator_agents_only,
             expanded_workspaces,
         };
         let rows =

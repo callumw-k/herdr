@@ -234,6 +234,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
             selected: None,
             scroll: 0,
             filter: None,
+            agents_only: false,
             expanded_workspaces: HashSet::new(),
         }),
         ClientShellOverlay::WorktreeCreate(ClientWorktreeCreateOverlay {

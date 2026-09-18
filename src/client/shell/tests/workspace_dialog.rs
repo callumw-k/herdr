@@ -155,6 +155,7 @@ fn clicking_the_path_field_focuses_it_instead_of_cancelling() {
 fn navigator_p_opens_the_path_editor_for_the_selected_workspace() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
+    state.navigator_agents_only = false;
     state.open_navigator_overlay();
     state.handle_raw_events(vec![key(KeyCode::Esc, KeyModifiers::NONE)]);
     let opened = state.handle_raw_events(vec![key(KeyCode::Char('p'), KeyModifiers::NONE)]);

@@ -11,6 +11,7 @@ fn shell(field: usize) -> ClientShellState {
         viewport_rows: 2,
     });
     state.set_pane_surface(frame);
+    state.navigator_agents_only = false;
     state.compose(106, 30).expect("initial shell");
     match field {
         0 => state.open_new_workspace_overlay(),

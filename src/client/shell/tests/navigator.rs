@@ -37,11 +37,20 @@ fn two_workspace_snapshot() -> ClientShellSnapshot {
 }
 
 fn rows_for(state: &mut ClientShellState, query: &str) -> Vec<ClientNavigatorRow> {
+    rows_with(state, query, false)
+}
+
+fn rows_with(
+    state: &mut ClientShellState,
+    query: &str,
+    agents_only: bool,
+) -> Vec<ClientNavigatorRow> {
     state.open_navigator_overlay();
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("navigator open");
     };
     navigator.query = TextEditor::from(query);
+    navigator.agents_only = agents_only;
     render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
 }
 
@@ -174,4 +183,55 @@ fn agents_only_seeds_from_config_and_prefers_the_saved_preference() {
     let state = ClientShellState::new(config);
     assert!(!state.navigator_agents_only);
     assert!(state.navigator_agents_only_manual);
+}
+
+fn labels(rows: &[ClientNavigatorRow]) -> Vec<&str> {
+    rows.iter().map(|row| row.label.as_str()).collect()
+}
+
+#[test]
+fn agents_only_hides_panes_tabs_and_workspaces_without_agents() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snapshot = two_workspace_snapshot();
+    snapshot
+        .agents
+        .push(agent("ws_1", "tab_1", "pane_1", Some("claude"), None));
+    state.set_snapshot(Box::new(snapshot));
+
+    let rows = rows_with(&mut state, "", true);
+    assert_eq!(labels(&rows), vec!["beta", "1", "alpha-runner"]);
+
+    let rows = rows_with(&mut state, "", false);
+    assert_eq!(
+        labels(&rows),
+        vec!["beta", "1", "alpha-runner", "alpha", "1", "zeta"]
+    );
+}
+
+#[test]
+fn agents_only_applies_to_flat_query_rows() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snapshot = two_workspace_snapshot();
+    snapshot
+        .agents
+        .push(agent("ws_1", "tab_1", "pane_1", Some("claude"), None));
+    state.set_snapshot(Box::new(snapshot));
+
+    assert!(rows_with(&mut state, "zeta", true).is_empty());
+    assert_eq!(rows_with(&mut state, "zeta", false).len(), 1);
+}
+
+#[test]
+fn the_navigator_opens_with_the_state_agents_only_setting() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.navigator_agents_only = false;
+    state.open_navigator_overlay();
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
+            agents_only: false,
+            ..
+        }))
+    ));
 }
