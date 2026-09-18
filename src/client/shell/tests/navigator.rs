@@ -693,3 +693,42 @@ fn an_endpoint_without_pane_read_is_not_polled() {
         .contains("unsupported"));
     assert!(state.visible_endpoint_notice.is_none());
 }
+
+#[test]
+fn navigator_on_start_opens_after_the_first_snapshot_and_after_onboarding() {
+    let mut config = Config::default();
+    config.ui.navigator_on_start = true;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(state.overlay.is_none(), "no snapshot yet");
+
+    state.set_snapshot(Box::new(snapshot()));
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
+    assert!(outcome.repaint);
+
+    state.overlay = None;
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(state.overlay.is_none(), "opens once, not every tick");
+
+    let mut state = ClientShellState::new(
+        ClientShellConfig::from_config(&config).with_startup_onboarding(true),
+    );
+    state.set_snapshot(Box::new(snapshot()));
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Onboarding)
+    ));
+    state.overlay = None;
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
+}

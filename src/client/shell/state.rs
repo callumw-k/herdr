@@ -21,6 +21,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) sidebar_start_collapsed: bool,
     pub(super) sidebar_collapsed_mode: SidebarCollapsedModeConfig,
     pub(super) navigator_agents_only: bool,
+    pub(super) navigator_on_start: bool,
     pub(super) mobile_width_threshold: u16,
     pub(super) tab_bar_position: TabBarPositionConfig,
     pub(super) hide_tab_bar_when_single_tab: bool,
@@ -898,6 +899,7 @@ pub(crate) struct ClientShellState {
     pub(super) sidebar_collapsed_manual: bool,
     pub(super) navigator_agents_only: bool,
     pub(super) navigator_agents_only_manual: bool,
+    pub(super) navigator_pending_on_start: bool,
     pub(super) sidebar_width: u16,
     pub(super) sidebar_width_manual: bool,
     pub(super) sidebar_section_split: f32,
@@ -1025,6 +1027,7 @@ impl ClientShellState {
         let navigator_agents_only = preferences
             .navigator_agents_only
             .unwrap_or(config.navigator_agents_only);
+        let navigator_pending_on_start = config.navigator_on_start;
         let (min_width, max_width) = crate::config::validated_sidebar_bounds(
             config.sidebar_min_width,
             config.sidebar_max_width,
@@ -1069,6 +1072,7 @@ impl ClientShellState {
             sidebar_collapsed_manual: preferences.sidebar_collapsed.is_some(),
             navigator_agents_only,
             navigator_agents_only_manual: preferences.navigator_agents_only.is_some(),
+            navigator_pending_on_start,
             sidebar_width,
             sidebar_width_manual: preferences.sidebar_width.is_some(),
             sidebar_section_split,
@@ -1891,6 +1895,11 @@ impl ClientShellState {
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) {
+        if self.navigator_pending_on_start && self.overlay.is_none() && self.snapshot.is_some() {
+            self.navigator_pending_on_start = false;
+            self.open_navigator_overlay();
+            outcome.repaint = true;
+        }
         let Some((cols, rows)) = self.last_composed_size else {
             return;
         };

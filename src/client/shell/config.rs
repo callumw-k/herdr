@@ -122,6 +122,7 @@ impl ClientShellConfig {
             sidebar_start_collapsed: config.ui.sidebar_start_collapsed,
             sidebar_collapsed_mode: config.ui.sidebar_collapsed_mode,
             navigator_agents_only: config.ui.navigator_agents_only,
+            navigator_on_start: config.ui.navigator_on_start,
             mobile_width_threshold: config.ui.mobile_width_threshold,
             tab_bar_position: config.ui.tab_bar_position,
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
