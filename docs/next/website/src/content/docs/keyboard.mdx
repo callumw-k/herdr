@@ -62,10 +62,10 @@ Workspaces and session:
 | New workspace | `prefix+shift+n` |
 | Rename workspace | `prefix+shift+w` |
 | Close workspace | `prefix+shift+d` |
-| Goto picker | `prefix+g` |
+| Agent overview | `prefix+g` |
 | Toggle sidebar | `prefix+b` |
 
-The goto picker opens with the search box focused. Press `esc` once to leave search, then `p` on any row to edit that workspace's pinned path, or `ctrl+o` to create a workspace with a name and path.
+The agent overview opens full screen with the search box focused. On wide terminals a live text preview of the selected pane sits on the right. By default it lists only panes with a detected agent. Press `alt+a` in search mode or `a` in tree mode to show everything, and Herdr remembers that choice per machine (`ui.navigator_agents_only` sets the initial value). `tab` switches between search and tree mode, `esc` closes, `enter` opens the selected pane, and pressing `prefix+g` again closes it. In tree mode `p` edits the selected workspace's pinned path and `ctrl+o` creates a workspace with a name and path. Set `ui.navigator_on_start = true` to open the overview as soon as the client attaches.
 
 The workspace dialog has a name and a path field. `tab` switches between them, and the path pins the workspace (see [Concepts](/docs/concepts/)).
 
