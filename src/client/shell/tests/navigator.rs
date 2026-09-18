@@ -597,6 +597,30 @@ fn the_preview_does_not_poll_while_another_request_is_pending() {
 }
 
 #[test]
+fn a_long_pane_title_is_truncated_so_the_path_stays_visible() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snapshot = snapshot();
+    let long = "Claude Code /Users/someone/Documents/code/some/very/deep/project/directory/name";
+    snapshot
+        .agents
+        .push(agent("ws_1", "tab_1", "pane_1", Some("claude"), Some(long)));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.open_navigator_overlay();
+
+    let text = frame_text(&mut state, 100, 30);
+    let row = text
+        .lines()
+        .find(|line| line.contains("Claude Code"))
+        .expect("pane row");
+    assert!(row.contains('…'), "{row}");
+    assert!(
+        row.contains("/repo"),
+        "cwd must survive a long title: {row}"
+    );
+}
+
+#[test]
 fn a_request_with_no_reply_is_retried_after_it_goes_stale() {
     let mut state = preview_state();
     state.open_navigator_overlay();

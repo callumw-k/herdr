@@ -735,6 +735,8 @@ fn navigator_following_siblings(rows: &[ClientNavigatorRow]) -> Vec<bool> {
 
 pub(in crate::client::shell) const NAVIGATOR_PREVIEW_HEADER_ROWS: u16 = 3;
 const NAVIGATOR_SPLIT_MIN_WIDTH: u16 = 100;
+const NAVIGATOR_LABEL_SHARE_PERCENT: usize = 60;
+const NAVIGATOR_LABEL_MIN_WIDTH: usize = 12;
 
 pub(in crate::client::shell) struct NavigatorGeometry {
     pub(in crate::client::shell) popup: Rect,
@@ -951,7 +953,17 @@ fn render_navigator_overlay(
         let current = if r.current { "◆ " } else { "" };
         let status = r.status.map(status_dot).unwrap_or_default();
         let status_separator = if status.is_empty() { "" } else { " " };
-        let label = format!(" {tree} {current}{status}{status_separator}{}", r.label);
+        let prefix = format!(" {tree} {current}{status}{status_separator}");
+        let label_text = if r.meta.is_empty() {
+            r.label.clone()
+        } else {
+            let budget = usize::from(rect.width) * NAVIGATOR_LABEL_SHARE_PERCENT / 100;
+            let max_width = budget
+                .saturating_sub(usize::from(display_width(&prefix)))
+                .max(NAVIGATOR_LABEL_MIN_WIDTH);
+            crate::ui::truncate_end(&r.label, max_width)
+        };
+        let label = format!("{prefix}{label_text}");
         put_text(b, rect.x, rect.y, rect.width, &label, st);
         if let Some(status) = r.status {
             let prefix = format!(" {tree} {current}");
