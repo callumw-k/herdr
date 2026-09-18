@@ -772,7 +772,20 @@ impl ClientShellState {
                 }))
             );
             if code == KeyCode::Esc {
-                self.overlay = None;
+                let cleared = match self.overlay.as_mut() {
+                    Some(ClientShellOverlay::Navigator(navigator))
+                        if !navigator.query.is_empty() =>
+                    {
+                        navigator.query.clear();
+                        true
+                    }
+                    _ => false,
+                };
+                if cleared {
+                    self.reset_navigator_selection();
+                } else {
+                    self.overlay = None;
+                }
                 outcome.repaint = true;
                 return;
             }

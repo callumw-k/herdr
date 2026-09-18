@@ -1049,9 +1049,9 @@ fn render_navigator_overlay(
         i.bottom() - 1,
         i.width,
         if n.search_focused {
-            " search type · move ↑↓ · open enter · tree tab · agents alt+a · filter alt+b/w/i/d · close esc"
+            " search type · move ↑↓ · open enter · tree tab · agents alt+a · filter alt+b/w/i/d · clear/close esc"
         } else {
-            " move j/k · expand space · agents a · filter b/w/i/d · search tab · path p · new ^o · open enter · close esc"
+            " move j/k · expand space · agents a · filter b/w/i/d · search tab · path p · new ^o · open enter · clear/close esc"
         },
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );

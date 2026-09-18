@@ -321,6 +321,28 @@ fn esc_closes_the_navigator_from_search_and_tree_mode() {
 }
 
 #[test]
+fn esc_clears_a_query_before_it_closes() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    state.handle_input_bytes(b"repo");
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(navigator(&state).query.as_str(), "");
+    assert!(navigator(&state).search_focused);
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(state.overlay.is_none());
+
+    open(&mut state);
+    state.handle_input_bytes(b"repo");
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(navigator(&state).query.as_str(), "");
+    assert!(!navigator(&state).search_focused);
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(state.overlay.is_none());
+}
+
+#[test]
 fn tab_switches_modes_and_keeps_the_query() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
