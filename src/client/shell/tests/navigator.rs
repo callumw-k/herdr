@@ -1,5 +1,8 @@
 use super::*;
 use crate::api::schema::AgentStatus;
+use crate::client::endpoint::{
+    ClientEndpointId, ClientEndpointStatus, ProfileId, SavedSshEndpoint,
+};
 use crate::protocol::{ClientShellAgent, ClientShellPane, ClientShellTab};
 
 fn two_workspace_snapshot() -> ClientShellSnapshot {
@@ -234,4 +237,47 @@ fn the_navigator_opens_with_the_state_agents_only_setting() {
             ..
         }))
     ));
+}
+
+#[test]
+fn agents_only_keeps_the_active_machine_row_and_drops_empty_remote_machines() {
+    let profile = SavedSshEndpoint {
+        id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("profile id"),
+        label: "Build".into(),
+        target: "dev@build.example".into(),
+        session: "agents".into(),
+        enabled: true,
+    };
+    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_snapshot(Box::new(snapshot()));
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    remote.workspaces[0].label = "remote-workspace".into();
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
+
+    let rows = rows_with(&mut state, "", true);
+    let machines: Vec<_> = rows
+        .iter()
+        .filter(|row| matches!(row.target, ClientNavigatorTarget::Machine { .. }))
+        .collect();
+    assert_eq!(machines.len(), 1);
+    assert!(matches!(
+        &machines[0].target,
+        ClientNavigatorTarget::Machine { endpoint_id } if *endpoint_id == ClientEndpointId::Local
+    ));
+
+    remote
+        .agents
+        .push(agent("ws_1", "tab_1", "pane_1", Some("claude"), None));
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+
+    let rows = rows_with(&mut state, "", true);
+    let machine_count = rows
+        .iter()
+        .filter(|row| matches!(row.target, ClientNavigatorTarget::Machine { .. }))
+        .count();
+    assert_eq!(machine_count, 2);
 }
