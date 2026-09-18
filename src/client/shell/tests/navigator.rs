@@ -332,9 +332,6 @@ fn tab_switches_modes_and_keeps_the_query() {
     press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
     assert!(navigator(&state).search_focused);
     press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
-    press(&mut state, KeyCode::Char('i'), KeyModifiers::NONE);
-    assert!(navigator(&state).search_focused);
-    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
     press(&mut state, KeyCode::Char('/'), KeyModifiers::NONE);
     assert!(navigator(&state).search_focused);
 }
@@ -376,6 +373,12 @@ fn status_filters_set_in_search_mode_and_clear_on_repeat() {
         Some(ClientNavigatorFilter::Working)
     );
     press(&mut state, KeyCode::Char('w'), KeyModifiers::NONE);
+    assert_eq!(navigator(&state).filter, None);
+
+    press(&mut state, KeyCode::Char('i'), KeyModifiers::NONE);
+    assert_eq!(navigator(&state).filter, Some(ClientNavigatorFilter::Idle));
+    assert!(!navigator(&state).search_focused);
+    press(&mut state, KeyCode::Char('i'), KeyModifiers::NONE);
     assert_eq!(navigator(&state).filter, None);
 }
 

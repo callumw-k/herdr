@@ -795,13 +795,6 @@ impl ClientShellState {
                 self.toggle_navigator_agents_only(outcome);
                 return;
             }
-            if matches!(code, KeyCode::Char('/') | KeyCode::Char('i')) && !search_focused && plain {
-                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    navigator.search_focused = true;
-                }
-                outcome.repaint = true;
-                return;
-            }
             if let Some(filter) = [
                 ('b', ClientNavigatorFilter::Blocked),
                 ('w', ClientNavigatorFilter::Working),
@@ -870,6 +863,13 @@ impl ClientShellState {
                 });
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
                     navigator.selected = last;
+                }
+                outcome.repaint = true;
+                return;
+            }
+            if code == KeyCode::Char('/') && plain {
+                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+                    navigator.search_focused = true;
                 }
                 outcome.repaint = true;
                 return;
