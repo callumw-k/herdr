@@ -260,6 +260,20 @@ impl crate::agent_view_eval::AgentViewEntry for ClientAgentViewEntry<'_> {
     }
 }
 
+fn pane_label(
+    pane: &crate::protocol::ClientShellPane,
+    agent: Option<&crate::protocol::ClientShellAgent>,
+    index: usize,
+) -> String {
+    pane.label
+        .clone()
+        .or_else(|| agent.and_then(|agent| agent.name.clone()))
+        .or_else(|| agent.and_then(|agent| agent.title.clone()))
+        .or_else(|| agent.and_then(|agent| agent.terminal_title_stripped.clone()))
+        .or_else(|| agent.and_then(|agent| agent.display_agent.clone()))
+        .unwrap_or_else(|| format!("pane {}", index + 1))
+}
+
 pub(super) fn online_agent_targets(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
@@ -325,13 +339,7 @@ pub(super) fn navigator_rows(
                             .map_or(crate::api::schema::AgentStatus::Unknown, |agent| {
                                 agent.agent_status
                             });
-                        let label = pane
-                            .label
-                            .clone()
-                            .or_else(|| agent.and_then(|agent| agent.name.clone()))
-                            .or_else(|| agent.and_then(|agent| agent.display_agent.clone()))
-                            .or_else(|| agent.and_then(|agent| agent.title.clone()))
-                            .unwrap_or_else(|| format!("pane {}", index + 1));
+                        let label = pane_label(pane, agent, index);
                         let meta = pane
                             .foreground_cwd
                             .clone()
@@ -464,13 +472,7 @@ fn flat_query_rows(
                     if !filter(status) {
                         continue;
                     }
-                    let label = pane
-                        .label
-                        .clone()
-                        .or_else(|| agent.and_then(|agent| agent.name.clone()))
-                        .or_else(|| agent.and_then(|agent| agent.display_agent.clone()))
-                        .or_else(|| agent.and_then(|agent| agent.title.clone()))
-                        .unwrap_or_else(|| format!("pane {}", index + 1));
+                    let label = pane_label(pane, agent, index);
                     let cwd = pane
                         .foreground_cwd
                         .clone()
