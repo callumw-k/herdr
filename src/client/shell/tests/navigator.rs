@@ -484,3 +484,212 @@ fn in_flight_is_true_only_while_a_request_has_no_newer_reply() {
         "the reply answers the latest request"
     );
 }
+
+use std::time::{Duration, Instant};
+
+fn preview_state() -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snapshot = snapshot();
+    snapshot.agents.push(agent(
+        "ws_1",
+        "tab_1",
+        "pane_1",
+        Some("claude"),
+        Some("Code review"),
+    ));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.compose(160, 40).expect("frame");
+    state
+}
+
+fn pane_reads(actions: &[ClientShellAction]) -> Vec<&crate::api::schema::PaneReadParams> {
+    actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => match &request.method {
+                crate::api::schema::Method::PaneRead(params) => Some(params),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+fn read_result(pane_id: &str, lines: &[&str]) -> crate::api::schema::ResponseResult {
+    crate::api::schema::ResponseResult::PaneRead {
+        read: crate::api::schema::PaneReadResult {
+            pane_id: pane_id.into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            source: crate::api::schema::ReadSource::Visible,
+            format: crate::api::schema::ReadFormat::Text,
+            text: lines.join("\n"),
+            revision: 1,
+            truncated: false,
+        },
+    }
+}
+
+#[test]
+fn the_tick_requests_a_preview_for_the_selected_pane_and_waits_for_the_reply() {
+    let mut state = preview_state();
+    let now = Instant::now();
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(now, &mut outcome);
+    assert!(outcome.actions.is_empty(), "nothing polls while closed");
+
+    state.open_navigator_overlay();
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(now, &mut outcome);
+    let reads = pane_reads(&outcome.actions);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].pane_id, "pane_1");
+    assert_eq!(reads[0].source, crate::api::schema::ReadSource::Visible);
+    assert_eq!(reads[0].format, crate::api::schema::ReadFormat::Text);
+    assert_eq!(
+        reads[0].lines,
+        overlays::navigator_preview_capacity(160, 40).map(u32::from)
+    );
+
+    let mut again = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_secs(5), &mut again);
+    assert!(again.actions.is_empty(), "one request in flight at a time");
+
+    let request_id = match &outcome.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        other => panic!("expected one request, got {}", other.len()),
+    };
+    let (repaint, _) = state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Ok(read_result("pane_1", &["$ cargo test", "ok"])),
+    );
+    assert!(repaint);
+    assert_eq!(
+        navigator(&state).preview.as_ref().unwrap().lines,
+        vec!["$ cargo test", "ok"]
+    );
+
+    let mut soon = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(100), &mut soon);
+    assert!(
+        soon.actions.is_empty(),
+        "waits for the interval after a reply"
+    );
+    let mut later = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(700), &mut later);
+    assert_eq!(pane_reads(&later.actions).len(), 1);
+}
+
+#[test]
+fn changing_the_selection_requests_the_new_pane_immediately_and_drops_stale_replies() {
+    let mut state = preview_state();
+    let mut snapshot = snapshot();
+    snapshot.panes.push(ClientShellPane {
+        pane_id: "pane_2".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        label: None,
+        cwd: Some("/repo".into()),
+        foreground_cwd: Some("/repo".into()),
+        focused: false,
+        right_click_passthrough: false,
+    });
+    snapshot.agents.push(agent(
+        "ws_1",
+        "tab_1",
+        "pane_1",
+        Some("claude"),
+        Some("Code review"),
+    ));
+    snapshot.agents.push(agent(
+        "ws_1",
+        "tab_1",
+        "pane_2",
+        Some("codex"),
+        Some("Docs"),
+    ));
+    state.set_snapshot(Box::new(snapshot));
+    state.open_navigator_overlay();
+    let now = Instant::now();
+    let mut first = ClientShellInput::default();
+    state.tick_navigator(now, &mut first);
+    let first_id = match &first.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("one request"),
+    };
+
+    state.move_navigator_selection(1);
+    let mut second = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(10), &mut second);
+    assert_eq!(pane_reads(&second.actions)[0].pane_id, "pane_2");
+
+    state.handle_endpoint_result("boot-1", &first_id, Ok(read_result("pane_1", &["old"])));
+    let preview = navigator(&state).preview.as_ref().unwrap();
+    assert_eq!(preview.pane_id, "pane_2");
+    assert!(
+        preview.lines.is_empty(),
+        "a reply for the previous pane is discarded"
+    );
+}
+
+#[test]
+fn a_failed_read_records_an_error_without_an_endpoint_notice() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let now = Instant::now();
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(now, &mut outcome);
+    let request_id = match &outcome.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("one request"),
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Err(ClientShellEndpointError {
+            code: Some("endpoint_timeout".into()),
+            message: "timed out".into(),
+        }),
+    );
+    assert_eq!(
+        navigator(&state).preview.as_ref().unwrap().error.as_deref(),
+        Some("timed out")
+    );
+    assert!(state.visible_endpoint_notice.is_none());
+
+    let mut retry = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(100), &mut retry);
+    assert!(retry.actions.is_empty());
+    let mut retry = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(600), &mut retry);
+    assert_eq!(pane_reads(&retry.actions).len(), 1);
+}
+
+#[test]
+fn an_endpoint_without_pane_read_is_not_polled() {
+    let mut state = preview_state();
+    if let Some(endpoint) = state
+        .endpoints
+        .iter_mut()
+        .find(|endpoint| endpoint.endpoint_id.is_local())
+    {
+        endpoint.methods = Some(std::collections::HashSet::from([
+            "workspace.list".to_owned()
+        ]));
+    }
+    state.open_navigator_overlay();
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(outcome.actions.is_empty());
+    assert!(navigator(&state)
+        .preview
+        .as_ref()
+        .unwrap()
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("unsupported"));
+    assert!(state.visible_endpoint_notice.is_none());
+}

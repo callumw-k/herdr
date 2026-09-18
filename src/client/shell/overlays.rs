@@ -785,7 +785,6 @@ pub(in crate::client::shell) fn navigator_geometry(area: Rect) -> Option<Navigat
     })
 }
 
-#[cfg(test)]
 pub(in crate::client::shell) fn navigator_preview_capacity(cols: u16, rows: u16) -> Option<u16> {
     navigator_geometry(Rect::new(0, 0, cols, rows))?
         .preview

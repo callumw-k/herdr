@@ -4,6 +4,8 @@ pub(super) const MIN_TAB_WIDTH: u16 = 8;
 pub(super) const NEW_TAB_WIDTH: u16 = 3;
 pub(super) const WORKSPACE_HEADER_ROWS: u16 = 2;
 const ENDPOINT_ERROR_TIMEOUT_SECS: u64 = 5;
+pub(super) const NAVIGATOR_PREVIEW_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientShellKeybindingSource {
@@ -378,13 +380,11 @@ pub(super) struct ClientNavigatorPreview {
     pub(super) pane_id: String,
     pub(super) lines: Vec<String>,
     pub(super) error: Option<String>,
-    #[cfg(test)]
     pub(super) requested_at: Option<std::time::Instant>,
     pub(super) received_at: Option<std::time::Instant>,
 }
 
 impl ClientNavigatorPreview {
-    #[cfg(test)]
     pub(super) fn in_flight(&self) -> bool {
         match (self.requested_at, self.received_at) {
             (Some(requested), Some(received)) => received < requested,
@@ -687,6 +687,9 @@ pub(super) enum PendingEndpointKind {
     },
     PaneLinkResolve {
         target: super::link_hover::LinkHoverTarget,
+    },
+    NavigatorPreview {
+        pane_id: String,
     },
     PaneLinkActivate {
         pane_id: String,
@@ -1881,6 +1884,126 @@ impl ClientShellState {
         let elapsed = now.saturating_duration_since(started).as_millis() as u64;
         let phase = ((elapsed / super::PULSE_PHASE_MS) % u64::from(super::PULSE_PHASES)) as u8;
         std::mem::replace(&mut self.pulse_phase, phase) != phase
+    }
+
+    pub(crate) fn tick_navigator(
+        &mut self,
+        now: std::time::Instant,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some((cols, rows)) = self.last_composed_size else {
+            return;
+        };
+        let Some(capacity) = super::render::overlays::navigator_preview_capacity(cols, rows) else {
+            return;
+        };
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_ref() else {
+            return;
+        };
+        let rows = super::render::client_navigator_rows(
+            &self.endpoints,
+            &self.active_endpoint_id,
+            navigator,
+        );
+        let Some(ClientNavigatorTarget::Pane {
+            endpoint_id,
+            pane_id,
+        }) = super::aggregate_navigation::selected_navigator_target(&rows, navigator)
+        else {
+            return;
+        };
+        if endpoint_id != self.active_endpoint_id || !self.endpoint_is_online(&endpoint_id) {
+            return;
+        }
+        let params = crate::api::schema::PaneReadParams {
+            pane_id: pane_id.clone(),
+            source: crate::api::schema::ReadSource::Visible,
+            lines: Some(u32::from(capacity)),
+            format: crate::api::schema::ReadFormat::Text,
+            strip_ansi: true,
+            intent: Default::default(),
+        };
+        let method = crate::api::schema::Method::PaneRead(params);
+        let supported = self.supports_endpoint_method(&method);
+        let label = self.active_endpoint_label().to_owned();
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
+            return;
+        };
+        let same = navigator.preview.as_ref().is_some_and(|preview| {
+            preview.endpoint_id == endpoint_id && preview.pane_id == pane_id
+        });
+        if !same {
+            navigator.preview = Some(ClientNavigatorPreview {
+                endpoint_id,
+                pane_id: pane_id.clone(),
+                lines: Vec::new(),
+                error: None,
+                requested_at: None,
+                received_at: None,
+            });
+            outcome.repaint = true;
+        }
+        let Some(preview) = navigator.preview.as_mut() else {
+            return;
+        };
+        if preview.in_flight() {
+            return;
+        }
+        let last = preview.received_at.or(preview.requested_at);
+        if last.is_some_and(|last| now.saturating_duration_since(last) < NAVIGATOR_PREVIEW_INTERVAL)
+        {
+            return;
+        }
+        if !supported {
+            if preview.error.is_none() {
+                preview.error = Some(format!("pane.read unsupported on {label}"));
+                outcome.repaint = true;
+            }
+            preview.requested_at = Some(now);
+            preview.received_at = Some(now);
+            return;
+        }
+        preview.requested_at = Some(now);
+        preview.received_at = None;
+        if !self.push_endpoint_method_with_kind(
+            method,
+            PendingEndpointKind::NavigatorPreview { pane_id },
+            outcome,
+        ) {
+            if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+                if let Some(preview) = navigator.preview.as_mut() {
+                    preview.received_at = Some(now);
+                    preview.error = Some("request not sent".to_owned());
+                }
+            }
+        }
+    }
+
+    pub(super) fn complete_navigator_preview(
+        &mut self,
+        pane_id: String,
+        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> bool {
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
+            return false;
+        };
+        let Some(preview) = navigator
+            .preview
+            .as_mut()
+            .filter(|preview| preview.pane_id == pane_id)
+        else {
+            return false;
+        };
+        preview.received_at = Some(std::time::Instant::now());
+        match result {
+            Ok(crate::api::schema::ResponseResult::PaneRead { read }) => {
+                preview.lines = read.text.lines().map(str::to_owned).collect();
+                preview.error = None;
+            }
+            Ok(_) => preview.error = Some("unexpected response".to_owned()),
+            Err(error) => preview.error = Some(error.message),
+        }
+        true
     }
 
     fn any_blocked(&self) -> bool {
