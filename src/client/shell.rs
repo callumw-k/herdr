@@ -38,6 +38,8 @@ mod worktrees;
 use text_editor::TextEditor;
 use word_selection::ClientWordSelection;
 
+#[cfg(test)]
+pub(in crate::client::shell) use render::overlays;
 pub(in crate::client::shell) use render::sidebar;
 pub(crate) use state::*;
 #[cfg(test)]

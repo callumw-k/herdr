@@ -373,6 +373,26 @@ pub(super) struct ClientNavigatorRow {
 }
 
 #[derive(Debug)]
+pub(super) struct ClientNavigatorPreview {
+    pub(super) endpoint_id: ClientEndpointId,
+    pub(super) pane_id: String,
+    pub(super) lines: Vec<String>,
+    pub(super) error: Option<String>,
+    pub(super) requested_at: Option<std::time::Instant>,
+    pub(super) received_at: Option<std::time::Instant>,
+}
+
+impl ClientNavigatorPreview {
+    pub(super) fn in_flight(&self) -> bool {
+        match (self.requested_at, self.received_at) {
+            (Some(requested), Some(received)) => received < requested,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub(super) struct ClientNavigatorOverlay {
     pub(super) query: TextEditor,
     pub(super) search_focused: bool,
@@ -381,6 +401,7 @@ pub(super) struct ClientNavigatorOverlay {
     pub(super) filter: Option<ClientNavigatorFilter>,
     pub(super) agents_only: bool,
     pub(super) expanded_workspaces: HashSet<(ClientEndpointId, String)>,
+    pub(super) preview: Option<ClientNavigatorPreview>,
 }
 
 #[derive(Debug)]

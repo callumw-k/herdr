@@ -394,3 +394,69 @@ fn the_open_navigator_binding_toggles_the_overlay() {
     open(&mut state);
     assert!(state.overlay.is_none());
 }
+
+use ratatui::layout::Rect;
+
+#[test]
+fn the_navigator_fills_the_screen_and_splits_only_when_wide() {
+    let narrow = overlays::navigator_geometry(Rect::new(0, 0, 80, 30)).expect("geometry");
+    assert_eq!(narrow.popup, Rect::new(1, 1, 78, 28));
+    assert!(narrow.preview.is_none());
+    assert_eq!(narrow.tree.width, narrow.inner.width);
+
+    let wide = overlays::navigator_geometry(Rect::new(0, 0, 160, 40)).expect("geometry");
+    let preview = wide.preview.expect("preview column");
+    assert_eq!(wide.tree.width, 70, "45% of 156 inner columns");
+    assert_eq!(preview.x, wide.tree.right() + 1);
+    assert_eq!(preview.right(), wide.inner.right());
+    assert_eq!(
+        overlays::navigator_preview_capacity(160, 40),
+        Some(preview.height - overlays::NAVIGATOR_PREVIEW_HEADER_ROWS)
+    );
+    assert_eq!(overlays::navigator_preview_capacity(80, 30), None);
+}
+
+fn frame_text(state: &mut ClientShellState, cols: u16, rows: u16) -> String {
+    let frame = state.compose(cols, rows).expect("frame");
+    frame_rows(&frame).join("\n")
+}
+
+#[test]
+fn the_preview_column_shows_the_selected_pane_lines_and_placeholders() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snapshot = snapshot();
+    snapshot.agents.push(agent(
+        "ws_1",
+        "tab_1",
+        "pane_1",
+        Some("claude"),
+        Some("Code review"),
+    ));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.open_navigator_overlay();
+
+    let text = frame_text(&mut state, 160, 40);
+    assert!(text.contains("loading"), "no read yet:\n{text}");
+    assert!(text.contains("Code review · claude · working"));
+
+    if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+        navigator.preview = Some(ClientNavigatorPreview {
+            endpoint_id: ClientEndpointId::Local,
+            pane_id: "pane_1".into(),
+            lines: vec!["$ cargo test".into(), "ok".into()],
+            error: None,
+            requested_at: None,
+            received_at: None,
+        });
+    }
+    let text = frame_text(&mut state, 160, 40);
+    assert!(text.contains("$ cargo test"), "{text}");
+    assert!(!text.contains("loading"));
+
+    let text = frame_text(&mut state, 80, 30);
+    assert!(
+        !text.contains("$ cargo test"),
+        "narrow layout drops the preview"
+    );
+}

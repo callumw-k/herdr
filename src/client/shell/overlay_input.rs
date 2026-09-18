@@ -207,6 +207,7 @@ impl ClientShellState {
             filter: None,
             agents_only: self.navigator_agents_only,
             expanded_workspaces,
+            preview: None,
         };
         let rows =
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, &navigator);
