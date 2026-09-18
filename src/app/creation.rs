@@ -653,8 +653,7 @@ impl App {
         if !focus || source_pin_claims {
             return;
         }
-        let Some(repo) = crate::workspace::declared_repo_for(cwd, &self.state.declared_repo_paths)
-            .map(std::path::Path::to_path_buf)
+        let Some(repo) = crate::workspace::declared_repo_for(cwd, &self.state.declared_repos)
         else {
             return;
         };

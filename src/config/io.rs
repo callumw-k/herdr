@@ -678,8 +678,9 @@ pub fn toggle_repo_path(content: &str, path: &Path) -> Result<(String, bool), St
             i += 1;
         }
         let block = lines[start..i].join("\n");
-        let declares_path = repo_block_path(&block)
-            .is_some_and(|value| crate::workspace::expand_pinned_path(&value) == path);
+        let declares_path = repo_block(&block).is_some_and(|repo| {
+            !repo.children && crate::workspace::expand_pinned_path(&repo.path) == path
+        });
 
         if declares_path {
             removed = true;
@@ -702,16 +703,16 @@ pub fn toggle_repo_path(content: &str, path: &Path) -> Result<(String, bool), St
     Ok((result.join("\n") + "\n", !removed))
 }
 
-/// The `path` of one `[[repos]]` block, read through the TOML parser.
-fn repo_block_path(block: &str) -> Option<String> {
+/// One `[[repos]]` block, read through the TOML parser.
+fn repo_block(block: &str) -> Option<super::model::RepoConfig> {
     let value: toml::Value = block.parse().ok()?;
     value
         .get("repos")?
         .as_array()?
         .first()?
-        .get("path")?
-        .as_str()
-        .map(str::to_owned)
+        .clone()
+        .try_into()
+        .ok()
 }
 
 pub fn remove_keybinding_config_sections(content: &str) -> (String, bool) {
@@ -886,6 +887,15 @@ mod tests {
             "an escaped, commented entry still counts as declared"
         );
         assert!(!updated.contains("[[repos]]"));
+    }
+
+    #[test]
+    fn toggle_repo_path_leaves_a_root_block_alone() {
+        let content = concat!("[[repos]]\n", "path = \"/projects\"\n", "children = true\n",);
+        let (updated, declared) = toggle_repo_path(content, Path::new("/projects")).unwrap();
+        assert!(declared);
+        assert!(updated.contains("path = \"/projects\"\nchildren = true"));
+        assert!(updated.ends_with("[[repos]]\npath = \"/projects\"\n"));
     }
 
     #[test]
@@ -1368,10 +1378,11 @@ path = ""
         assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
         let home = std::env::var("HOME").expect("HOME");
         assert_eq!(
-            loaded.config.repo_paths(),
-            vec![std::path::PathBuf::from(format!(
-                "{home}/code/active/herdr"
-            ))],
+            loaded.config.declared_repos(),
+            vec![crate::workspace::DeclaredRepo {
+                path: std::path::PathBuf::from(format!("{home}/code/active/herdr")),
+                children: false,
+            }],
             "blank entries should be dropped and ~ expanded"
         );
 

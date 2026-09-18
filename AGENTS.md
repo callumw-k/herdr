@@ -108,7 +108,7 @@ Small changes or small tasks are fine in the default main worktree. If you find 
 Use this layout:
 
 - shared integration checkout: `../herdr`
-- task worktrees: `../herdr-worktrees/<task-slug>`
+- task worktrees: `.claude/worktrees/<task-slug>` via the native worktree tool
 - task branches: `issue/<id>-<slug>` when an issue exists
 
 Do all code edits, tests, and validation inside the task worktree.

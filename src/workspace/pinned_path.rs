@@ -29,19 +29,38 @@ pub(crate) fn path_claims(pinned: &Path, cwd: &Path) -> bool {
     cwd.starts_with(&pinned)
 }
 
+/// One `[[repos]]` entry. A plain entry declares `path` itself; with
+/// `children` set it declares each immediate child of `path` instead, so a
+/// projects folder maps every project inside it without listing them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredRepo {
+    pub path: PathBuf,
+    pub children: bool,
+}
+
+impl DeclaredRepo {
+    /// The repo this entry says `cwd` belongs to, with its depth for ranking.
+    fn claim(&self, cwd: &Path) -> Option<(PathBuf, usize)> {
+        let declared = crate::worktree::canonical_or_original(&self.path);
+        let depth = declared.components().count();
+        if !self.children {
+            return path_claims(&self.path, cwd).then_some((self.path.clone(), depth));
+        }
+        let cwd = crate::worktree::canonical_or_original(cwd);
+        let child = cwd.strip_prefix(&declared).ok()?.components().next()?;
+        Some((declared.join(child), depth + 1))
+    }
+}
+
 /// The declared repo path that owns `cwd`. Deepest declared path wins, so a
 /// repo declared inside another takes precedence, matching how
 /// `claiming_workspace` ranks pins.
-pub(crate) fn declared_repo_for<'a>(cwd: &Path, declared: &'a [PathBuf]) -> Option<&'a Path> {
+pub(crate) fn declared_repo_for(cwd: &Path, declared: &[DeclaredRepo]) -> Option<PathBuf> {
     declared
         .iter()
-        .filter(|declared| path_claims(declared, cwd))
-        .max_by_key(|declared| {
-            crate::worktree::canonical_or_original(declared)
-                .components()
-                .count()
-        })
-        .map(PathBuf::as_path)
+        .filter_map(|declared| declared.claim(cwd))
+        .max_by_key(|(_, depth)| *depth)
+        .map(|(path, _)| path)
 }
 
 /// The pin a workspace should end up with when the user toggles it against
@@ -144,22 +163,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    fn repo(path: &str) -> DeclaredRepo {
+        DeclaredRepo {
+            path: PathBuf::from(path),
+            children: false,
+        }
+    }
+
+    fn root(path: &str) -> DeclaredRepo {
+        DeclaredRepo {
+            path: PathBuf::from(path),
+            children: true,
+        }
+    }
+
     #[test]
     fn declares_the_repo_directory_itself_and_directories_below_it() {
-        let declared = vec![PathBuf::from("/repos/herdr")];
+        let declared = vec![repo("/repos/herdr")];
         assert_eq!(
             declared_repo_for(Path::new("/repos/herdr"), &declared),
-            Some(Path::new("/repos/herdr"))
+            Some(PathBuf::from("/repos/herdr"))
         );
         assert_eq!(
             declared_repo_for(Path::new("/repos/herdr/src/app"), &declared),
-            Some(Path::new("/repos/herdr"))
+            Some(PathBuf::from("/repos/herdr"))
         );
     }
 
     #[test]
     fn does_not_declare_a_sibling_with_a_shared_prefix() {
-        let declared = vec![PathBuf::from("/repos/herdr")];
+        let declared = vec![repo("/repos/herdr")];
         assert_eq!(
             declared_repo_for(Path::new("/repos/herdr-worktrees/a"), &declared),
             None
@@ -169,25 +202,83 @@ mod tests {
     #[test]
     fn deepest_declared_repo_wins() {
         let declared = vec![
-            PathBuf::from("/repos/herdr"),
-            PathBuf::from("/repos/herdr/vendor/libghostty-vt"),
+            repo("/repos/herdr"),
+            repo("/repos/herdr/vendor/libghostty-vt"),
         ];
         assert_eq!(
             declared_repo_for(
                 Path::new("/repos/herdr/vendor/libghostty-vt/src"),
                 &declared
             ),
-            Some(Path::new("/repos/herdr/vendor/libghostty-vt"))
+            Some(PathBuf::from("/repos/herdr/vendor/libghostty-vt"))
         );
     }
 
     #[test]
     fn undeclared_directories_match_nothing() {
-        let declared = vec![PathBuf::from("/repos/herdr")];
+        let declared = vec![repo("/repos/herdr")];
         assert_eq!(
             declared_repo_for(Path::new("/repos/other"), &declared),
             None
         );
         assert_eq!(declared_repo_for(Path::new("/repos/herdr"), &[]), None);
+    }
+
+    #[test]
+    fn a_root_declares_each_immediate_child() {
+        let declared = vec![root("/projects")];
+        assert_eq!(
+            declared_repo_for(Path::new("/projects/budget"), &declared),
+            Some(PathBuf::from("/projects/budget"))
+        );
+        assert_eq!(
+            declared_repo_for(Path::new("/projects/budget/src/deep"), &declared),
+            Some(PathBuf::from("/projects/budget"))
+        );
+        assert_eq!(
+            declared_repo_for(Path::new("/projects/todos"), &declared),
+            Some(PathBuf::from("/projects/todos"))
+        );
+    }
+
+    #[test]
+    fn a_root_does_not_declare_itself() {
+        let declared = vec![root("/projects")];
+        assert_eq!(declared_repo_for(Path::new("/projects"), &declared), None);
+    }
+
+    #[test]
+    fn a_root_does_not_declare_outside_itself() {
+        let declared = vec![root("/projects")];
+        assert_eq!(
+            declared_repo_for(Path::new("/home/x/.claude"), &declared),
+            None
+        );
+        assert_eq!(
+            declared_repo_for(Path::new("/projects-old/a"), &declared),
+            None
+        );
+    }
+
+    #[test]
+    fn an_explicit_repo_below_a_root_child_beats_the_child() {
+        let declared = vec![root("/projects"), repo("/projects/budget/wt")];
+        assert_eq!(
+            declared_repo_for(Path::new("/projects/budget/wt/src"), &declared),
+            Some(PathBuf::from("/projects/budget/wt"))
+        );
+        assert_eq!(
+            declared_repo_for(Path::new("/projects/budget/src"), &declared),
+            Some(PathBuf::from("/projects/budget"))
+        );
+    }
+
+    #[test]
+    fn a_root_child_beats_a_shallower_explicit_repo() {
+        let declared = vec![repo("/"), root("/projects")];
+        assert_eq!(
+            declared_repo_for(Path::new("/projects/budget/src"), &declared),
+            Some(PathBuf::from("/projects/budget"))
+        );
     }
 }

@@ -415,7 +415,7 @@ impl App {
 
         let worktree_directory =
             crate::worktree::expand_tilde_absolute_path(&config.worktrees.directory);
-        let declared_repo_paths = config.repo_paths();
+        let declared_repos = config.declared_repos();
 
         info!(
             pane_scrollback_limit_bytes = config.advanced.scrollback_limit_bytes,
@@ -461,7 +461,7 @@ impl App {
             request_client_config_reload: false,
             worktree_directory,
             latest_release_notes,
-            declared_repo_paths,
+            declared_repos,
             product_announcement: startup_product_announcement.map(|announcement| {
                 state::ProductAnnouncementState {
                     version: announcement.version,
@@ -946,7 +946,7 @@ impl App {
         }
 
         if !invalid_section("repos") {
-            self.state.declared_repo_paths = config.repo_paths();
+            self.state.declared_repos = config.declared_repos();
         }
 
         if !invalid_section("theme") {
@@ -1742,8 +1742,11 @@ mod tests {
         assert_eq!(toast.title, "reloaded config");
         assert_eq!(toast.context, "using config.toml");
         assert_eq!(
-            app.state.declared_repo_paths,
-            vec![std::path::PathBuf::from("/repos/herdr")]
+            app.state.declared_repos,
+            vec![crate::workspace::DeclaredRepo {
+                path: std::path::PathBuf::from("/repos/herdr"),
+                children: false,
+            }]
         );
 
         std::env::remove_var(crate::config::CONFIG_PATH_ENV_VAR);

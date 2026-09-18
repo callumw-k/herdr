@@ -5373,7 +5373,10 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.ensure_test_terminals();
-        app.state.declared_repo_paths = vec![declared.to_path_buf()];
+        app.state.declared_repos = vec![crate::workspace::DeclaredRepo {
+            path: declared.to_path_buf(),
+            children: false,
+        }];
         app
     }
 

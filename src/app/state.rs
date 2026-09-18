@@ -805,9 +805,9 @@ pub struct AppState {
     pub worktree_directory: std::path::PathBuf,
     /// Latest endpoint-owned release notes, cached outside render paths.
     pub latest_release_notes: Option<crate::release_notes::ReleaseNotes>,
-    /// Repo paths from `[[repos]]`. Entering one creates the workspace that
-    /// should own it.
-    pub declared_repo_paths: Vec<std::path::PathBuf>,
+    /// Entries from `[[repos]]`. Entering a declared repo creates the
+    /// workspace that should own it.
+    pub declared_repos: Vec<crate::workspace::DeclaredRepo>,
     pub product_announcement: Option<ProductAnnouncementState>,
     // Geometry of the most recently computed server pane surface.
     pub view: ViewState,
@@ -1044,7 +1044,7 @@ impl AppState {
             request_client_config_reload: false,
             worktree_directory: std::path::PathBuf::from("/tmp/herdr-worktrees"),
             latest_release_notes: None,
-            declared_repo_paths: Vec::new(),
+            declared_repos: Vec::new(),
             product_announcement: None,
             view: ViewState {
                 terminal_area: Rect::default(),

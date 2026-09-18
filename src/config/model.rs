@@ -884,10 +884,13 @@ pub struct IndexedKeysConfig {
 }
 
 /// A repo path that owns a workspace. Entering it creates that workspace.
+/// With `children`, `path` is a projects folder and each immediate child
+/// owns a workspace instead.
 #[derive(Debug, Default, Clone, Deserialize)]
 #[serde(default)]
 pub struct RepoConfig {
     pub path: String,
+    pub children: bool,
 }
 
 #[derive(Debug, Deserialize)]

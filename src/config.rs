@@ -188,11 +188,14 @@ impl Config {
 
     /// Declared repo paths, expanded and with blank entries dropped. A path
     /// need not exist: a repo can be declared before it is cloned.
-    pub(crate) fn repo_paths(&self) -> Vec<std::path::PathBuf> {
+    pub(crate) fn declared_repos(&self) -> Vec<crate::workspace::DeclaredRepo> {
         self.repos
             .iter()
             .filter(|repo| !repo.path.trim().is_empty())
-            .map(|repo| crate::workspace::expand_pinned_path(&repo.path))
+            .map(|repo| crate::workspace::DeclaredRepo {
+                path: crate::workspace::expand_pinned_path(&repo.path),
+                children: repo.children,
+            })
             .collect()
     }
 }
