@@ -1618,7 +1618,6 @@ impl ClientShellState {
                             self.overlay.as_mut()
                         {
                             navigator.search_focused = true;
-                            navigator.filter = None;
                         }
                         outcome.repaint = true;
                     } else if let Some((rect, target)) = row_hit {

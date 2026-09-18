@@ -194,7 +194,7 @@ fn cursor_movement_preserves_filter_selection_scroll_and_branch_error() {
                 assert_ne!(v.checkout_path, "sentinel");
                 assert!(v.error.is_none());
             }
-            ClientShellOverlay::Navigator(v) => assert!(v.selected.is_none()),
+            ClientShellOverlay::Navigator(v) => assert!(v.selected.is_some()),
             ClientShellOverlay::Help(v) => assert_eq!(v.scroll, 0),
             ClientShellOverlay::WorktreeOpen(v) => assert_eq!(v.selected, 0),
             _ => unreachable!(),

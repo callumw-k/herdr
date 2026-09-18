@@ -44,7 +44,11 @@ impl ClientShellState {
                     return;
                 }
                 if action == crate::input::KeybindAction::OpenNavigator {
-                    self.open_navigator_overlay();
+                    if matches!(self.overlay, Some(ClientShellOverlay::Navigator(_))) {
+                        self.overlay = None;
+                    } else {
+                        self.open_navigator_overlay();
+                    }
                     outcome.repaint = true;
                     return;
                 }

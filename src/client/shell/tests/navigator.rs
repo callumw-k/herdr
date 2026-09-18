@@ -281,3 +281,113 @@ fn agents_only_keeps_the_active_machine_row_and_drops_empty_remote_machines() {
         .count();
     assert_eq!(machine_count, 2);
 }
+
+use crossterm::event::{KeyCode, KeyModifiers};
+
+fn press(state: &mut ClientShellState, code: KeyCode, modifiers: KeyModifiers) -> ClientShellInput {
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        code, modifiers,
+    ))])
+}
+
+fn open(state: &mut ClientShellState) {
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenNavigator),
+        &mut outcome,
+    );
+}
+
+fn navigator(state: &ClientShellState) -> &ClientNavigatorOverlay {
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::Navigator(navigator)) => navigator,
+        _ => panic!("navigator open"),
+    }
+}
+
+#[test]
+fn esc_closes_the_navigator_from_search_and_tree_mode() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(state.overlay.is_none());
+
+    open(&mut state);
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    assert!(!navigator(&state).search_focused);
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn tab_switches_modes_and_keeps_the_query() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    state.handle_input_bytes(b"repo");
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    assert!(!navigator(&state).search_focused);
+    assert_eq!(navigator(&state).query.as_str(), "repo");
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    assert!(navigator(&state).search_focused);
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    press(&mut state, KeyCode::Char('i'), KeyModifiers::NONE);
+    assert!(navigator(&state).search_focused);
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    press(&mut state, KeyCode::Char('/'), KeyModifiers::NONE);
+    assert!(navigator(&state).search_focused);
+}
+
+#[test]
+fn the_agents_only_toggle_works_in_both_modes_and_is_marked_manual() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    assert!(navigator(&state).agents_only);
+    press(&mut state, KeyCode::Char('a'), KeyModifiers::ALT);
+    assert!(!navigator(&state).agents_only);
+    assert!(!state.navigator_agents_only);
+    assert!(state.navigator_agents_only_manual);
+
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    press(&mut state, KeyCode::Char('a'), KeyModifiers::NONE);
+    assert!(navigator(&state).agents_only);
+    assert!(state.navigator_agents_only);
+}
+
+#[test]
+fn status_filters_set_in_search_mode_and_clear_on_repeat() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    press(&mut state, KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!(
+        navigator(&state).filter,
+        Some(ClientNavigatorFilter::Blocked)
+    );
+    press(&mut state, KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!(navigator(&state).filter, None);
+
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    press(&mut state, KeyCode::Char('w'), KeyModifiers::NONE);
+    assert_eq!(
+        navigator(&state).filter,
+        Some(ClientNavigatorFilter::Working)
+    );
+    press(&mut state, KeyCode::Char('w'), KeyModifiers::NONE);
+    assert_eq!(navigator(&state).filter, None);
+}
+
+#[test]
+fn the_open_navigator_binding_toggles_the_overlay() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
+    open(&mut state);
+    assert!(state.overlay.is_none());
+}
