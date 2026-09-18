@@ -1173,13 +1173,17 @@ fn render_navigator_preview(
     let Some(preview) = n.preview.as_ref() else {
         return;
     };
-    let end = preview.lines.len().saturating_sub(preview.scroll);
+    let held = preview.lines.len();
+    let end = held
+        .saturating_sub(preview.scroll)
+        .max(held.min(body.height as usize));
     let start = end.saturating_sub(body.height as usize);
     for (offset, line) in preview.lines[start..end].iter().enumerate() {
         put_spans(b, body.x, body.y + offset as u16, body.width, line, text);
     }
-    if preview.scroll > 0 {
-        put_right_text(b, area, area.y, &format!("↑{} ", preview.scroll), muted);
+    let shown_offset = held - end;
+    if shown_offset > 0 {
+        put_right_text(b, area, area.y, &format!("↑{shown_offset} "), muted);
     }
 }
 

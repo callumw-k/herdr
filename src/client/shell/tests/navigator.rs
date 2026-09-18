@@ -683,7 +683,11 @@ fn scrolling_the_preview_reads_recent_history_and_clamps_at_the_top() {
     let reads = pane_reads(&next.actions);
     assert_eq!(reads.len(), 1, "a scroll refetches on the next tick");
     assert_eq!(reads[0].source, crate::api::schema::ReadSource::Recent);
-    assert_eq!(reads[0].lines, Some(u32::from(capacity) + 10));
+    assert_eq!(
+        reads[0].lines,
+        Some(u32::from(capacity) * 2 + 10),
+        "the read fetches a page beyond the target so wheel steps hit the buffer"
+    );
 
     let short: Vec<String> = (0..usize::from(capacity) + 4)
         .map(|index| format!("line {index}"))
@@ -715,6 +719,80 @@ fn scrolling_the_preview_reads_recent_history_and_clamps_at_the_top() {
     let mut down = ClientShellInput::default();
     state.scroll_navigator_preview(-100, &mut down);
     assert_eq!(preview_of(&state).scroll, 0);
+}
+
+fn numbered(count: usize) -> Vec<String> {
+    (0..count).map(|index| format!("line {index}")).collect()
+}
+
+fn complete_read(state: &mut ClientShellState, outcome: &ClientShellInput, lines: &[String]) {
+    let request_id = match &outcome.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("one request"),
+    };
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    state.handle_endpoint_result("boot-1", &request_id, Ok(read_result("pane_1", &refs)));
+}
+
+#[test]
+fn a_scroll_past_the_held_buffer_keeps_the_window_full_until_history_arrives() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let capacity =
+        usize::from(render::overlays::navigator_preview_capacity(160, 40).expect("capacity"));
+    let mut first = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut first);
+    complete_read(&mut state, &first, &numbered(capacity));
+
+    state.scroll_navigator_preview(10, &mut ClientShellInput::default());
+    let text = frame_text(&mut state, 160, 40);
+    assert!(text.contains("line 0"), "oldest held row is shown:\n{text}");
+    assert!(
+        text.contains(&format!("line {}", capacity - 1)),
+        "the window stays full instead of dropping rows the buffer has not fetched yet:\n{text}"
+    );
+    assert!(
+        text.split('↑')
+            .skip(1)
+            .all(|rest| !rest.starts_with(|c: char| c.is_ascii_digit())),
+        "no offset is claimed until the buffer has it:\n{text}"
+    );
+}
+
+#[test]
+fn scrolling_while_a_read_is_in_flight_refetches_as_soon_as_it_lands() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let now = Instant::now();
+    let capacity =
+        usize::from(render::overlays::navigator_preview_capacity(160, 40).expect("capacity"));
+    let mut first = ClientShellInput::default();
+    state.tick_navigator(now, &mut first);
+
+    state.scroll_navigator_preview(10, &mut ClientShellInput::default());
+    complete_read(&mut state, &first, &numbered(capacity));
+
+    let mut next = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(10), &mut next);
+    let reads = pane_reads(&next.actions);
+    assert_eq!(
+        reads.len(),
+        1,
+        "the interval does not delay a read the scroll needs"
+    );
+    assert_eq!(
+        reads[0].lines,
+        Some(u32::try_from(capacity * 2 + 10).expect("fits"))
+    );
+
+    state.scroll_navigator_preview(-5, &mut ClientShellInput::default());
+    complete_read(&mut state, &next, &numbered(capacity * 2 + 10));
+    let mut settled = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(20), &mut settled);
+    assert!(
+        pane_reads(&settled.actions).is_empty(),
+        "a target inside the held buffer waits for the normal interval"
+    );
 }
 
 #[test]

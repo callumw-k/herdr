@@ -1960,7 +1960,12 @@ impl ClientShellState {
                 .map_or(0, |preview| preview.scroll),
             _ => 0,
         };
-        let requested_lines = (usize::from(capacity) + scroll).min(NAVIGATOR_PREVIEW_MAX_LINES);
+        let needed_lines = usize::from(capacity) + scroll;
+        let requested_lines = if scroll == 0 {
+            needed_lines
+        } else {
+            (needed_lines + usize::from(capacity)).min(NAVIGATOR_PREVIEW_MAX_LINES)
+        };
         let params = crate::api::schema::PaneReadParams {
             pane_id: pane_id.clone(),
             source: if scroll == 0 {
@@ -2010,7 +2015,10 @@ impl ClientShellState {
             return;
         }
         let last = preview.received_at.or(preview.requested_at);
-        if last.is_some_and(|last| now.saturating_duration_since(last) < NAVIGATOR_PREVIEW_INTERVAL)
+        if needed_lines <= preview.requested_lines
+            && last.is_some_and(|last| {
+                now.saturating_duration_since(last) < NAVIGATOR_PREVIEW_INTERVAL
+            })
         {
             return;
         }
@@ -2075,10 +2083,6 @@ impl ClientShellState {
             return;
         }
         preview.scroll = next;
-        if !preview.in_flight() {
-            preview.requested_at = None;
-            preview.received_at = None;
-        }
         outcome.repaint = true;
     }
 
@@ -2087,6 +2091,12 @@ impl ClientShellState {
         pane_id: String,
         result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
     ) -> bool {
+        let capacity = self
+            .last_composed_size
+            .and_then(|(cols, rows)| {
+                super::render::overlays::navigator_preview_capacity(cols, rows)
+            })
+            .map_or(0, usize::from);
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
             return false;
         };
@@ -2102,8 +2112,7 @@ impl ClientShellState {
             Ok(crate::api::schema::ResponseResult::PaneRead { read }) => {
                 let lines = super::preview_ansi::parse_lines(&read.text);
                 if preview.scroll > 0 && lines.len() < preview.requested_lines {
-                    let window = preview.requested_lines.saturating_sub(preview.scroll);
-                    preview.scroll = preview.scroll.min(lines.len().saturating_sub(window));
+                    preview.scroll = preview.scroll.min(lines.len().saturating_sub(capacity));
                 }
                 let changed = preview.lines != lines || preview.error.is_some();
                 preview.lines = lines;
