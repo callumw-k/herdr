@@ -14,6 +14,7 @@ pub(crate) struct OverlayRender {
     pub(crate) navigator_popup: Rect,
     pub(crate) navigator_search: Rect,
     pub(crate) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
+    pub(crate) navigator_preview: Rect,
     pub(crate) worktree_search: Rect,
     pub(crate) worktree_rows: Vec<(Rect, usize)>,
     pub(crate) help_popup: Rect,
@@ -1049,9 +1050,9 @@ fn render_navigator_overlay(
         i.bottom() - 1,
         i.width,
         if n.search_focused {
-            " search type · move ↑↓ · open enter · tree tab · agents alt+a · filter alt+b/w/i/d · clear/close esc"
+            " search type · move ↑↓ · open enter · tree tab · agents alt+a · filter alt+b/w/i/d · preview pgup/pgdn · clear/close esc"
         } else {
-            " move j/k · expand space · agents a · filter b/w/i/d · search tab · path p · new ^o · open enter · clear/close esc"
+            " move j/k · expand space · agents a · filter b/w/i/d · search tab · path p · new ^o · preview pgup/pgdn · open enter · clear/close esc"
         },
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
@@ -1063,6 +1064,7 @@ fn render_navigator_overlay(
         navigator_popup: q,
         navigator_search: Rect::new(i.x, i.y, i.width, 1),
         navigator_rows: row_hits,
+        navigator_preview: g.preview.unwrap_or_default(),
         worktree_search: Rect::default(),
         worktree_rows: Vec::new(),
         cursor,
@@ -1171,9 +1173,32 @@ fn render_navigator_preview(
     let Some(preview) = n.preview.as_ref() else {
         return;
     };
-    let start = preview.lines.len().saturating_sub(body.height as usize);
-    for (offset, line) in preview.lines[start..].iter().enumerate() {
-        put_text(b, body.x, body.y + offset as u16, body.width, line, text);
+    let end = preview.lines.len().saturating_sub(preview.scroll);
+    let start = end.saturating_sub(body.height as usize);
+    for (offset, line) in preview.lines[start..end].iter().enumerate() {
+        put_spans(b, body.x, body.y + offset as u16, body.width, line, text);
+    }
+    if preview.scroll > 0 {
+        put_right_text(b, area, area.y, &format!("↑{} ", preview.scroll), muted);
+    }
+}
+
+fn put_spans(
+    b: &mut Buffer,
+    x: u16,
+    y: u16,
+    width: u16,
+    line: &super::preview_ansi::StyledLine,
+    base: Style,
+) {
+    let mut cursor = x;
+    let right = x.saturating_add(width);
+    for (text, style) in line {
+        if cursor >= right {
+            break;
+        }
+        put_text(b, cursor, y, right - cursor, text, base.patch(*style));
+        cursor = cursor.saturating_add(display_width(text));
     }
 }
 

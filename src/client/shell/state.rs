@@ -7,6 +7,8 @@ const ENDPOINT_ERROR_TIMEOUT_SECS: u64 = 5;
 pub(super) const NAVIGATOR_PREVIEW_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(500);
 pub(super) const NAVIGATOR_PREVIEW_STALE: std::time::Duration = std::time::Duration::from_secs(5);
+pub(super) const NAVIGATOR_PREVIEW_MAX_LINES: usize = 1000;
+pub(super) const NAVIGATOR_PREVIEW_WHEEL_LINES: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientShellKeybindingSource {
@@ -128,6 +130,7 @@ pub(super) struct ShellHitMap {
     pub(super) navigator_popup: Rect,
     pub(super) navigator_search: Rect,
     pub(super) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
+    pub(super) navigator_preview: Rect,
     pub(super) worktree_search: Rect,
     pub(super) worktree_rows: Vec<(Rect, usize)>,
     pub(super) help_popup: Rect,
@@ -380,8 +383,10 @@ pub(super) struct ClientNavigatorRow {
 pub(super) struct ClientNavigatorPreview {
     pub(super) endpoint_id: ClientEndpointId,
     pub(super) pane_id: String,
-    pub(super) lines: Vec<String>,
+    pub(super) lines: Vec<super::preview_ansi::StyledLine>,
     pub(super) error: Option<String>,
+    pub(super) scroll: usize,
+    pub(super) requested_lines: usize,
     pub(super) requested_at: Option<std::time::Instant>,
     pub(super) received_at: Option<std::time::Instant>,
 }
@@ -1935,6 +1940,8 @@ impl ClientShellState {
                     pane_id,
                     lines: Vec::new(),
                     error: Some("preview shows panes on the current machine only".to_owned()),
+                    scroll: 0,
+                    requested_lines: 0,
                     requested_at: Some(now),
                     received_at: Some(now),
                 });
@@ -1945,12 +1952,25 @@ impl ClientShellState {
         if !self.endpoint_is_online(&endpoint_id) {
             return;
         }
+        let scroll = match self.overlay.as_ref() {
+            Some(ClientShellOverlay::Navigator(navigator)) => navigator
+                .preview
+                .as_ref()
+                .filter(|preview| preview.endpoint_id == endpoint_id && preview.pane_id == pane_id)
+                .map_or(0, |preview| preview.scroll),
+            _ => 0,
+        };
+        let requested_lines = (usize::from(capacity) + scroll).min(NAVIGATOR_PREVIEW_MAX_LINES);
         let params = crate::api::schema::PaneReadParams {
             pane_id: pane_id.clone(),
-            source: crate::api::schema::ReadSource::Visible,
-            lines: Some(u32::from(capacity)),
-            format: crate::api::schema::ReadFormat::Text,
-            strip_ansi: true,
+            source: if scroll == 0 {
+                crate::api::schema::ReadSource::Visible
+            } else {
+                crate::api::schema::ReadSource::Recent
+            },
+            lines: Some(u32::try_from(requested_lines).unwrap_or(u32::MAX)),
+            format: crate::api::schema::ReadFormat::Ansi,
+            strip_ansi: false,
             intent: Default::default(),
         };
         let method = crate::api::schema::Method::PaneRead(params);
@@ -1972,6 +1992,8 @@ impl ClientShellState {
                 pane_id: pane_id.clone(),
                 lines: Vec::new(),
                 error: None,
+                scroll: 0,
+                requested_lines: 0,
                 requested_at: None,
                 received_at: None,
             });
@@ -2007,6 +2029,7 @@ impl ClientShellState {
         }
         preview.requested_at = Some(now);
         preview.received_at = None;
+        preview.requested_lines = requested_lines;
         if !self.push_endpoint_method_with_kind(
             method,
             PendingEndpointKind::NavigatorPreview { pane_id },
@@ -2019,6 +2042,44 @@ impl ClientShellState {
                 }
             }
         }
+    }
+
+    pub(super) fn navigator_preview_page(&self) -> usize {
+        self.last_composed_size
+            .and_then(|(cols, rows)| {
+                super::render::overlays::navigator_preview_capacity(cols, rows)
+            })
+            .map_or(0, |capacity| usize::from(capacity.saturating_sub(1)).max(1))
+    }
+
+    pub(super) fn scroll_navigator_preview(
+        &mut self,
+        delta: isize,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some((cols, rows)) = self.last_composed_size else {
+            return;
+        };
+        let Some(capacity) = super::render::overlays::navigator_preview_capacity(cols, rows) else {
+            return;
+        };
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
+            return;
+        };
+        let Some(preview) = navigator.preview.as_mut() else {
+            return;
+        };
+        let max = NAVIGATOR_PREVIEW_MAX_LINES.saturating_sub(usize::from(capacity));
+        let next = preview.scroll.saturating_add_signed(delta).min(max);
+        if next == preview.scroll {
+            return;
+        }
+        preview.scroll = next;
+        if !preview.in_flight() {
+            preview.requested_at = None;
+            preview.received_at = None;
+        }
+        outcome.repaint = true;
     }
 
     pub(super) fn complete_navigator_preview(
@@ -2039,7 +2100,11 @@ impl ClientShellState {
         preview.received_at = Some(std::time::Instant::now());
         let error = match result {
             Ok(crate::api::schema::ResponseResult::PaneRead { read }) => {
-                let lines: Vec<String> = read.text.lines().map(str::to_owned).collect();
+                let lines = super::preview_ansi::parse_lines(&read.text);
+                if preview.scroll > 0 && lines.len() < preview.requested_lines {
+                    let window = preview.requested_lines.saturating_sub(preview.scroll);
+                    preview.scroll = preview.scroll.min(lines.len().saturating_sub(window));
+                }
                 let changed = preview.lines != lines || preview.error.is_some();
                 preview.lines = lines;
                 preview.error = None;

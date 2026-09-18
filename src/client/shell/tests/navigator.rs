@@ -488,8 +488,10 @@ fn the_preview_column_shows_the_selected_pane_lines_and_placeholders() {
         navigator.preview = Some(ClientNavigatorPreview {
             endpoint_id: ClientEndpointId::Local,
             pane_id: "pane_1".into(),
-            lines: vec!["$ cargo test".into(), "ok".into()],
+            lines: preview_ansi::parse_lines("$ cargo test\nok"),
             error: None,
+            scroll: 0,
+            requested_lines: 0,
             requested_at: None,
             received_at: None,
         });
@@ -514,6 +516,8 @@ fn in_flight_is_true_only_while_a_request_has_no_newer_reply() {
         pane_id: "pane_1".into(),
         lines: Vec::new(),
         error: None,
+        scroll: 0,
+        requested_lines: 0,
         requested_at,
         received_at,
     };
@@ -642,6 +646,177 @@ fn a_long_pane_title_is_truncated_so_the_path_stays_visible() {
     );
 }
 
+fn preview_of(state: &ClientShellState) -> &ClientNavigatorPreview {
+    navigator(state).preview.as_ref().expect("preview entry")
+}
+
+fn scroll_wheel(state: &mut ClientShellState, kind: MouseEventKind, column: u16, row: u16) {
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    })]);
+}
+
+#[test]
+fn scrolling_the_preview_reads_recent_history_and_clamps_at_the_top() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let now = Instant::now();
+    let mut first = ClientShellInput::default();
+    state.tick_navigator(now, &mut first);
+    let capacity = render::overlays::navigator_preview_capacity(160, 40).expect("capacity");
+    let first_id = match &first.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("one request"),
+    };
+    state.handle_endpoint_result("boot-1", &first_id, Ok(read_result("pane_1", &["tail"])));
+
+    let mut outcome = ClientShellInput::default();
+    state.scroll_navigator_preview(10, &mut outcome);
+    assert!(outcome.repaint);
+    assert_eq!(preview_of(&state).scroll, 10);
+
+    let mut next = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(100), &mut next);
+    let reads = pane_reads(&next.actions);
+    assert_eq!(reads.len(), 1, "a scroll refetches on the next tick");
+    assert_eq!(reads[0].source, crate::api::schema::ReadSource::Recent);
+    assert_eq!(reads[0].lines, Some(u32::from(capacity) + 10));
+
+    let short: Vec<String> = (0..usize::from(capacity) + 4)
+        .map(|index| format!("line {index}"))
+        .collect();
+    let short_refs: Vec<&str> = short.iter().map(String::as_str).collect();
+    let request_id = match &next.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("one request"),
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Ok(read_result("pane_1", &short_refs)),
+    );
+    assert_eq!(
+        preview_of(&state).scroll,
+        4,
+        "history shorter than requested clamps the offset to what exists"
+    );
+
+    let text = frame_text(&mut state, 160, 40);
+    assert!(
+        text.contains("line 0"),
+        "window starts at the oldest row:\n{text}"
+    );
+    assert!(!text.contains(&format!("line {}", usize::from(capacity) + 3)));
+    assert!(text.contains("↑4"));
+
+    let mut down = ClientShellInput::default();
+    state.scroll_navigator_preview(-100, &mut down);
+    assert_eq!(preview_of(&state).scroll, 0);
+}
+
+#[test]
+fn changing_the_selection_resets_the_preview_scroll() {
+    let mut state = preview_state();
+    let mut snapshot = snapshot();
+    snapshot.panes.push(ClientShellPane {
+        pane_id: "pane_2".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        label: None,
+        cwd: Some("/repo".into()),
+        foreground_cwd: Some("/repo".into()),
+        focused: false,
+        right_click_passthrough: false,
+    });
+    snapshot
+        .agents
+        .push(agent("ws_1", "tab_1", "pane_1", Some("claude"), None));
+    snapshot
+        .agents
+        .push(agent("ws_1", "tab_1", "pane_2", Some("codex"), None));
+    state.set_snapshot(Box::new(snapshot));
+    state.open_navigator_overlay();
+    let now = Instant::now();
+    state.tick_navigator(now, &mut ClientShellInput::default());
+    state.scroll_navigator_preview(5, &mut ClientShellInput::default());
+    assert_eq!(preview_of(&state).scroll, 5);
+
+    state.move_navigator_selection(1);
+    state.tick_navigator(
+        now + Duration::from_millis(10),
+        &mut ClientShellInput::default(),
+    );
+    assert_eq!(preview_of(&state).pane_id, "pane_2");
+    assert_eq!(preview_of(&state).scroll, 0);
+}
+
+#[test]
+fn the_wheel_scrolls_the_preview_over_the_preview_column_and_the_tree_elsewhere() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    state.tick_navigator(Instant::now(), &mut ClientShellInput::default());
+    state.compose(160, 40).expect("frame");
+    let preview = state.hits.navigator_preview;
+    assert!(preview.width > 0);
+
+    scroll_wheel(
+        &mut state,
+        MouseEventKind::ScrollUp,
+        preview.x + 2,
+        preview.y + 5,
+    );
+    assert_eq!(preview_of(&state).scroll, NAVIGATOR_PREVIEW_WHEEL_LINES);
+    scroll_wheel(
+        &mut state,
+        MouseEventKind::ScrollDown,
+        preview.x + 2,
+        preview.y + 5,
+    );
+    assert_eq!(preview_of(&state).scroll, 0);
+
+    let mut outcome = ClientShellInput::default();
+    state.scroll_navigator_preview(7, &mut outcome);
+    press(&mut state, KeyCode::PageDown, KeyModifiers::NONE);
+    assert_eq!(
+        preview_of(&state).scroll,
+        0,
+        "page down from 7 lands at the bottom"
+    );
+    press(&mut state, KeyCode::PageUp, KeyModifiers::NONE);
+    assert_eq!(preview_of(&state).scroll, state.navigator_preview_page());
+}
+
+#[test]
+fn ansi_colour_in_the_read_reaches_the_frame() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    let request_id = match &outcome.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("one request"),
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Ok(read_result("pane_1", &["plain \x1b[31mred\x1b[0m end"])),
+    );
+    let frame = state.compose(160, 40).expect("frame");
+    let preview = state.hits.navigator_preview;
+    let (x, y) = cell_symbol_position(&frame, preview, "red");
+    let cell = &frame.cells[usize::from(y) * usize::from(frame.width) + usize::from(x)];
+    assert_eq!(
+        cell.fg,
+        crate::protocol::color_to_u32(ratatui::style::Color::Red)
+    );
+    let (px, py) = cell_symbol_position(&frame, preview, "plain");
+    let plain = &frame.cells[usize::from(py) * usize::from(frame.width) + usize::from(px)];
+    assert_ne!(plain.fg, cell.fg);
+}
+
 #[test]
 fn a_request_with_no_reply_is_retried_after_it_goes_stale() {
     let mut state = preview_state();
@@ -682,7 +857,8 @@ fn the_tick_requests_a_preview_for_the_selected_pane_and_waits_for_the_reply() {
     assert_eq!(reads.len(), 1);
     assert_eq!(reads[0].pane_id, "pane_1");
     assert_eq!(reads[0].source, crate::api::schema::ReadSource::Visible);
-    assert_eq!(reads[0].format, crate::api::schema::ReadFormat::Text);
+    assert_eq!(reads[0].format, crate::api::schema::ReadFormat::Ansi);
+    assert!(!reads[0].strip_ansi);
     assert_eq!(
         reads[0].lines,
         render::overlays::navigator_preview_capacity(160, 40).map(u32::from)
@@ -709,7 +885,7 @@ fn the_tick_requests_a_preview_for_the_selected_pane_and_waits_for_the_reply() {
     assert!(repaint);
     assert_eq!(
         navigator(&state).preview.as_ref().unwrap().lines,
-        vec!["$ cargo test", "ok"]
+        preview_ansi::parse_lines("$ cargo test\nok")
     );
 
     let mut soon = ClientShellInput::default();

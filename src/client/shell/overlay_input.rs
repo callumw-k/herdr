@@ -800,6 +800,12 @@ impl ClientShellState {
                 outcome.repaint = true;
                 return;
             }
+            if matches!(code, KeyCode::PageUp | KeyCode::PageDown) && modifiers.is_empty() {
+                let page = self.navigator_preview_page() as isize;
+                let delta = if code == KeyCode::PageUp { page } else { -page };
+                self.scroll_navigator_preview(delta, outcome);
+                return;
+            }
             let alt = modifiers == KeyModifiers::ALT;
             let plain = modifiers.is_empty();
             let filter_chord = |c: char| {
