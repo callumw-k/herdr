@@ -110,7 +110,17 @@ impl App {
             .and_then(|tab_idx| self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx))
             .map(|tab| tab.layout.focused())
             .and_then(|pane_id| self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id))
-            .or_else(|| self.seed_cwd_from_workspace(ws_idx));
+            .or_else(|| self.seed_cwd_from_workspace(ws_idx))
+            // A pinned workspace already owns everything under its pin, so a
+            // new workspace seeded there would be a twin of the source.
+            .filter(|cwd| {
+                !self
+                    .state
+                    .workspaces
+                    .get(ws_idx)
+                    .and_then(|ws| ws.pinned_path.as_deref())
+                    .is_some_and(|pinned| crate::workspace::path_claims(pinned, cwd))
+            });
         self.resolve_new_terminal_cwd(follow_cwd)
     }
 
