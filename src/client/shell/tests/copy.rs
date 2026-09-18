@@ -985,6 +985,7 @@ fn navigator_renders_connected_siblings_and_ancestor_lines() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot));
     state.set_pane_surface(surface());
+    state.navigator_agents_only = false;
     state.open_navigator_overlay();
     let prefixes = |state: &mut ClientShellState, height| {
         let frame = state.compose(106, height).expect("navigator frame");
@@ -1084,6 +1085,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
+    state.navigator_agents_only = false;
     let mut open = ClientShellInput::default();
     state.record_binding(
         crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenNavigator),
@@ -1126,8 +1128,10 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
         .as_ref()
         .is_some_and(|cursor| cursor.visible));
 
-    state.handle_input_bytes(b"\x1b");
-    state.handle_input_bytes(b"a");
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    ))]);
     state.compose(106, 30).expect("navigator rows");
     let pane_target = {
         let ClientShellOverlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator")

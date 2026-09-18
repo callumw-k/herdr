@@ -526,7 +526,29 @@ impl ClientShellState {
             return None;
         }
         if self.overlay.is_some() {
-            self.route_overlay_key(key, outcome);
+            let navigator_prefix = matches!(self.overlay, Some(ClientShellOverlay::Navigator(_)))
+                && (self.mode == ClientShellMode::Prefix
+                    || crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix));
+            if !navigator_prefix {
+                self.route_overlay_key(key, outcome);
+                return None;
+            }
+            if self.mode == ClientShellMode::Prefix {
+                self.mode = self.copy_or_terminal_mode();
+                outcome.repaint = true;
+                if key.code != KeyCode::Esc
+                    && !crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
+                {
+                    if let Some(binding) =
+                        crate::input::resolve_prefix_binding(&self.config.keybinds.keybinds, key)
+                    {
+                        self.record_binding(binding, outcome);
+                    }
+                }
+            } else {
+                self.mode = ClientShellMode::Prefix;
+                outcome.repaint = true;
+            }
             return None;
         }
         if matches!(key.code, KeyCode::Modifier(_)) {

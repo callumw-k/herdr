@@ -205,7 +205,9 @@ impl ClientShellState {
             selected: None,
             scroll: 0,
             filter: None,
+            agents_only: self.navigator_agents_only,
             expanded_workspaces,
+            preview: None,
         };
         let rows =
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, &navigator);
@@ -231,6 +233,45 @@ impl ClientShellState {
         let next =
             (selected as isize + delta).clamp(0, rows.len().saturating_sub(1) as isize) as usize;
         navigator.selected = Some(rows[next].target.clone());
+    }
+
+    pub(super) fn reset_navigator_selection(&mut self) {
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_ref() else {
+            return;
+        };
+        let rows =
+            render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
+        let current = rows
+            .iter()
+            .find(|row| row.current)
+            .map(|row| row.target.clone());
+        if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+            navigator.selected = current;
+            navigator.scroll = 0;
+        }
+    }
+
+    pub(super) fn set_navigator_filter(&mut self, filter: ClientNavigatorFilter) {
+        if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+            navigator.filter = if navigator.filter == Some(filter) {
+                None
+            } else {
+                Some(filter)
+            };
+        }
+        self.reset_navigator_selection();
+    }
+
+    pub(super) fn toggle_navigator_agents_only(&mut self, outcome: &mut ClientShellInput) {
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
+            return;
+        };
+        navigator.agents_only = !navigator.agents_only;
+        self.navigator_agents_only = navigator.agents_only;
+        self.navigator_agents_only_manual = true;
+        self.reset_navigator_selection();
+        self.persist_chrome_preferences(outcome);
+        outcome.repaint = true;
     }
 
     pub(super) fn accept_navigator_selection(&mut self, outcome: &mut ClientShellInput) {
@@ -731,10 +772,17 @@ impl ClientShellState {
                 }))
             );
             if code == KeyCode::Esc {
-                if search_focused {
-                    if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                        navigator.search_focused = false;
+                let cleared = match self.overlay.as_mut() {
+                    Some(ClientShellOverlay::Navigator(navigator))
+                        if !navigator.query.is_empty() =>
+                    {
+                        navigator.query.clear();
+                        true
                     }
+                    _ => false,
+                };
+                if cleared {
+                    self.reset_navigator_selection();
                 } else {
                     self.overlay = None;
                 }
@@ -745,43 +793,76 @@ impl ClientShellState {
                 self.accept_navigator_selection(outcome);
                 return;
             }
+            if code == KeyCode::Tab && modifiers.is_empty() {
+                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+                    navigator.search_focused = !search_focused;
+                }
+                outcome.repaint = true;
+                return;
+            }
+            if matches!(code, KeyCode::PageUp | KeyCode::PageDown) && modifiers.is_empty() {
+                let page = self.navigator_preview_page() as isize;
+                let delta = if code == KeyCode::PageUp { page } else { -page };
+                self.scroll_navigator_preview(delta, outcome);
+                return;
+            }
+            let alt = modifiers == KeyModifiers::ALT;
+            let plain = modifiers.is_empty();
+            let filter_chord = |c: char| {
+                (search_focused && alt || !search_focused && plain) && code == KeyCode::Char(c)
+            };
+            if filter_chord('a') {
+                self.toggle_navigator_agents_only(outcome);
+                return;
+            }
+            if let Some(filter) = [
+                ('b', ClientNavigatorFilter::Blocked),
+                ('w', ClientNavigatorFilter::Working),
+                ('i', ClientNavigatorFilter::Idle),
+                ('d', ClientNavigatorFilter::Done),
+            ]
+            .into_iter()
+            .find_map(|(c, filter)| filter_chord(c).then_some(filter))
+            {
+                self.set_navigator_filter(filter);
+                outcome.repaint = true;
+                return;
+            }
+            if code == KeyCode::Up
+                || code == KeyCode::Char('p') && modifiers == KeyModifiers::CONTROL
+            {
+                self.move_navigator_selection(-1);
+                outcome.repaint = true;
+                return;
+            }
+            if code == KeyCode::Down
+                || code == KeyCode::Char('n') && modifiers == KeyModifiers::CONTROL
+            {
+                self.move_navigator_selection(1);
+                outcome.repaint = true;
+                return;
+            }
             if search_focused {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
                     if let Some(content_changed) = navigator.query.handle_key(key) {
                         if content_changed {
-                            navigator.filter = None;
-                            navigator.selected = None;
+                            self.reset_navigator_selection();
                         }
                         outcome.repaint = true;
                         return;
                     }
                 }
-                if code == KeyCode::Up
-                    || code == KeyCode::Char('p') && modifiers == KeyModifiers::CONTROL
-                {
-                    self.move_navigator_selection(-1);
-                    outcome.repaint = true;
-                    return;
-                }
-                if code == KeyCode::Down
-                    || code == KeyCode::Char('n') && modifiers == KeyModifiers::CONTROL
-                {
-                    self.move_navigator_selection(1);
-                    outcome.repaint = true;
-                    return;
-                }
                 return;
             }
-            if code == KeyCode::Backspace && modifiers.is_empty() {
+            if code == KeyCode::Backspace && plain {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    if navigator.filter.take().is_some() {
-                        navigator.selected = None;
-                    }
+                    navigator.filter = None;
                 }
+                self.reset_navigator_selection();
                 outcome.repaint = true;
                 return;
             }
-            if code == KeyCode::Home && modifiers.is_empty() {
+            if code == KeyCode::Home && plain {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
                     navigator.selected = None;
                     navigator.scroll = 0;
@@ -789,7 +870,7 @@ impl ClientShellState {
                 outcome.repaint = true;
                 return;
             }
-            if matches!(code, KeyCode::End | KeyCode::Char('G')) && modifiers.is_empty() {
+            if matches!(code, KeyCode::End | KeyCode::Char('G')) && plain {
                 let last = self.overlay.as_ref().and_then(|overlay| match overlay {
                     ClientShellOverlay::Navigator(navigator) => render::client_navigator_rows(
                         &self.endpoints,
@@ -806,20 +887,19 @@ impl ClientShellState {
                 outcome.repaint = true;
                 return;
             }
-            if code == KeyCode::Char('/') && modifiers.is_empty() {
+            if code == KeyCode::Char('/') && plain {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
                     navigator.search_focused = true;
-                    navigator.filter = None;
                 }
                 outcome.repaint = true;
                 return;
             }
-            if matches!(code, KeyCode::Down | KeyCode::Char('j')) && modifiers.is_empty() {
+            if code == KeyCode::Char('j') && plain {
                 self.move_navigator_selection(1);
                 outcome.repaint = true;
                 return;
             }
-            if matches!(code, KeyCode::Up | KeyCode::Char('k')) && modifiers.is_empty() {
+            if code == KeyCode::Char('k') && plain {
                 self.move_navigator_selection(-1);
                 outcome.repaint = true;
                 return;
@@ -834,31 +914,7 @@ impl ClientShellState {
                 outcome.repaint = true;
                 return;
             }
-            if let Some(filter) = match code {
-                KeyCode::Char('b') if modifiers.is_empty() => Some(ClientNavigatorFilter::Blocked),
-                KeyCode::Char('w') if modifiers.is_empty() => Some(ClientNavigatorFilter::Working),
-                KeyCode::Char('i') if modifiers.is_empty() => Some(ClientNavigatorFilter::Idle),
-                KeyCode::Char('d') if modifiers.is_empty() => Some(ClientNavigatorFilter::Done),
-                _ => None,
-            } {
-                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    navigator.query.clear();
-                    navigator.filter = Some(filter);
-                    navigator.selected = None;
-                }
-                outcome.repaint = true;
-                return;
-            }
-            if code == KeyCode::Char('a') && modifiers.is_empty() {
-                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    navigator.query.clear();
-                    navigator.filter = None;
-                    navigator.selected = None;
-                }
-                outcome.repaint = true;
-                return;
-            }
-            if code == KeyCode::Char('p') && modifiers.is_empty() {
+            if code == KeyCode::Char('p') && plain {
                 // Both openers install their own overlay, so clearing the navigator
                 // first would leave nothing on screen when one bails out
                 if let Some(workspace_id) = self.selected_navigator_workspace_id() {
@@ -876,7 +932,7 @@ impl ClientShellState {
                 outcome.repaint = true;
                 return;
             }
-            if code == KeyCode::Char(' ') && modifiers.is_empty() {
+            if code == KeyCode::Char(' ') && plain {
                 self.toggle_selected_navigator_workspace();
                 outcome.repaint = true;
                 return;

@@ -538,6 +538,7 @@ impl ClientShellState {
                 | PendingEndpointKind::WordSelection { .. }
                 | PendingEndpointKind::PaneLinkActivate { .. }
                 | PendingEndpointKind::PaneLinkResolve { .. }
+                | PendingEndpointKind::NavigatorPreview { .. }
                 | PendingEndpointKind::CopyMotion { .. }
                 | PendingEndpointKind::CopySearch { .. }
                 | PendingEndpointKind::WorkspacePathLookup { .. }

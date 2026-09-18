@@ -260,6 +260,24 @@ impl crate::agent_view_eval::AgentViewEntry for ClientAgentViewEntry<'_> {
     }
 }
 
+fn is_agent_pane(agent: Option<&crate::protocol::ClientShellAgent>) -> bool {
+    agent.is_some_and(|agent| agent.agent.is_some())
+}
+
+fn pane_label(
+    pane: &crate::protocol::ClientShellPane,
+    agent: Option<&crate::protocol::ClientShellAgent>,
+    index: usize,
+) -> String {
+    pane.label
+        .clone()
+        .or_else(|| agent.and_then(|agent| agent.name.clone()))
+        .or_else(|| agent.and_then(|agent| agent.title.clone()))
+        .or_else(|| agent.and_then(|agent| agent.terminal_title_stripped.clone()))
+        .or_else(|| agent.and_then(|agent| agent.display_agent.clone()))
+        .unwrap_or_else(|| format!("pane {}", index + 1))
+}
+
 pub(super) fn online_agent_targets(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
@@ -321,17 +339,14 @@ pub(super) fn navigator_rows(
                             .agents
                             .iter()
                             .find(|agent| agent.pane_id == pane.pane_id);
+                        if navigator.agents_only && !is_agent_pane(agent) {
+                            continue;
+                        }
                         let status = agent
                             .map_or(crate::api::schema::AgentStatus::Unknown, |agent| {
                                 agent.agent_status
                             });
-                        let label = pane
-                            .label
-                            .clone()
-                            .or_else(|| agent.and_then(|agent| agent.name.clone()))
-                            .or_else(|| agent.and_then(|agent| agent.display_agent.clone()))
-                            .or_else(|| agent.and_then(|agent| agent.title.clone()))
-                            .unwrap_or_else(|| format!("pane {}", index + 1));
+                        let label = pane_label(pane, agent, index);
                         let meta = pane
                             .foreground_cwd
                             .clone()
@@ -356,10 +371,15 @@ pub(super) fn navigator_rows(
                             });
                         }
                     }
-                    if !filtering
-                        || filter(tab.agent_status) && (endpoint_query_matches || text(&tab.label))
-                        || !panes.is_empty()
-                    {
+                    let keep_tab = if navigator.agents_only {
+                        !panes.is_empty()
+                    } else {
+                        !filtering
+                            || filter(tab.agent_status)
+                                && (endpoint_query_matches || text(&tab.label))
+                            || !panes.is_empty()
+                    };
+                    if keep_tab {
                         children.push(ClientNavigatorRow {
                             depth: 1 + depth_offset,
                             label: tab.label.clone(),
@@ -384,7 +404,12 @@ pub(super) fn navigator_rows(
                 }
                 let workspace_matches = filter(workspace.agent_status)
                     && (endpoint_query_matches || text(&workspace.label) || text(&workspace_meta));
-                if !filtering || workspace_matches || !children.is_empty() {
+                let keep_workspace = if navigator.agents_only {
+                    !children.is_empty()
+                } else {
+                    !filtering || workspace_matches || !children.is_empty()
+                };
+                if keep_workspace {
                     let key = (endpoint.endpoint_id.clone(), workspace.workspace_id.clone());
                     endpoint_rows.push(ClientNavigatorRow {
                         depth: depth_offset,
@@ -404,7 +429,12 @@ pub(super) fn navigator_rows(
                 }
             }
         }
-        if !filtering || endpoint_query_matches || !endpoint_rows.is_empty() {
+        let keep_endpoint = if navigator.agents_only {
+            !endpoint_rows.is_empty() || endpoint.endpoint_id == *active_endpoint_id
+        } else {
+            !filtering || endpoint_query_matches || !endpoint_rows.is_empty()
+        };
+        if keep_endpoint {
             if federated {
                 rows.push(ClientNavigatorRow {
                     depth: 0,
@@ -458,19 +488,16 @@ fn flat_query_rows(
                         .agents
                         .iter()
                         .find(|agent| agent.pane_id == pane.pane_id);
+                    if navigator.agents_only && !is_agent_pane(agent) {
+                        continue;
+                    }
                     let status = agent.map_or(crate::api::schema::AgentStatus::Unknown, |agent| {
                         agent.agent_status
                     });
                     if !filter(status) {
                         continue;
                     }
-                    let label = pane
-                        .label
-                        .clone()
-                        .or_else(|| agent.and_then(|agent| agent.name.clone()))
-                        .or_else(|| agent.and_then(|agent| agent.display_agent.clone()))
-                        .or_else(|| agent.and_then(|agent| agent.title.clone()))
-                        .unwrap_or_else(|| format!("pane {}", index + 1));
+                    let label = pane_label(pane, agent, index);
                     let cwd = pane
                         .foreground_cwd
                         .clone()
@@ -516,7 +543,6 @@ fn flat_query_rows(
             .then(right.1.cmp(&left.1))
             .then(left.2.stale.cmp(&right.2.stale))
     });
-    let _ = navigator;
     scored.into_iter().map(|(_, _, row)| row).collect()
 }
 

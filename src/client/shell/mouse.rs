@@ -1618,7 +1618,6 @@ impl ClientShellState {
                             self.overlay.as_mut()
                         {
                             navigator.search_focused = true;
-                            navigator.filter = None;
                         }
                         outcome.repaint = true;
                     } else if let Some((rect, target)) = row_hit {
@@ -1640,12 +1639,22 @@ impl ClientShellState {
                     }
                 }
                 MouseEventKind::ScrollUp => {
-                    self.move_navigator_selection(-3);
-                    outcome.repaint = true;
+                    if super::contains(self.hits.navigator_preview, point) {
+                        let lines = NAVIGATOR_PREVIEW_WHEEL_LINES as isize;
+                        self.scroll_navigator_preview(lines, outcome);
+                    } else {
+                        self.move_navigator_selection(-3);
+                        outcome.repaint = true;
+                    }
                 }
                 MouseEventKind::ScrollDown => {
-                    self.move_navigator_selection(3);
-                    outcome.repaint = true;
+                    if super::contains(self.hits.navigator_preview, point) {
+                        let lines = NAVIGATOR_PREVIEW_WHEEL_LINES as isize;
+                        self.scroll_navigator_preview(-lines, outcome);
+                    } else {
+                        self.move_navigator_selection(3);
+                        outcome.repaint = true;
+                    }
                 }
                 _ => {}
             }

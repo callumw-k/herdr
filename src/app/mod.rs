@@ -2408,6 +2408,38 @@ mod tests {
     }
 
     #[test]
+    fn new_workspace_does_not_follow_a_cwd_the_source_pin_claims() {
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            return;
+        };
+        let mut app = test_app();
+        app.state.new_terminal_cwd = crate::config::NewTerminalCwdConfig::Follow;
+        let mut pinned = Workspace::test_new("pinned");
+        pinned.identity_cwd = std::path::PathBuf::from("/tmp/herdr-pinned/src");
+        pinned.pinned_path = Some(std::path::PathBuf::from("/tmp/herdr-pinned"));
+        app.state.workspaces = vec![pinned];
+        app.state.active = Some(0);
+
+        assert_eq!(app.resolved_new_workspace_cwd_from(0), home);
+    }
+
+    #[test]
+    fn new_workspace_follows_a_cwd_outside_the_source_pin() {
+        let mut app = test_app();
+        app.state.new_terminal_cwd = crate::config::NewTerminalCwdConfig::Follow;
+        let mut pinned = Workspace::test_new("pinned");
+        pinned.identity_cwd = std::path::PathBuf::from("/tmp/herdr-elsewhere");
+        pinned.pinned_path = Some(std::path::PathBuf::from("/tmp/herdr-pinned"));
+        app.state.workspaces = vec![pinned];
+        app.state.active = Some(0);
+
+        assert_eq!(
+            app.resolved_new_workspace_cwd_from(0),
+            std::path::PathBuf::from("/tmp/herdr-elsewhere")
+        );
+    }
+
+    #[test]
     fn new_terminal_cwd_follow_uses_source_cwd() {
         let cwd = creation::resolve_new_terminal_cwd(
             &crate::config::NewTerminalCwdConfig::Follow,

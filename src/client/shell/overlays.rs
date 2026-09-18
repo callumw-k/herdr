@@ -14,6 +14,7 @@ pub(crate) struct OverlayRender {
     pub(crate) navigator_popup: Rect,
     pub(crate) navigator_search: Rect,
     pub(crate) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
+    pub(crate) navigator_preview: Rect,
     pub(crate) worktree_search: Rect,
     pub(crate) worktree_rows: Vec<(Rect, usize)>,
     pub(crate) help_popup: Rect,
@@ -733,6 +734,67 @@ fn navigator_following_siblings(rows: &[ClientNavigatorRow]) -> Vec<bool> {
     following
 }
 
+pub(in crate::client::shell) const NAVIGATOR_PREVIEW_HEADER_ROWS: u16 = 3;
+const NAVIGATOR_SPLIT_MIN_WIDTH: u16 = 100;
+const NAVIGATOR_LABEL_SHARE_PERCENT: usize = 60;
+const NAVIGATOR_LABEL_MIN_WIDTH: usize = 12;
+
+pub(in crate::client::shell) struct NavigatorGeometry {
+    pub(in crate::client::shell) popup: Rect,
+    pub(in crate::client::shell) inner: Rect,
+    pub(in crate::client::shell) tree: Rect,
+    pub(in crate::client::shell) preview: Option<Rect>,
+}
+
+pub(in crate::client::shell) fn navigator_geometry(area: Rect) -> Option<NavigatorGeometry> {
+    let popup = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    )
+    .intersection(area);
+    if popup.width < 4 || popup.height < 6 {
+        return None;
+    }
+    let inner = Rect::new(popup.x + 1, popup.y + 1, popup.width - 2, popup.height - 2);
+    let body = Rect::new(
+        inner.x,
+        inner.y + 2,
+        inner.width,
+        inner.height.saturating_sub(4),
+    );
+    if inner.width < NAVIGATOR_SPLIT_MIN_WIDTH {
+        return Some(NavigatorGeometry {
+            popup,
+            inner,
+            tree: body,
+            preview: None,
+        });
+    }
+    let tree_width = (u32::from(inner.width) * 45 / 100).clamp(40, 80) as u16;
+    let tree = Rect::new(body.x, body.y, tree_width, body.height);
+    let preview = Rect::new(
+        body.x + tree_width + 1,
+        body.y,
+        body.width.saturating_sub(tree_width + 1),
+        body.height,
+    );
+    Some(NavigatorGeometry {
+        popup,
+        inner,
+        tree,
+        preview: Some(preview),
+    })
+}
+
+pub(in crate::client::shell) fn navigator_preview_capacity(cols: u16, rows: u16) -> Option<u16> {
+    navigator_geometry(Rect::new(0, 0, cols, rows))?
+        .preview
+        .map(|preview| preview.height.saturating_sub(NAVIGATOR_PREVIEW_HEADER_ROWS))
+        .filter(|capacity| *capacity > 0)
+}
+
 fn render_navigator_overlay(
     b: &mut Buffer,
     n: &ClientNavigatorOverlay,
@@ -741,30 +803,13 @@ fn render_navigator_overlay(
     p: &Palette,
     pulse_phase: u8,
 ) -> Option<OverlayRender> {
-    let a = b.area;
-    let mx = (a.width / 16).max(2);
-    let my = (a.height / 10).max(1);
-    let q = Rect::new(
-        a.x + mx,
-        a.y + my,
-        a.width.saturating_sub(mx * 2).max(4),
-        a.height.saturating_sub(my * 2).max(4),
-    )
-    .intersection(a);
+    let g = navigator_geometry(b.area)?;
+    let q = g.popup;
     let i = panel(b, q, p.accent, p.panel_bg)?;
+    debug_assert_eq!(i, g.inner);
     let rows = super::aggregate_navigation::navigator_rows(endpoints, active_endpoint_id, n);
     let search = if n.search_focused {
         " / ".to_owned()
-    } else if let Some(f) = n.filter {
-        format!(
-            " / {}",
-            match f {
-                ClientNavigatorFilter::Blocked => "blocked",
-                ClientNavigatorFilter::Working => "working",
-                ClientNavigatorFilter::Idle => "idle",
-                ClientNavigatorFilter::Done => "done",
-            }
-        )
     } else if n.query.is_empty() {
         " / search panes".to_owned()
     } else {
@@ -780,12 +825,25 @@ fn render_navigator_overlay(
             .fg(if n.search_focused { p.text } else { p.overlay0 })
             .bg(p.panel_bg),
     );
-    let count = format!(
-        "{} panes",
-        rows.iter()
-            .filter(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
-            .count()
-    );
+    let pane_count = rows
+        .iter()
+        .filter(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+        .count();
+    let mut count = format!("{pane_count} panes");
+    if let Some(f) = n.filter {
+        count = format!(
+            "{} · {count}",
+            match f {
+                ClientNavigatorFilter::Blocked => "blocked",
+                ClientNavigatorFilter::Working => "working",
+                ClientNavigatorFilter::Idle => "idle",
+                ClientNavigatorFilter::Done => "done",
+            }
+        );
+    }
+    if n.agents_only {
+        count = format!("agents only · {count}");
+    }
     let cursor = if n.search_focused {
         text_editor::render(
             b,
@@ -816,7 +874,7 @@ fn render_navigator_overlay(
         &"─".repeat(i.width as usize),
         Style::default().fg(p.surface1).bg(p.panel_bg),
     );
-    let body = Rect::new(i.x, i.y + 2, i.width, i.height.saturating_sub(4));
+    let body = g.tree;
     let selected = super::aggregate_navigation::navigator_selected_index(&rows, n).unwrap_or(0);
     let max = rows.len().saturating_sub(body.height as usize);
     let scroll = n
@@ -896,7 +954,17 @@ fn render_navigator_overlay(
         let current = if r.current { "◆ " } else { "" };
         let status = r.status.map(status_dot).unwrap_or_default();
         let status_separator = if status.is_empty() { "" } else { " " };
-        let label = format!(" {tree} {current}{status}{status_separator}{}", r.label);
+        let prefix = format!(" {tree} {current}{status}{status_separator}");
+        let label_text = if r.meta.is_empty() {
+            r.label.clone()
+        } else {
+            let budget = usize::from(rect.width) * NAVIGATOR_LABEL_SHARE_PERCENT / 100;
+            let max_width = budget
+                .saturating_sub(usize::from(display_width(&prefix)))
+                .max(NAVIGATOR_LABEL_MIN_WIDTH);
+            crate::ui::truncate_end(&r.label, max_width)
+        };
+        let label = format!("{prefix}{label_text}");
         put_text(b, rect.x, rect.y, rect.width, &label, st);
         if let Some(status) = r.status {
             let prefix = format!(" {tree} {current}");
@@ -952,6 +1020,19 @@ fn render_navigator_overlay(
             put_right_text(b, meta, rect.y, &r.meta, st)
         }
     }
+    if let Some(preview) = g.preview {
+        for y in preview.y..preview.bottom() {
+            put_text(
+                b,
+                preview.x - 1,
+                y,
+                1,
+                "│",
+                Style::default().fg(p.surface1).bg(p.panel_bg),
+            );
+        }
+        render_navigator_preview(b, preview, n, &rows, endpoints, p);
+    }
     let dy = i.bottom() - 2;
     if let Some(r) = rows.get(selected) {
         put_text(
@@ -969,9 +1050,9 @@ fn render_navigator_overlay(
         i.bottom() - 1,
         i.width,
         if n.search_focused {
-            " search type · move ↑↓/ctrl+n/p · open enter · more esc"
+            " search type · move ↑↓ · open enter · tree tab · agents alt+a · filter alt+b/w/i/d · preview pgup/pgdn · clear/close esc"
         } else {
-            " move j/k · expand space · filter a/b/w/i/d · search / · path p · new ^o · open enter · close esc"
+            " move j/k · expand space · agents a · filter b/w/i/d · search tab · path p · new ^o · preview pgup/pgdn · open enter · clear/close esc"
         },
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
@@ -983,11 +1064,146 @@ fn render_navigator_overlay(
         navigator_popup: q,
         navigator_search: Rect::new(i.x, i.y, i.width, 1),
         navigator_rows: row_hits,
+        navigator_preview: g.preview.unwrap_or_default(),
         worktree_search: Rect::default(),
         worktree_rows: Vec::new(),
         cursor,
         ..OverlayRender::default()
     })
+}
+
+fn render_navigator_preview(
+    b: &mut Buffer,
+    area: Rect,
+    n: &ClientNavigatorOverlay,
+    rows: &[ClientNavigatorRow],
+    endpoints: &[ClientShellEndpoint],
+    p: &Palette,
+) {
+    let muted = Style::default().fg(p.overlay0).bg(p.panel_bg);
+    let text = Style::default().fg(p.text).bg(p.panel_bg);
+    let selected = super::aggregate_navigation::navigator_selected_index(rows, n)
+        .and_then(|index| rows.get(index));
+    let Some(row) = selected else {
+        put_text(b, area.x, area.y, area.width, " select a pane", muted);
+        return;
+    };
+    let ClientNavigatorTarget::Pane {
+        endpoint_id,
+        pane_id,
+    } = &row.target
+    else {
+        put_text(b, area.x, area.y, area.width, " select a pane", muted);
+        return;
+    };
+    let endpoint = endpoints
+        .iter()
+        .find(|endpoint| &endpoint.endpoint_id == endpoint_id);
+    let kind = endpoint
+        .and_then(|endpoint| endpoint.snapshot.as_deref())
+        .and_then(|snapshot| {
+            snapshot
+                .agents
+                .iter()
+                .find(|agent| &agent.pane_id == pane_id)
+        })
+        .and_then(|agent| agent.agent.as_deref())
+        .unwrap_or("shell");
+    let status = row.status.map(status_text).unwrap_or("unknown");
+    put_text(
+        b,
+        area.x,
+        area.y,
+        area.width,
+        &format!(" {} · {kind} · {status}", row.label),
+        Style::default()
+            .fg(p.text)
+            .bg(p.panel_bg)
+            .add_modifier(Modifier::BOLD),
+    );
+    put_text(
+        b,
+        area.x,
+        area.y + 1,
+        area.width,
+        &format!(" {}", row.meta),
+        muted,
+    );
+    put_text(
+        b,
+        area.x,
+        area.y + 2,
+        area.width,
+        &"─".repeat(area.width as usize),
+        Style::default().fg(p.surface1).bg(p.panel_bg),
+    );
+    let body = Rect::new(
+        area.x,
+        area.y + NAVIGATOR_PREVIEW_HEADER_ROWS,
+        area.width,
+        area.height.saturating_sub(NAVIGATOR_PREVIEW_HEADER_ROWS),
+    );
+    if body.height == 0 {
+        return;
+    }
+    let placeholder = if row.stale {
+        Some(format!(
+            " {} is offline",
+            endpoint.map_or("machine", |endpoint| endpoint.label.as_str())
+        ))
+    } else {
+        match &n.preview {
+            Some(preview) if &preview.pane_id == pane_id && &preview.endpoint_id == endpoint_id => {
+                match &preview.error {
+                    Some(error) if error.starts_with("preview ") => Some(format!(" {error}")),
+                    Some(error) => Some(format!(" preview unavailable: {error}")),
+                    None if preview.lines.is_empty() && preview.received_at.is_none() => {
+                        Some(" loading".to_owned())
+                    }
+                    None => None,
+                }
+            }
+            _ => Some(" loading".to_owned()),
+        }
+    };
+    if let Some(placeholder) = placeholder {
+        put_text(b, body.x, body.y, body.width, &placeholder, muted);
+        return;
+    }
+    let Some(preview) = n.preview.as_ref() else {
+        return;
+    };
+    let held = preview.lines.len();
+    let end = held
+        .saturating_sub(preview.scroll)
+        .max(held.min(body.height as usize));
+    let start = end.saturating_sub(body.height as usize);
+    for (offset, line) in preview.lines[start..end].iter().enumerate() {
+        put_spans(b, body.x, body.y + offset as u16, body.width, line, text);
+    }
+    let shown_offset = held - end;
+    if shown_offset > 0 {
+        put_right_text(b, area, area.y, &format!("↑{shown_offset} "), muted);
+    }
+}
+
+fn put_spans(
+    b: &mut Buffer,
+    x: u16,
+    y: u16,
+    width: u16,
+    line: &super::preview_ansi::StyledLine,
+    base: Style,
+) {
+    let mut cursor = x;
+    let right = x.saturating_add(width);
+    for (text, style) in line {
+        if cursor >= right {
+            break;
+        }
+        put_text(b, cursor, y, right - cursor, text, base.patch(*style));
+        cursor = cursor.saturating_add(display_width(text));
+    }
 }
 
 fn help_lines(

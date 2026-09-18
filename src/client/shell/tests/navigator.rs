@@ -1,6 +1,9 @@
 use super::*;
 use crate::api::schema::AgentStatus;
-use crate::protocol::{ClientShellPane, ClientShellTab};
+use crate::client::endpoint::{
+    ClientEndpointId, ClientEndpointStatus, ProfileId, SavedSshEndpoint,
+};
+use crate::protocol::{ClientShellAgent, ClientShellPane, ClientShellTab};
 
 fn two_workspace_snapshot() -> ClientShellSnapshot {
     let mut snapshot = snapshot();
@@ -37,11 +40,20 @@ fn two_workspace_snapshot() -> ClientShellSnapshot {
 }
 
 fn rows_for(state: &mut ClientShellState, query: &str) -> Vec<ClientNavigatorRow> {
+    rows_with(state, query, false)
+}
+
+fn rows_with(
+    state: &mut ClientShellState,
+    query: &str,
+    agents_only: bool,
+) -> Vec<ClientNavigatorRow> {
     state.open_navigator_overlay();
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("navigator open");
     };
     navigator.query = TextEditor::from(query);
+    navigator.agents_only = agents_only;
     render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
 }
 
@@ -87,4 +99,1086 @@ fn a_query_for_a_workspace_name_returns_only_its_panes() {
     let rows = rows_for(&mut state, "beta");
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].label, "alpha-runner");
+}
+
+pub(super) fn agent(
+    workspace_id: &str,
+    tab_id: &str,
+    pane_id: &str,
+    kind: Option<&str>,
+    title: Option<&str>,
+) -> ClientShellAgent {
+    ClientShellAgent {
+        pane_id: pane_id.into(),
+        workspace_id: workspace_id.into(),
+        tab_id: tab_id.into(),
+        name: None,
+        display_agent: None,
+        agent: kind.map(str::to_owned),
+        title: None,
+        terminal_title: title.map(|title| format!("◑ {title}")),
+        terminal_title_stripped: title.map(str::to_owned),
+        agent_status: AgentStatus::Working,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+    }
+}
+
+fn pane_rows(rows: &[ClientNavigatorRow]) -> Vec<&ClientNavigatorRow> {
+    rows.iter()
+        .filter(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+        .collect()
+}
+
+#[test]
+fn a_pane_without_a_label_shows_its_stripped_terminal_title() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snap = snapshot();
+    snap.agents.push(agent(
+        "ws_1",
+        "tab_1",
+        "pane_1",
+        Some("claude"),
+        Some("Code review"),
+    ));
+    state.set_snapshot(Box::new(snap));
+
+    let rows = rows_for(&mut state, "");
+    assert_eq!(pane_rows(&rows)[0].label, "Code review");
+
+    let rows = rows_for(&mut state, "review");
+    assert_eq!(
+        rows[0].label, "Code review",
+        "flat query rows use the same label"
+    );
+}
+
+#[test]
+fn a_user_label_beats_the_terminal_title_and_a_bare_pane_falls_back_to_its_number() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snap = snapshot();
+    snap.panes[0].label = Some("renamed".into());
+    snap.agents.push(agent(
+        "ws_1",
+        "tab_1",
+        "pane_1",
+        Some("claude"),
+        Some("Code review"),
+    ));
+    state.set_snapshot(Box::new(snap));
+    assert_eq!(pane_rows(&rows_for(&mut state, ""))[0].label, "renamed");
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    assert_eq!(pane_rows(&rows_for(&mut state, ""))[0].label, "pane 1");
+}
+
+#[test]
+fn agents_only_seeds_from_config_and_prefers_the_saved_preference() {
+    let state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    assert!(state.navigator_agents_only);
+    assert!(!state.navigator_agents_only_manual);
+
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.preferences.navigator_agents_only = Some(false);
+    let state = ClientShellState::new(config);
+    assert!(!state.navigator_agents_only);
+    assert!(state.navigator_agents_only_manual);
+}
+
+fn labels(rows: &[ClientNavigatorRow]) -> Vec<&str> {
+    rows.iter().map(|row| row.label.as_str()).collect()
+}
+
+#[test]
+fn agents_only_hides_panes_tabs_and_workspaces_without_agents() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snapshot = two_workspace_snapshot();
+    snapshot
+        .agents
+        .push(agent("ws_1", "tab_1", "pane_1", Some("claude"), None));
+    state.set_snapshot(Box::new(snapshot));
+
+    let rows = rows_with(&mut state, "", true);
+    assert_eq!(labels(&rows), vec!["beta", "1", "alpha-runner"]);
+
+    let rows = rows_with(&mut state, "", false);
+    assert_eq!(
+        labels(&rows),
+        vec!["beta", "1", "alpha-runner", "alpha", "1", "zeta"]
+    );
+}
+
+#[test]
+fn agents_only_applies_to_flat_query_rows() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snapshot = two_workspace_snapshot();
+    snapshot
+        .agents
+        .push(agent("ws_1", "tab_1", "pane_1", Some("claude"), None));
+    state.set_snapshot(Box::new(snapshot));
+
+    assert!(rows_with(&mut state, "zeta", true).is_empty());
+    assert_eq!(rows_with(&mut state, "zeta", false).len(), 1);
+}
+
+#[test]
+fn the_navigator_opens_with_the_state_agents_only_setting() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.navigator_agents_only = false;
+    state.open_navigator_overlay();
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
+            agents_only: false,
+            ..
+        }))
+    ));
+}
+
+#[test]
+fn agents_only_keeps_the_active_machine_row_and_drops_empty_remote_machines() {
+    let profile = SavedSshEndpoint {
+        id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("profile id"),
+        label: "Build".into(),
+        target: "dev@build.example".into(),
+        session: "agents".into(),
+        enabled: true,
+    };
+    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_snapshot(Box::new(snapshot()));
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    remote.workspaces[0].label = "remote-workspace".into();
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
+
+    let rows = rows_with(&mut state, "", true);
+    let machines: Vec<_> = rows
+        .iter()
+        .filter(|row| matches!(row.target, ClientNavigatorTarget::Machine { .. }))
+        .collect();
+    assert_eq!(machines.len(), 1);
+    assert!(matches!(
+        &machines[0].target,
+        ClientNavigatorTarget::Machine { endpoint_id } if *endpoint_id == ClientEndpointId::Local
+    ));
+
+    remote
+        .agents
+        .push(agent("ws_1", "tab_1", "pane_1", Some("claude"), None));
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+
+    let rows = rows_with(&mut state, "", true);
+    let machine_count = rows
+        .iter()
+        .filter(|row| matches!(row.target, ClientNavigatorTarget::Machine { .. }))
+        .count();
+    assert_eq!(machine_count, 2);
+}
+
+use crossterm::event::{KeyCode, KeyModifiers};
+
+fn press(state: &mut ClientShellState, code: KeyCode, modifiers: KeyModifiers) -> ClientShellInput {
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        code, modifiers,
+    ))])
+}
+
+fn open(state: &mut ClientShellState) {
+    let mut outcome = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::OpenNavigator),
+        &mut outcome,
+    );
+}
+
+fn navigator(state: &ClientShellState) -> &ClientNavigatorOverlay {
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::Navigator(navigator)) => navigator,
+        _ => panic!("navigator open"),
+    }
+}
+
+#[test]
+fn esc_closes_the_navigator_from_search_and_tree_mode() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(state.overlay.is_none());
+
+    open(&mut state);
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    assert!(!navigator(&state).search_focused);
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn esc_clears_a_query_before_it_closes() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    state.handle_input_bytes(b"repo");
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(navigator(&state).query.as_str(), "");
+    assert!(navigator(&state).search_focused);
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(state.overlay.is_none());
+
+    open(&mut state);
+    state.handle_input_bytes(b"repo");
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(navigator(&state).query.as_str(), "");
+    assert!(!navigator(&state).search_focused);
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn tab_switches_modes_and_keeps_the_query() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    state.handle_input_bytes(b"repo");
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    assert!(!navigator(&state).search_focused);
+    assert_eq!(navigator(&state).query.as_str(), "repo");
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    assert!(navigator(&state).search_focused);
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    press(&mut state, KeyCode::Char('/'), KeyModifiers::NONE);
+    assert!(navigator(&state).search_focused);
+}
+
+#[test]
+fn the_agents_only_toggle_works_in_both_modes_and_is_marked_manual() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    assert!(navigator(&state).agents_only);
+    press(&mut state, KeyCode::Char('a'), KeyModifiers::ALT);
+    assert!(!navigator(&state).agents_only);
+    assert!(!state.navigator_agents_only);
+    assert!(state.navigator_agents_only_manual);
+
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    press(&mut state, KeyCode::Char('a'), KeyModifiers::NONE);
+    assert!(navigator(&state).agents_only);
+    assert!(state.navigator_agents_only);
+}
+
+#[test]
+fn status_filters_set_in_search_mode_and_clear_on_repeat() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    press(&mut state, KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!(
+        navigator(&state).filter,
+        Some(ClientNavigatorFilter::Blocked)
+    );
+    press(&mut state, KeyCode::Char('b'), KeyModifiers::ALT);
+    assert_eq!(navigator(&state).filter, None);
+
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    press(&mut state, KeyCode::Char('w'), KeyModifiers::NONE);
+    assert_eq!(
+        navigator(&state).filter,
+        Some(ClientNavigatorFilter::Working)
+    );
+    press(&mut state, KeyCode::Char('w'), KeyModifiers::NONE);
+    assert_eq!(navigator(&state).filter, None);
+
+    press(&mut state, KeyCode::Char('i'), KeyModifiers::NONE);
+    assert_eq!(navigator(&state).filter, Some(ClientNavigatorFilter::Idle));
+    assert!(!navigator(&state).search_focused);
+    press(&mut state, KeyCode::Char('i'), KeyModifiers::NONE);
+    assert_eq!(navigator(&state).filter, None);
+}
+
+#[test]
+fn the_open_navigator_binding_toggles_the_overlay() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
+    open(&mut state);
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn prefix_g_closes_the_navigator_from_the_keyboard() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
+    assert_eq!(state.mode, ClientShellMode::Prefix);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
+    press(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+    assert!(state.overlay.is_none());
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+
+    open(&mut state);
+    press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(navigator(&state).query.as_str(), "");
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+}
+
+use ratatui::layout::Rect;
+
+#[test]
+fn the_navigator_fills_the_screen_and_splits_only_when_wide() {
+    let narrow = render::overlays::navigator_geometry(Rect::new(0, 0, 80, 30)).expect("geometry");
+    assert_eq!(narrow.popup, Rect::new(1, 1, 78, 28));
+    assert!(narrow.preview.is_none());
+    assert_eq!(narrow.tree.width, narrow.inner.width);
+
+    let wide = render::overlays::navigator_geometry(Rect::new(0, 0, 160, 40)).expect("geometry");
+    let preview = wide.preview.expect("preview column");
+    assert_eq!(wide.tree.width, 70, "45% of 156 inner columns");
+    assert_eq!(preview.x, wide.tree.right() + 1);
+    assert_eq!(preview.right(), wide.inner.right());
+    assert_eq!(
+        render::overlays::navigator_preview_capacity(160, 40),
+        Some(preview.height - render::overlays::NAVIGATOR_PREVIEW_HEADER_ROWS)
+    );
+    assert_eq!(render::overlays::navigator_preview_capacity(80, 30), None);
+}
+
+fn frame_text(state: &mut ClientShellState, cols: u16, rows: u16) -> String {
+    let frame = state.compose(cols, rows).expect("frame");
+    frame_rows(&frame).join("\n")
+}
+
+#[test]
+fn the_preview_column_shows_the_selected_pane_lines_and_placeholders() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snapshot = snapshot();
+    snapshot.agents.push(agent(
+        "ws_1",
+        "tab_1",
+        "pane_1",
+        Some("claude"),
+        Some("Code review"),
+    ));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.open_navigator_overlay();
+
+    let text = frame_text(&mut state, 160, 40);
+    assert!(text.contains("loading"), "no read yet:\n{text}");
+    assert!(text.contains("Code review · claude · working"));
+
+    if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+        navigator.preview = Some(ClientNavigatorPreview {
+            endpoint_id: ClientEndpointId::Local,
+            pane_id: "pane_1".into(),
+            lines: preview_ansi::parse_lines("$ cargo test\nok"),
+            error: None,
+            scroll: 0,
+            requested_lines: 0,
+            requested_at: None,
+            received_at: None,
+        });
+    }
+    let text = frame_text(&mut state, 160, 40);
+    assert!(text.contains("$ cargo test"), "{text}");
+    assert!(!text.contains("loading"));
+
+    let text = frame_text(&mut state, 80, 30);
+    assert!(
+        !text.contains("$ cargo test"),
+        "narrow layout drops the preview"
+    );
+}
+
+#[test]
+fn in_flight_is_true_only_while_a_request_has_no_newer_reply() {
+    let now = std::time::Instant::now();
+    let later = now + std::time::Duration::from_secs(1);
+    let preview = |requested_at, received_at| ClientNavigatorPreview {
+        endpoint_id: ClientEndpointId::Local,
+        pane_id: "pane_1".into(),
+        lines: Vec::new(),
+        error: None,
+        scroll: 0,
+        requested_lines: 0,
+        requested_at,
+        received_at,
+    };
+    assert!(!preview(None, None).in_flight(), "never requested");
+    assert!(preview(Some(now), None).in_flight(), "awaiting a reply");
+    assert!(
+        preview(Some(later), Some(now)).in_flight(),
+        "the reply predates the latest request"
+    );
+    assert!(
+        !preview(Some(now), Some(later)).in_flight(),
+        "the reply answers the latest request"
+    );
+}
+
+use std::time::{Duration, Instant};
+
+fn preview_state() -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snapshot = snapshot();
+    snapshot.agents.push(agent(
+        "ws_1",
+        "tab_1",
+        "pane_1",
+        Some("claude"),
+        Some("Code review"),
+    ));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.compose(160, 40).expect("frame");
+    state
+}
+
+fn pane_reads(actions: &[ClientShellAction]) -> Vec<&crate::api::schema::PaneReadParams> {
+    actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => match &request.method {
+                crate::api::schema::Method::PaneRead(params) => Some(params),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+fn read_result(pane_id: &str, lines: &[&str]) -> crate::api::schema::ResponseResult {
+    crate::api::schema::ResponseResult::PaneRead {
+        read: crate::api::schema::PaneReadResult {
+            pane_id: pane_id.into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            source: crate::api::schema::ReadSource::Visible,
+            format: crate::api::schema::ReadFormat::Text,
+            text: lines.join("\n"),
+            revision: 1,
+            truncated: false,
+        },
+    }
+}
+
+#[test]
+fn the_preview_read_is_allowed_on_the_client_shell_lane() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    let methods = outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(&request.method),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(!methods.is_empty(), "the tick should have polled");
+    for method in methods {
+        assert!(
+            crate::server::client_commands::supports_client_shell_method(method),
+            "{} is not advertised on the client shell lane, so the preview would only show an error",
+            crate::api::api_method_name(method)
+        );
+    }
+}
+
+#[test]
+fn the_preview_does_not_poll_while_another_request_is_pending() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let mut busy = ClientShellInput::default();
+    state.push_endpoint_method_with_kind(
+        crate::api::schema::Method::WorkspaceList(crate::api::schema::EmptyParams::default()),
+        PendingEndpointKind::Generic,
+        &mut busy,
+    );
+    assert_eq!(busy.actions.len(), 1);
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(
+        pane_reads(&outcome.actions).is_empty(),
+        "the client shell lane runs one command at a time; the preview must yield"
+    );
+}
+
+#[test]
+fn a_long_pane_title_is_truncated_so_the_path_stays_visible() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut snapshot = snapshot();
+    let long = "Claude Code /Users/someone/Documents/code/some/very/deep/project/directory/name";
+    snapshot
+        .agents
+        .push(agent("ws_1", "tab_1", "pane_1", Some("claude"), Some(long)));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.open_navigator_overlay();
+
+    let text = frame_text(&mut state, 100, 30);
+    let row = text
+        .lines()
+        .find(|line| line.contains("Claude Code"))
+        .expect("pane row");
+    assert!(row.contains('…'), "{row}");
+    assert!(
+        row.contains("/repo"),
+        "cwd must survive a long title: {row}"
+    );
+}
+
+fn preview_of(state: &ClientShellState) -> &ClientNavigatorPreview {
+    navigator(state).preview.as_ref().expect("preview entry")
+}
+
+fn scroll_wheel(state: &mut ClientShellState, kind: MouseEventKind, column: u16, row: u16) {
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    })]);
+}
+
+#[test]
+fn scrolling_the_preview_reads_recent_history_and_clamps_at_the_top() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let now = Instant::now();
+    let mut first = ClientShellInput::default();
+    state.tick_navigator(now, &mut first);
+    let capacity = render::overlays::navigator_preview_capacity(160, 40).expect("capacity");
+    let first_id = match &first.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("one request"),
+    };
+    state.handle_endpoint_result("boot-1", &first_id, Ok(read_result("pane_1", &["tail"])));
+
+    let mut outcome = ClientShellInput::default();
+    state.scroll_navigator_preview(10, &mut outcome);
+    assert!(outcome.repaint);
+    assert_eq!(preview_of(&state).scroll, 10);
+
+    let mut next = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(100), &mut next);
+    let reads = pane_reads(&next.actions);
+    assert_eq!(reads.len(), 1, "a scroll refetches on the next tick");
+    assert_eq!(reads[0].source, crate::api::schema::ReadSource::Recent);
+    assert_eq!(
+        reads[0].lines,
+        Some(u32::from(capacity) * 2 + 10),
+        "the read fetches a page beyond the target so wheel steps hit the buffer"
+    );
+
+    let short: Vec<String> = (0..usize::from(capacity) + 4)
+        .map(|index| format!("line {index}"))
+        .collect();
+    let short_refs: Vec<&str> = short.iter().map(String::as_str).collect();
+    let request_id = match &next.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("one request"),
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Ok(read_result("pane_1", &short_refs)),
+    );
+    assert_eq!(
+        preview_of(&state).scroll,
+        4,
+        "history shorter than requested clamps the offset to what exists"
+    );
+
+    let text = frame_text(&mut state, 160, 40);
+    assert!(
+        text.contains("line 0"),
+        "window starts at the oldest row:\n{text}"
+    );
+    assert!(!text.contains(&format!("line {}", usize::from(capacity) + 3)));
+    assert!(text.contains("↑4"));
+
+    let mut down = ClientShellInput::default();
+    state.scroll_navigator_preview(-100, &mut down);
+    assert_eq!(preview_of(&state).scroll, 0);
+}
+
+fn numbered(count: usize) -> Vec<String> {
+    (0..count).map(|index| format!("line {index}")).collect()
+}
+
+fn complete_read(state: &mut ClientShellState, outcome: &ClientShellInput, lines: &[String]) {
+    let request_id = match &outcome.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("one request"),
+    };
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    state.handle_endpoint_result("boot-1", &request_id, Ok(read_result("pane_1", &refs)));
+}
+
+#[test]
+fn a_scroll_past_the_held_buffer_keeps_the_window_full_until_history_arrives() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let capacity =
+        usize::from(render::overlays::navigator_preview_capacity(160, 40).expect("capacity"));
+    let mut first = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut first);
+    complete_read(&mut state, &first, &numbered(capacity));
+
+    state.scroll_navigator_preview(10, &mut ClientShellInput::default());
+    let text = frame_text(&mut state, 160, 40);
+    assert!(text.contains("line 0"), "oldest held row is shown:\n{text}");
+    assert!(
+        text.contains(&format!("line {}", capacity - 1)),
+        "the window stays full instead of dropping rows the buffer has not fetched yet:\n{text}"
+    );
+    assert!(
+        text.split('↑')
+            .skip(1)
+            .all(|rest| !rest.starts_with(|c: char| c.is_ascii_digit())),
+        "no offset is claimed until the buffer has it:\n{text}"
+    );
+}
+
+#[test]
+fn scrolling_while_a_read_is_in_flight_refetches_as_soon_as_it_lands() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let now = Instant::now();
+    let capacity =
+        usize::from(render::overlays::navigator_preview_capacity(160, 40).expect("capacity"));
+    let mut first = ClientShellInput::default();
+    state.tick_navigator(now, &mut first);
+
+    state.scroll_navigator_preview(10, &mut ClientShellInput::default());
+    complete_read(&mut state, &first, &numbered(capacity));
+
+    let mut next = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(10), &mut next);
+    let reads = pane_reads(&next.actions);
+    assert_eq!(
+        reads.len(),
+        1,
+        "the interval does not delay a read the scroll needs"
+    );
+    assert_eq!(
+        reads[0].lines,
+        Some(u32::try_from(capacity * 2 + 10).expect("fits"))
+    );
+
+    state.scroll_navigator_preview(-5, &mut ClientShellInput::default());
+    complete_read(&mut state, &next, &numbered(capacity * 2 + 10));
+    let mut settled = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(20), &mut settled);
+    assert!(
+        pane_reads(&settled.actions).is_empty(),
+        "a target inside the held buffer waits for the normal interval"
+    );
+}
+
+#[test]
+fn changing_the_selection_resets_the_preview_scroll() {
+    let mut state = preview_state();
+    let mut snapshot = snapshot();
+    snapshot.panes.push(ClientShellPane {
+        pane_id: "pane_2".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        label: None,
+        cwd: Some("/repo".into()),
+        foreground_cwd: Some("/repo".into()),
+        focused: false,
+        right_click_passthrough: false,
+    });
+    snapshot
+        .agents
+        .push(agent("ws_1", "tab_1", "pane_1", Some("claude"), None));
+    snapshot
+        .agents
+        .push(agent("ws_1", "tab_1", "pane_2", Some("codex"), None));
+    state.set_snapshot(Box::new(snapshot));
+    state.open_navigator_overlay();
+    let now = Instant::now();
+    state.tick_navigator(now, &mut ClientShellInput::default());
+    state.scroll_navigator_preview(5, &mut ClientShellInput::default());
+    assert_eq!(preview_of(&state).scroll, 5);
+
+    state.move_navigator_selection(1);
+    state.tick_navigator(
+        now + Duration::from_millis(10),
+        &mut ClientShellInput::default(),
+    );
+    assert_eq!(preview_of(&state).pane_id, "pane_2");
+    assert_eq!(preview_of(&state).scroll, 0);
+}
+
+#[test]
+fn the_wheel_scrolls_the_preview_over_the_preview_column_and_the_tree_elsewhere() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    state.tick_navigator(Instant::now(), &mut ClientShellInput::default());
+    state.compose(160, 40).expect("frame");
+    let preview = state.hits.navigator_preview;
+    assert!(preview.width > 0);
+
+    scroll_wheel(
+        &mut state,
+        MouseEventKind::ScrollUp,
+        preview.x + 2,
+        preview.y + 5,
+    );
+    assert_eq!(preview_of(&state).scroll, NAVIGATOR_PREVIEW_WHEEL_LINES);
+    scroll_wheel(
+        &mut state,
+        MouseEventKind::ScrollDown,
+        preview.x + 2,
+        preview.y + 5,
+    );
+    assert_eq!(preview_of(&state).scroll, 0);
+
+    let mut outcome = ClientShellInput::default();
+    state.scroll_navigator_preview(7, &mut outcome);
+    press(&mut state, KeyCode::PageDown, KeyModifiers::NONE);
+    assert_eq!(
+        preview_of(&state).scroll,
+        0,
+        "page down from 7 lands at the bottom"
+    );
+    press(&mut state, KeyCode::PageUp, KeyModifiers::NONE);
+    assert_eq!(preview_of(&state).scroll, state.navigator_preview_page());
+}
+
+#[test]
+fn ansi_colour_in_the_read_reaches_the_frame() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    let request_id = match &outcome.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("one request"),
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Ok(read_result("pane_1", &["plain \x1b[31mred\x1b[0m end"])),
+    );
+    let frame = state.compose(160, 40).expect("frame");
+    let preview = state.hits.navigator_preview;
+    let (x, y) = cell_symbol_position(&frame, preview, "red");
+    let cell = &frame.cells[usize::from(y) * usize::from(frame.width) + usize::from(x)];
+    assert_eq!(
+        cell.fg,
+        crate::protocol::color_to_u32(ratatui::style::Color::Red)
+    );
+    let (px, py) = cell_symbol_position(&frame, preview, "plain");
+    let plain = &frame.cells[usize::from(py) * usize::from(frame.width) + usize::from(px)];
+    assert_ne!(plain.fg, cell.fg);
+}
+
+#[test]
+fn a_request_with_no_reply_is_retried_after_it_goes_stale() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let now = Instant::now();
+    let mut first = ClientShellInput::default();
+    state.tick_navigator(now, &mut first);
+    assert_eq!(pane_reads(&first.actions).len(), 1);
+
+    let mut waiting = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_secs(2), &mut waiting);
+    assert!(waiting.actions.is_empty(), "still waiting on the reply");
+
+    let mut retry = ClientShellInput::default();
+    state.tick_navigator(
+        now + NAVIGATOR_PREVIEW_STALE + Duration::from_millis(1),
+        &mut retry,
+    );
+    assert_eq!(
+        pane_reads(&retry.actions).len(),
+        1,
+        "a lost reply must not block polling forever"
+    );
+}
+
+#[test]
+fn the_tick_requests_a_preview_for_the_selected_pane_and_waits_for_the_reply() {
+    let mut state = preview_state();
+    let now = Instant::now();
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(now, &mut outcome);
+    assert!(outcome.actions.is_empty(), "nothing polls while closed");
+
+    state.open_navigator_overlay();
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(now, &mut outcome);
+    let reads = pane_reads(&outcome.actions);
+    assert_eq!(reads.len(), 1);
+    assert_eq!(reads[0].pane_id, "pane_1");
+    assert_eq!(reads[0].source, crate::api::schema::ReadSource::Visible);
+    assert_eq!(reads[0].format, crate::api::schema::ReadFormat::Ansi);
+    assert!(!reads[0].strip_ansi);
+    assert_eq!(
+        reads[0].lines,
+        render::overlays::navigator_preview_capacity(160, 40).map(u32::from)
+    );
+
+    let mut again = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_secs(2), &mut again);
+    assert!(again.actions.is_empty(), "one request in flight at a time");
+
+    let request_id = match &outcome.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        other => panic!("expected one request, got {}", other.len()),
+    };
+    let (repaint, _) = state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Ok(read_result("pane_1", &["$ cargo test", "ok"])),
+    );
+    if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+        if let Some(preview) = navigator.preview.as_mut() {
+            preview.received_at = Some(now);
+        }
+    }
+    assert!(repaint);
+    assert_eq!(
+        navigator(&state).preview.as_ref().unwrap().lines,
+        preview_ansi::parse_lines("$ cargo test\nok")
+    );
+
+    let mut soon = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(100), &mut soon);
+    assert!(
+        soon.actions.is_empty(),
+        "waits for the interval after a reply"
+    );
+    let mut later = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(700), &mut later);
+    assert_eq!(pane_reads(&later.actions).len(), 1);
+}
+
+#[test]
+fn changing_the_selection_requests_the_new_pane_immediately_and_drops_stale_replies() {
+    let mut state = preview_state();
+    let mut snapshot = snapshot();
+    snapshot.panes.push(ClientShellPane {
+        pane_id: "pane_2".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        label: None,
+        cwd: Some("/repo".into()),
+        foreground_cwd: Some("/repo".into()),
+        focused: false,
+        right_click_passthrough: false,
+    });
+    snapshot.agents.push(agent(
+        "ws_1",
+        "tab_1",
+        "pane_1",
+        Some("claude"),
+        Some("Code review"),
+    ));
+    snapshot.agents.push(agent(
+        "ws_1",
+        "tab_1",
+        "pane_2",
+        Some("codex"),
+        Some("Docs"),
+    ));
+    state.set_snapshot(Box::new(snapshot));
+    state.open_navigator_overlay();
+    let now = Instant::now();
+    let mut first = ClientShellInput::default();
+    state.tick_navigator(now, &mut first);
+    let first_id = match &first.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("one request"),
+    };
+
+    state.move_navigator_selection(1);
+    let mut second = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(10), &mut second);
+    assert_eq!(pane_reads(&second.actions)[0].pane_id, "pane_2");
+
+    state.handle_endpoint_result("boot-1", &first_id, Ok(read_result("pane_1", &["old"])));
+    let preview = navigator(&state).preview.as_ref().unwrap();
+    assert_eq!(preview.pane_id, "pane_2");
+    assert!(
+        preview.lines.is_empty(),
+        "a reply for the previous pane is discarded"
+    );
+}
+
+#[test]
+fn a_failed_read_records_an_error_without_an_endpoint_notice() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let now = Instant::now();
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(now, &mut outcome);
+    let request_id = match &outcome.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("one request"),
+    };
+    state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Err(ClientShellEndpointError {
+            code: Some("endpoint_timeout".into()),
+            message: "timed out".into(),
+        }),
+    );
+    if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+        if let Some(preview) = navigator.preview.as_mut() {
+            preview.received_at = Some(now);
+        }
+    }
+    assert_eq!(
+        navigator(&state).preview.as_ref().unwrap().error.as_deref(),
+        Some("timed out")
+    );
+    assert!(state.visible_endpoint_notice.is_none());
+
+    let mut retry = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(100), &mut retry);
+    assert!(retry.actions.is_empty());
+    let mut retry = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_millis(600), &mut retry);
+    assert_eq!(pane_reads(&retry.actions).len(), 1);
+}
+
+#[test]
+fn a_pane_on_another_machine_shows_the_current_machine_placeholder() {
+    let profile = SavedSshEndpoint {
+        id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("profile id"),
+        label: "Build".into(),
+        target: "dev@build.example".into(),
+        session: "agents".into(),
+        enabled: true,
+    };
+    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    remote.workspaces[0].label = "remote-workspace".into();
+    remote.panes[0].pane_id = "remote_pane".into();
+    remote
+        .agents
+        .push(agent("ws_1", "tab_1", "remote_pane", Some("claude"), None));
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+    state.navigator_agents_only = true;
+    state.compose(160, 40).expect("frame");
+    state.open_navigator_overlay();
+    if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+        navigator.selected = Some(ClientNavigatorTarget::Pane {
+            endpoint_id: endpoint_id.clone(),
+            pane_id: "remote_pane".into(),
+        });
+    }
+
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(pane_reads(&outcome.actions).is_empty());
+    let preview = navigator(&state).preview.as_ref().expect("preview");
+    assert_eq!(preview.endpoint_id, endpoint_id);
+    assert_eq!(preview.pane_id, "remote_pane");
+    assert_eq!(
+        preview.error.as_deref(),
+        Some("preview shows panes on the current machine only")
+    );
+    let text = frame_text(&mut state, 160, 40);
+    assert!(
+        text.contains("preview shows panes on the current machine only"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_endpoint_without_pane_read_is_not_polled() {
+    let mut state = preview_state();
+    if let Some(endpoint) = state
+        .endpoints
+        .iter_mut()
+        .find(|endpoint| endpoint.endpoint_id.is_local())
+    {
+        endpoint.methods = Some(std::collections::HashSet::from([
+            "workspace.list".to_owned()
+        ]));
+    }
+    state.open_navigator_overlay();
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(outcome.actions.is_empty());
+    assert!(navigator(&state)
+        .preview
+        .as_ref()
+        .unwrap()
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("unsupported"));
+    assert!(state.visible_endpoint_notice.is_none());
+}
+
+#[test]
+fn navigator_on_start_opens_after_the_first_snapshot_and_after_onboarding() {
+    let mut config = Config::default();
+    config.ui.navigator_on_start = true;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(state.overlay.is_none(), "no snapshot yet");
+
+    state.set_snapshot(Box::new(snapshot()));
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
+    assert!(outcome.repaint);
+
+    state.overlay = None;
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(state.overlay.is_none(), "opens once, not every tick");
+
+    let mut state = ClientShellState::new(
+        ClientShellConfig::from_config(&config).with_startup_onboarding(true),
+    );
+    state.set_snapshot(Box::new(snapshot()));
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Onboarding)
+    ));
+    state.overlay = None;
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
 }

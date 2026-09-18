@@ -11,6 +11,7 @@ fn shell(field: usize) -> ClientShellState {
         viewport_rows: 2,
     });
     state.set_pane_surface(frame);
+    state.navigator_agents_only = false;
     state.compose(106, 30).expect("initial shell");
     match field {
         0 => state.open_new_workspace_overlay(),
@@ -193,7 +194,7 @@ fn cursor_movement_preserves_filter_selection_scroll_and_branch_error() {
                 assert_ne!(v.checkout_path, "sentinel");
                 assert!(v.error.is_none());
             }
-            ClientShellOverlay::Navigator(v) => assert!(v.selected.is_none()),
+            ClientShellOverlay::Navigator(v) => assert!(v.selected.is_some()),
             ClientShellOverlay::Help(v) => assert_eq!(v.scroll, 0),
             ClientShellOverlay::WorktreeOpen(v) => assert_eq!(v.selected, 0),
             _ => unreachable!(),

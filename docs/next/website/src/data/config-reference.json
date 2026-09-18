@@ -936,6 +936,18 @@
           ]
         },
         {
+          "key": "ui.navigator_agents_only",
+          "type": "boolean",
+          "default": "true",
+          "description": "Hide panes without a detected agent in the navigator. Toggling inside the navigator saves the choice for that machine."
+        },
+        {
+          "key": "ui.navigator_on_start",
+          "type": "boolean",
+          "default": "false",
+          "description": "Open the navigator as soon as the client attaches."
+        },
+        {
           "key": "ui.mobile_width_threshold",
           "type": "integer",
           "default": "64",
