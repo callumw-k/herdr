@@ -554,6 +554,31 @@ fn read_result(pane_id: &str, lines: &[&str]) -> crate::api::schema::ResponseRes
 }
 
 #[test]
+fn a_request_with_no_reply_is_retried_after_it_goes_stale() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let now = Instant::now();
+    let mut first = ClientShellInput::default();
+    state.tick_navigator(now, &mut first);
+    assert_eq!(pane_reads(&first.actions).len(), 1);
+
+    let mut waiting = ClientShellInput::default();
+    state.tick_navigator(now + Duration::from_secs(2), &mut waiting);
+    assert!(waiting.actions.is_empty(), "still waiting on the reply");
+
+    let mut retry = ClientShellInput::default();
+    state.tick_navigator(
+        now + NAVIGATOR_PREVIEW_STALE + Duration::from_millis(1),
+        &mut retry,
+    );
+    assert_eq!(
+        pane_reads(&retry.actions).len(),
+        1,
+        "a lost reply must not block polling forever"
+    );
+}
+
+#[test]
 fn the_tick_requests_a_preview_for_the_selected_pane_and_waits_for_the_reply() {
     let mut state = preview_state();
     let now = Instant::now();
@@ -575,7 +600,7 @@ fn the_tick_requests_a_preview_for_the_selected_pane_and_waits_for_the_reply() {
     );
 
     let mut again = ClientShellInput::default();
-    state.tick_navigator(now + Duration::from_secs(5), &mut again);
+    state.tick_navigator(now + Duration::from_secs(2), &mut again);
     assert!(again.actions.is_empty(), "one request in flight at a time");
 
     let request_id = match &outcome.actions[..] {

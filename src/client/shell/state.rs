@@ -6,6 +6,7 @@ pub(super) const WORKSPACE_HEADER_ROWS: u16 = 2;
 const ENDPOINT_ERROR_TIMEOUT_SECS: u64 = 5;
 pub(super) const NAVIGATOR_PREVIEW_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(500);
+pub(super) const NAVIGATOR_PREVIEW_STALE: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientShellKeybindingSource {
@@ -1975,7 +1976,11 @@ impl ClientShellState {
         let Some(preview) = navigator.preview.as_mut() else {
             return;
         };
-        if preview.in_flight() {
+        if preview.in_flight()
+            && preview.requested_at.is_some_and(|requested| {
+                now.saturating_duration_since(requested) < NAVIGATOR_PREVIEW_STALE
+            })
+        {
             return;
         }
         let last = preview.received_at.or(preview.requested_at);
