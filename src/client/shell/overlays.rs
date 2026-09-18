@@ -1141,6 +1141,7 @@ fn render_navigator_preview(
         match &n.preview {
             Some(preview) if &preview.pane_id == pane_id && &preview.endpoint_id == endpoint_id => {
                 match &preview.error {
+                    Some(error) if error.starts_with("preview ") => Some(format!(" {error}")),
                     Some(error) => Some(format!(" preview unavailable: {error}")),
                     None if preview.lines.is_empty() && preview.received_at.is_none() => {
                         Some(" loading".to_owned())

@@ -1900,13 +1900,13 @@ impl ClientShellState {
             self.open_navigator_overlay();
             outcome.repaint = true;
         }
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_ref() else {
+            return;
+        };
         let Some((cols, rows)) = self.last_composed_size else {
             return;
         };
         let Some(capacity) = super::render::overlays::navigator_preview_capacity(cols, rows) else {
-            return;
-        };
-        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_ref() else {
             return;
         };
         let rows = super::render::client_navigator_rows(
@@ -1921,7 +1921,27 @@ impl ClientShellState {
         else {
             return;
         };
-        if endpoint_id != self.active_endpoint_id || !self.endpoint_is_online(&endpoint_id) {
+        if endpoint_id != self.active_endpoint_id {
+            let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
+                return;
+            };
+            let same = navigator.preview.as_ref().is_some_and(|preview| {
+                preview.endpoint_id == endpoint_id && preview.pane_id == pane_id
+            });
+            if !same {
+                navigator.preview = Some(ClientNavigatorPreview {
+                    endpoint_id,
+                    pane_id,
+                    lines: Vec::new(),
+                    error: Some("preview shows panes on the current machine only".to_owned()),
+                    requested_at: Some(now),
+                    received_at: Some(now),
+                });
+                outcome.repaint = true;
+            }
+            return;
+        }
+        if !self.endpoint_is_online(&endpoint_id) {
             return;
         }
         let params = crate::api::schema::PaneReadParams {
@@ -1934,7 +1954,7 @@ impl ClientShellState {
         };
         let method = crate::api::schema::Method::PaneRead(params);
         let supported = self.supports_endpoint_method(&method);
-        let label = self.active_endpoint_label().to_owned();
+        let label = (!supported).then(|| self.active_endpoint_label().to_owned());
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
             return;
         };
@@ -1965,6 +1985,7 @@ impl ClientShellState {
         }
         if !supported {
             if preview.error.is_none() {
+                let label = label.unwrap_or_default();
                 preview.error = Some(format!("pane.read unsupported on {label}"));
                 outcome.repaint = true;
             }
@@ -2004,15 +2025,20 @@ impl ClientShellState {
             return false;
         };
         preview.received_at = Some(std::time::Instant::now());
-        match result {
+        let error = match result {
             Ok(crate::api::schema::ResponseResult::PaneRead { read }) => {
-                preview.lines = read.text.lines().map(str::to_owned).collect();
+                let lines: Vec<String> = read.text.lines().map(str::to_owned).collect();
+                let changed = preview.lines != lines || preview.error.is_some();
+                preview.lines = lines;
                 preview.error = None;
+                return changed;
             }
-            Ok(_) => preview.error = Some("unexpected response".to_owned()),
-            Err(error) => preview.error = Some(error.message),
-        }
-        true
+            Ok(_) => "unexpected response".to_owned(),
+            Err(error) => error.message,
+        };
+        let changed = preview.error.as_deref() != Some(error.as_str());
+        preview.error = Some(error);
+        changed
     }
 
     fn any_blocked(&self) -> bool {

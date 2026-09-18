@@ -395,25 +395,47 @@ fn the_open_navigator_binding_toggles_the_overlay() {
     assert!(state.overlay.is_none());
 }
 
+#[test]
+fn prefix_g_closes_the_navigator_from_the_keyboard() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    open(&mut state);
+    press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
+    assert_eq!(state.mode, ClientShellMode::Prefix);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
+    press(&mut state, KeyCode::Char('g'), KeyModifiers::NONE);
+    assert!(state.overlay.is_none());
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+
+    open(&mut state);
+    press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
+    press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(navigator(&state).query.as_str(), "");
+    assert_eq!(state.mode, ClientShellMode::Terminal);
+}
+
 use ratatui::layout::Rect;
 
 #[test]
 fn the_navigator_fills_the_screen_and_splits_only_when_wide() {
-    let narrow = overlays::navigator_geometry(Rect::new(0, 0, 80, 30)).expect("geometry");
+    let narrow = render::overlays::navigator_geometry(Rect::new(0, 0, 80, 30)).expect("geometry");
     assert_eq!(narrow.popup, Rect::new(1, 1, 78, 28));
     assert!(narrow.preview.is_none());
     assert_eq!(narrow.tree.width, narrow.inner.width);
 
-    let wide = overlays::navigator_geometry(Rect::new(0, 0, 160, 40)).expect("geometry");
+    let wide = render::overlays::navigator_geometry(Rect::new(0, 0, 160, 40)).expect("geometry");
     let preview = wide.preview.expect("preview column");
     assert_eq!(wide.tree.width, 70, "45% of 156 inner columns");
     assert_eq!(preview.x, wide.tree.right() + 1);
     assert_eq!(preview.right(), wide.inner.right());
     assert_eq!(
-        overlays::navigator_preview_capacity(160, 40),
-        Some(preview.height - overlays::NAVIGATOR_PREVIEW_HEADER_ROWS)
+        render::overlays::navigator_preview_capacity(160, 40),
+        Some(preview.height - render::overlays::NAVIGATOR_PREVIEW_HEADER_ROWS)
     );
-    assert_eq!(overlays::navigator_preview_capacity(80, 30), None);
+    assert_eq!(render::overlays::navigator_preview_capacity(80, 30), None);
 }
 
 fn frame_text(state: &mut ClientShellState, cols: u16, rows: u16) -> String {
@@ -549,7 +571,7 @@ fn the_tick_requests_a_preview_for_the_selected_pane_and_waits_for_the_reply() {
     assert_eq!(reads[0].format, crate::api::schema::ReadFormat::Text);
     assert_eq!(
         reads[0].lines,
-        overlays::navigator_preview_capacity(160, 40).map(u32::from)
+        render::overlays::navigator_preview_capacity(160, 40).map(u32::from)
     );
 
     let mut again = ClientShellInput::default();
@@ -565,6 +587,11 @@ fn the_tick_requests_a_preview_for_the_selected_pane_and_waits_for_the_reply() {
         &request_id,
         Ok(read_result("pane_1", &["$ cargo test", "ok"])),
     );
+    if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+        if let Some(preview) = navigator.preview.as_mut() {
+            preview.received_at = Some(now);
+        }
+    }
     assert!(repaint);
     assert_eq!(
         navigator(&state).preview.as_ref().unwrap().lines,
@@ -653,6 +680,11 @@ fn a_failed_read_records_an_error_without_an_endpoint_notice() {
             message: "timed out".into(),
         }),
     );
+    if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+        if let Some(preview) = navigator.preview.as_mut() {
+            preview.received_at = Some(now);
+        }
+    }
     assert_eq!(
         navigator(&state).preview.as_ref().unwrap().error.as_deref(),
         Some("timed out")
@@ -665,6 +697,56 @@ fn a_failed_read_records_an_error_without_an_endpoint_notice() {
     let mut retry = ClientShellInput::default();
     state.tick_navigator(now + Duration::from_millis(600), &mut retry);
     assert_eq!(pane_reads(&retry.actions).len(), 1);
+}
+
+#[test]
+fn a_pane_on_another_machine_shows_the_current_machine_placeholder() {
+    let profile = SavedSshEndpoint {
+        id: ProfileId::parse("0123456789abcdef0123456789abcdef").expect("profile id"),
+        label: "Build".into(),
+        target: "dev@build.example".into(),
+        session: "agents".into(),
+        enabled: true,
+    };
+    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    remote.workspaces[0].label = "remote-workspace".into();
+    remote.panes[0].pane_id = "remote_pane".into();
+    remote
+        .agents
+        .push(agent("ws_1", "tab_1", "remote_pane", Some("claude"), None));
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+    state.navigator_agents_only = true;
+    state.compose(160, 40).expect("frame");
+    state.open_navigator_overlay();
+    if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+        navigator.selected = Some(ClientNavigatorTarget::Pane {
+            endpoint_id: endpoint_id.clone(),
+            pane_id: "remote_pane".into(),
+        });
+    }
+
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(pane_reads(&outcome.actions).is_empty());
+    let preview = navigator(&state).preview.as_ref().expect("preview");
+    assert_eq!(preview.endpoint_id, endpoint_id);
+    assert_eq!(preview.pane_id, "remote_pane");
+    assert_eq!(
+        preview.error.as_deref(),
+        Some("preview shows panes on the current machine only")
+    );
+    let text = frame_text(&mut state, 160, 40);
+    assert!(
+        text.contains("preview shows panes on the current machine only"),
+        "{text}"
+    );
 }
 
 #[test]
