@@ -1955,6 +1955,10 @@ impl ClientShellState {
         };
         let method = crate::api::schema::Method::PaneRead(params);
         let supported = self.supports_endpoint_method(&method);
+        let lane_busy = self
+            .pending_requests
+            .values()
+            .any(|pending| !matches!(pending.kind, PendingEndpointKind::NavigatorPreview { .. }));
         let label = (!supported).then(|| self.active_endpoint_label().to_owned());
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
             return;
@@ -1986,6 +1990,9 @@ impl ClientShellState {
         let last = preview.received_at.or(preview.requested_at);
         if last.is_some_and(|last| now.saturating_duration_since(last) < NAVIGATOR_PREVIEW_INTERVAL)
         {
+            return;
+        }
+        if lane_busy {
             return;
         }
         if !supported {

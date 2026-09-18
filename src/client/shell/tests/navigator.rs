@@ -554,6 +554,49 @@ fn read_result(pane_id: &str, lines: &[&str]) -> crate::api::schema::ResponseRes
 }
 
 #[test]
+fn the_preview_read_is_allowed_on_the_client_shell_lane() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    let methods = outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(&request.method),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(!methods.is_empty(), "the tick should have polled");
+    for method in methods {
+        assert!(
+            crate::server::client_commands::supports_client_shell_method(method),
+            "{} is not advertised on the client shell lane, so the preview would only show an error",
+            crate::api::api_method_name(method)
+        );
+    }
+}
+
+#[test]
+fn the_preview_does_not_poll_while_another_request_is_pending() {
+    let mut state = preview_state();
+    state.open_navigator_overlay();
+    let mut busy = ClientShellInput::default();
+    state.push_endpoint_method_with_kind(
+        crate::api::schema::Method::WorkspaceList(crate::api::schema::EmptyParams::default()),
+        PendingEndpointKind::Generic,
+        &mut busy,
+    );
+    assert_eq!(busy.actions.len(), 1);
+    let mut outcome = ClientShellInput::default();
+    state.tick_navigator(Instant::now(), &mut outcome);
+    assert!(
+        pane_reads(&outcome.actions).is_empty(),
+        "the client shell lane runs one command at a time; the preview must yield"
+    );
+}
+
+#[test]
 fn a_request_with_no_reply_is_retried_after_it_goes_stale() {
     let mut state = preview_state();
     state.open_navigator_overlay();
