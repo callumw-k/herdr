@@ -131,6 +131,8 @@ pub(super) struct ShellHitMap {
     pub(super) navigator_search: Rect,
     pub(super) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
     pub(super) navigator_preview: Rect,
+    pub(super) navigator_scrollbar: Rect,
+    pub(super) navigator_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(super) worktree_search: Rect,
     pub(super) worktree_rows: Vec<(Rect, usize)>,
     pub(super) help_popup: Rect,
@@ -204,6 +206,9 @@ pub(super) enum ClientChromeDrag {
         grab_row_offset: u16,
     },
     HelpScrollbar {
+        grab_row_offset: u16,
+    },
+    NavigatorScrollbar {
         grab_row_offset: u16,
     },
     ProductAnnouncementScrollbar {

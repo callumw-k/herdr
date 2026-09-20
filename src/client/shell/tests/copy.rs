@@ -939,8 +939,9 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     )));
 }
 
-#[test]
-fn navigator_renders_connected_siblings_and_ancestor_lines() {
+/// Two workspaces: `client-shell` with tabs editor (agent, shell), notes and
+/// logs, then `second` with one tab holding `pane_last`.
+fn navigator_tree_snapshot() -> ClientShellSnapshot {
     let mut snapshot = snapshot();
     snapshot.focused_pane_id = None;
     snapshot.tabs[0].label = "editor".into();
@@ -982,11 +983,62 @@ fn navigator_renders_connected_siblings_and_ancestor_lines() {
     snapshot.workspaces.push(workspace);
     snapshot.tabs.push(tab);
     snapshot.panes.push(pane);
+    snapshot
+}
+
+fn navigator_tree_state() -> ClientShellState {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
-    state.set_snapshot(Box::new(snapshot));
+    state.set_snapshot(Box::new(navigator_tree_snapshot()));
     state.set_pane_surface(surface());
     state.navigator_agents_only = false;
     state.open_navigator_overlay();
+    state
+}
+
+fn navigator_key(state: &mut ClientShellState, code: KeyCode) -> ClientShellInput {
+    state.handle_raw_events(vec![RawInputEvent::Key(crate::input::TerminalKey::new(
+        code,
+        KeyModifiers::empty(),
+    ))])
+}
+
+fn navigator_mouse(
+    state: &mut ClientShellState,
+    kind: MouseEventKind,
+    column: u16,
+    row: u16,
+) -> ClientShellInput {
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::empty(),
+    })])
+}
+
+fn navigator_selected_pane(state: &ClientShellState) -> Option<String> {
+    match state.overlay.as_ref() {
+        Some(ClientShellOverlay::Navigator(navigator)) => {
+            let rows = render::client_navigator_rows(
+                &state.endpoints,
+                &state.active_endpoint_id,
+                navigator,
+            );
+            match super::aggregate_navigation::selected_navigator_target(&rows, navigator)? {
+                ClientNavigatorTarget::Pane { pane_id, .. } => Some(pane_id),
+                ClientNavigatorTarget::Workspace { workspace_id, .. } => {
+                    Some(format!("workspace:{workspace_id}"))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+#[test]
+fn navigator_renders_connected_siblings_and_ancestor_lines() {
+    let mut state = navigator_tree_state();
     let prefixes = |state: &mut ClientShellState, height| {
         let frame = state.compose(106, height).expect("navigator frame");
         state
@@ -1049,6 +1101,200 @@ fn navigator_renders_connected_siblings_and_ancestor_lines() {
     navigator.query.clear();
     navigator.expanded_workspaces.clear();
     assert_eq!(prefixes(&mut state, 30), ["▸ clie", "▸ seco"]);
+}
+
+#[test]
+fn navigator_query_matches_agent_kind_title_pane_id_and_branch() {
+    let mut snapshot = navigator_tree_snapshot();
+    snapshot.workspaces[1].branch = Some("release-2".into());
+    snapshot.agents.push(ClientShellAgent {
+        pane_id: "pane_last".into(),
+        workspace_id: "ws_2".into(),
+        tab_id: "tab_last".into(),
+        name: None,
+        display_agent: None,
+        agent: Some("codex".into()),
+        title: Some("fix login".into()),
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+    });
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot));
+    state.set_pane_surface(surface());
+    state.navigator_agents_only = false;
+    state.open_navigator_overlay();
+    let matches = |state: &mut ClientShellState, query: &str| {
+        let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+            panic!("expected navigator");
+        };
+        navigator.query = query.into();
+        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
+            .into_iter()
+            .filter_map(|row| match row.target {
+                ClientNavigatorTarget::Pane { pane_id, .. } => Some(pane_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(matches(&mut state, "codex"), ["pane_last"]);
+    assert_eq!(matches(&mut state, "fix login"), ["pane_last"]);
+    assert_eq!(matches(&mut state, "pane_shell"), ["pane_shell"]);
+    assert_eq!(matches(&mut state, "release-2"), ["pane_last"]);
+}
+
+#[test]
+fn navigator_jumps_between_workspace_sections_in_tree_mode() {
+    let mut state = navigator_tree_state();
+    state.compose(106, 30).expect("navigator frame");
+    navigator_key(&mut state, KeyCode::Tab);
+
+    navigator_key(&mut state, KeyCode::Right);
+    assert_eq!(
+        navigator_selected_pane(&state).as_deref(),
+        Some("pane_last")
+    );
+    navigator_key(&mut state, KeyCode::Right);
+    assert_eq!(
+        navigator_selected_pane(&state).as_deref(),
+        Some("pane_last")
+    );
+    navigator_key(&mut state, KeyCode::Char('h'));
+    assert_eq!(navigator_selected_pane(&state).as_deref(), Some("pane_1"));
+    navigator_key(&mut state, KeyCode::Left);
+    assert_eq!(navigator_selected_pane(&state).as_deref(), Some("pane_1"));
+
+    for _ in 0..3 {
+        navigator_key(&mut state, KeyCode::Char('j'));
+    }
+    assert_eq!(
+        navigator_selected_pane(&state).as_deref(),
+        Some("pane_notes")
+    );
+    navigator_key(&mut state, KeyCode::Char('l'));
+    assert_eq!(
+        navigator_selected_pane(&state).as_deref(),
+        Some("pane_last")
+    );
+
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+        panic!("expected navigator");
+    };
+    navigator
+        .expanded_workspaces
+        .remove(&(state.active_endpoint_id.clone(), "ws_2".to_owned()));
+    navigator.selected = None;
+    navigator_key(&mut state, KeyCode::Right);
+    assert_eq!(
+        navigator_selected_pane(&state).as_deref(),
+        Some("workspace:ws_2")
+    );
+    navigator_key(&mut state, KeyCode::Left);
+    assert_eq!(navigator_selected_pane(&state).as_deref(), Some("pane_1"));
+
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+        panic!("expected navigator");
+    };
+    navigator.search_focused = true;
+    navigator.query = "sh".into();
+    navigator_key(&mut state, KeyCode::Left);
+    state.handle_input_bytes(b"x");
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
+        panic!("expected navigator");
+    };
+    assert_eq!(navigator.query.as_str(), "sxh");
+}
+
+#[test]
+fn navigator_scrollbar_click_drag_and_wheel_scroll_the_tree() {
+    let mut state = navigator_tree_state();
+    state.compose(106, 30).expect("navigator frame");
+    assert_eq!(state.hits.navigator_scrollbar, Rect::default());
+    assert!(state.hits.navigator_scroll_metrics.is_none());
+
+    state.compose(106, 12).expect("navigator frame");
+    let track = state.hits.navigator_scrollbar;
+    let metrics = state
+        .hits
+        .navigator_scroll_metrics
+        .expect("overflowing tree reports scroll metrics");
+    assert_eq!(track.width, 1);
+    assert_eq!(metrics.viewport_rows, usize::from(track.height));
+    assert_eq!(metrics.max_offset_from_bottom, 11 - metrics.viewport_rows);
+    let tree_row = state.hits.navigator_rows[0].0;
+    assert_eq!(tree_row.right(), track.x);
+
+    let scroll_of = |state: &ClientShellState| match state.overlay.as_ref() {
+        Some(ClientShellOverlay::Navigator(navigator)) => navigator.scroll,
+        _ => panic!("expected navigator"),
+    };
+    let click = navigator_mouse(
+        &mut state,
+        MouseEventKind::Down(MouseButton::Left),
+        track.x,
+        track.bottom() - 1,
+    );
+    assert!(click.repaint);
+    assert!(state.overlay.is_some());
+    assert_eq!(scroll_of(&state), metrics.max_offset_from_bottom);
+    state.compose(106, 12).expect("navigator frame");
+    assert_eq!(state.hits.navigator_rows.len(), metrics.viewport_rows);
+    assert!(matches!(
+        &state.hits.navigator_rows.last().expect("visible rows").1,
+        ClientNavigatorTarget::Pane { pane_id, .. } if pane_id == "pane_last"
+    ));
+
+    let thumb = crate::ui::scrollbar_thumb(
+        state.hits.navigator_scroll_metrics.expect("scroll metrics"),
+        track,
+    )
+    .expect("thumb");
+    navigator_mouse(
+        &mut state,
+        MouseEventKind::Down(MouseButton::Left),
+        track.x,
+        thumb.top,
+    );
+    assert!(matches!(
+        state.chrome_drag,
+        Some(ClientChromeDrag::NavigatorScrollbar { .. })
+    ));
+    navigator_mouse(
+        &mut state,
+        MouseEventKind::Drag(MouseButton::Left),
+        track.x,
+        track.y,
+    );
+    assert_eq!(scroll_of(&state), 0);
+    navigator_mouse(
+        &mut state,
+        MouseEventKind::Up(MouseButton::Left),
+        track.x,
+        track.y,
+    );
+    assert!(state.chrome_drag.is_none());
+
+    state.compose(106, 12).expect("navigator frame");
+    navigator_mouse(
+        &mut state,
+        MouseEventKind::ScrollDown,
+        tree_row.x + 2,
+        tree_row.y,
+    );
+    assert_eq!(scroll_of(&state), 3);
+    state.compose(106, 12).expect("navigator frame");
+    assert!(state.hits.navigator_rows.iter().any(|(_, target)| matches!(
+        target,
+        ClientNavigatorTarget::Pane { pane_id, .. } if pane_id == "pane_notes"
+    )));
+    assert_eq!(
+        navigator_selected_pane(&state).as_deref(),
+        Some("pane_shell")
+    );
 }
 
 #[test]

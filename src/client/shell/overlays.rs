@@ -15,6 +15,8 @@ pub(crate) struct OverlayRender {
     pub(crate) navigator_search: Rect,
     pub(crate) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
     pub(crate) navigator_preview: Rect,
+    pub(crate) navigator_scrollbar: Rect,
+    pub(crate) navigator_scroll_metrics: Option<crate::pane::ScrollMetrics>,
     pub(crate) worktree_search: Rect,
     pub(crate) worktree_rows: Vec<(Rect, usize)>,
     pub(crate) help_popup: Rect,
@@ -874,14 +876,29 @@ fn render_navigator_overlay(
         &"─".repeat(i.width as usize),
         Style::default().fg(p.surface1).bg(p.panel_bg),
     );
-    let body = g.tree;
     let selected = super::aggregate_navigation::navigator_selected_index(&rows, n).unwrap_or(0);
-    let max = rows.len().saturating_sub(body.height as usize);
+    let max = rows.len().saturating_sub(g.tree.height as usize);
     let scroll = n
         .scroll
-        .max(selected.saturating_sub(body.height.saturating_sub(1) as usize))
+        .max(selected.saturating_sub(g.tree.height.saturating_sub(1) as usize))
         .min(selected)
         .min(max);
+    let scrollbar =
+        (max > 0).then(|| Rect::new(g.tree.right().saturating_sub(1), g.tree.y, 1, g.tree.height));
+    let body = match scrollbar {
+        Some(_) => Rect::new(
+            g.tree.x,
+            g.tree.y,
+            g.tree.width.saturating_sub(1),
+            g.tree.height,
+        ),
+        None => g.tree,
+    };
+    let scroll_metrics = crate::pane::ScrollMetrics {
+        offset_from_bottom: max.saturating_sub(scroll),
+        max_offset_from_bottom: max,
+        viewport_rows: usize::from(g.tree.height),
+    };
     let following_siblings = navigator_following_siblings(&rows);
     let mut ancestor_siblings = Vec::new();
     let federated = endpoints.len() > 1;
@@ -1020,6 +1037,9 @@ fn render_navigator_overlay(
             put_right_text(b, meta, rect.y, &r.meta, st)
         }
     }
+    if let Some(track) = scrollbar {
+        crate::ui::render_scrollbar_buffer(b, scroll_metrics, track, p.overlay0, p.overlay1, "▐");
+    }
     if let Some(preview) = g.preview {
         for y in preview.y..preview.bottom() {
             put_text(
@@ -1052,7 +1072,7 @@ fn render_navigator_overlay(
         if n.search_focused {
             " search type · move ↑↓ · open enter · tree tab · agents alt+a · filter alt+b/w/i/d · preview pgup/pgdn · clear/close esc"
         } else {
-            " move j/k · expand space · agents a · filter b/w/i/d · search tab · path p · new ^o · preview pgup/pgdn · open enter · clear/close esc"
+            " move j/k · workspace h/l · expand space · agents a · filter b/w/i/d · search tab · path p · new ^o · preview pgup/pgdn · open enter · clear/close esc"
         },
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
@@ -1065,6 +1085,8 @@ fn render_navigator_overlay(
         navigator_search: Rect::new(i.x, i.y, i.width, 1),
         navigator_rows: row_hits,
         navigator_preview: g.preview.unwrap_or_default(),
+        navigator_scrollbar: scrollbar.unwrap_or_default(),
+        navigator_scroll_metrics: scrollbar.is_some().then_some(scroll_metrics),
         worktree_search: Rect::default(),
         worktree_rows: Vec::new(),
         cursor,

@@ -507,11 +507,30 @@ fn flat_query_rows(
                     if federated {
                         breadcrumb = format!("{} › {breadcrumb}", endpoint.label);
                     }
-                    let own = crate::fuzzy::fuzzy_score(query, &label)
+                    let own_sources = [Some(label.as_str()), Some(cwd.as_str())]
                         .into_iter()
-                        .chain(crate::fuzzy::fuzzy_score(query, &cwd))
+                        .chain(agent.into_iter().flat_map(|agent| {
+                            [
+                                agent.agent.as_deref(),
+                                agent.display_agent.as_deref(),
+                                agent.title.as_deref(),
+                                agent.terminal_title_stripped.as_deref(),
+                            ]
+                        }))
+                        .chain([Some(pane.pane_id.as_str())])
+                        .flatten();
+                    let own = own_sources
+                        .filter_map(|source| crate::fuzzy::fuzzy_score(query, source))
                         .max();
-                    let crumb = crate::fuzzy::fuzzy_score(query, &breadcrumb);
+                    let crumb = crate::fuzzy::fuzzy_score(query, &breadcrumb)
+                        .into_iter()
+                        .chain(
+                            workspace
+                                .branch
+                                .as_deref()
+                                .and_then(|branch| crate::fuzzy::fuzzy_score(query, branch)),
+                        )
+                        .max();
                     let Some(score) = own.or(crumb) else {
                         continue;
                     };

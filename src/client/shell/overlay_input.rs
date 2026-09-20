@@ -235,6 +235,65 @@ impl ClientShellState {
         navigator.selected = Some(rows[next].target.clone());
     }
 
+    /// Render clamps `scroll` so the selection stays visible, so the selection
+    /// has to follow the viewport or the list would snap back on the next frame.
+    pub(super) fn scroll_navigator_to(&mut self, scroll: usize, viewport_rows: usize) {
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
+            return;
+        };
+        let rows =
+            render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
+        let viewport_rows = viewport_rows.max(1);
+        navigator.scroll = scroll.min(rows.len().saturating_sub(viewport_rows));
+        let selected =
+            super::aggregate_navigation::navigator_selected_index(&rows, navigator).unwrap_or(0);
+        let selected = selected.clamp(navigator.scroll, navigator.scroll + viewport_rows - 1);
+        navigator.selected = rows.get(selected).map(|row| row.target.clone());
+    }
+
+    pub(super) fn move_navigator_workspace(&mut self, forward: bool) {
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
+            return;
+        };
+        let rows =
+            render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
+        let Some(selected) =
+            super::aggregate_navigation::navigator_selected_index(&rows, navigator)
+        else {
+            return;
+        };
+        let is_workspace =
+            |index: usize| matches!(rows[index].target, ClientNavigatorTarget::Workspace { .. });
+        let section = rows[..=selected].iter().rposition(|row| {
+            matches!(
+                row.target,
+                ClientNavigatorTarget::Workspace { .. } | ClientNavigatorTarget::Machine { .. }
+            )
+        });
+        let destination = if forward {
+            (section.map_or(0, |section| section + 1)..rows.len())
+                .find(|&index| is_workspace(index))
+        } else {
+            (0..section.unwrap_or(0))
+                .rev()
+                .find(|&index| is_workspace(index))
+        };
+        let Some(workspace) = destination else {
+            return;
+        };
+        let target = rows[workspace + 1..]
+            .iter()
+            .take_while(|row| {
+                !matches!(
+                    row.target,
+                    ClientNavigatorTarget::Workspace { .. } | ClientNavigatorTarget::Machine { .. }
+                )
+            })
+            .find(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+            .unwrap_or(&rows[workspace]);
+        navigator.selected = Some(target.target.clone());
+    }
+
     pub(super) fn reset_navigator_selection(&mut self) {
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_ref() else {
             return;
@@ -852,6 +911,15 @@ impl ClientShellState {
                         return;
                     }
                 }
+                return;
+            }
+            if matches!(
+                code,
+                KeyCode::Left | KeyCode::Right | KeyCode::Char('h' | 'l')
+            ) && plain
+            {
+                self.move_navigator_workspace(matches!(code, KeyCode::Right | KeyCode::Char('l')));
+                outcome.repaint = true;
                 return;
             }
             if code == KeyCode::Backspace && plain {

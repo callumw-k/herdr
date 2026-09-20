@@ -1032,6 +1032,22 @@ impl ClientShellState {
                     }
                     return;
                 }
+                Some(ClientChromeDrag::NavigatorScrollbar { grab_row_offset }) => {
+                    if let Some(metrics) = self.hits.navigator_scroll_metrics {
+                        let offset = crate::ui::scrollbar_offset_from_drag_row(
+                            metrics,
+                            self.hits.navigator_scrollbar,
+                            mouse.row,
+                            *grab_row_offset,
+                        );
+                        self.scroll_navigator_to(
+                            metrics.max_offset_from_bottom.saturating_sub(offset),
+                            metrics.viewport_rows,
+                        );
+                        outcome.repaint = true;
+                    }
+                    return;
+                }
                 Some(ClientChromeDrag::HelpScrollbar { grab_row_offset }) => {
                     if let (Some(metrics), Some(ClientShellOverlay::Help(help))) =
                         (self.hits.help_scroll_metrics, self.overlay.as_mut())
@@ -1317,6 +1333,7 @@ impl ClientShellState {
                     ClientChromeDrag::WorkspaceScrollbar { .. }
                     | ClientChromeDrag::AgentScrollbar { .. }
                     | ClientChromeDrag::HelpScrollbar { .. }
+                    | ClientChromeDrag::NavigatorScrollbar { .. }
                     | ClientChromeDrag::ProductAnnouncementScrollbar { .. }
                     | ClientChromeDrag::ReleaseNotesScrollbar { .. } => {}
                 }
@@ -1613,7 +1630,29 @@ impl ClientShellState {
                     }
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
-                    if super::contains(self.hits.navigator_search, point) {
+                    if super::contains(self.hits.navigator_scrollbar, point) {
+                        if let Some(metrics) = self.hits.navigator_scroll_metrics {
+                            if let Some(grab_row_offset) = crate::ui::scrollbar_thumb_grab_offset(
+                                metrics,
+                                self.hits.navigator_scrollbar,
+                                mouse.row,
+                            ) {
+                                self.chrome_drag =
+                                    Some(ClientChromeDrag::NavigatorScrollbar { grab_row_offset });
+                            } else {
+                                let offset = crate::ui::scrollbar_offset_from_row(
+                                    metrics,
+                                    self.hits.navigator_scrollbar,
+                                    mouse.row,
+                                );
+                                self.scroll_navigator_to(
+                                    metrics.max_offset_from_bottom.saturating_sub(offset),
+                                    metrics.viewport_rows,
+                                );
+                                outcome.repaint = true;
+                            }
+                        }
+                    } else if super::contains(self.hits.navigator_search, point) {
                         if let Some(ClientShellOverlay::Navigator(navigator)) =
                             self.overlay.as_mut()
                         {
@@ -1638,21 +1677,24 @@ impl ClientShellState {
                         outcome.repaint = true;
                     }
                 }
-                MouseEventKind::ScrollUp => {
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                    let up = mouse.kind == MouseEventKind::ScrollUp;
                     if super::contains(self.hits.navigator_preview, point) {
                         let lines = NAVIGATOR_PREVIEW_WHEEL_LINES as isize;
-                        self.scroll_navigator_preview(lines, outcome);
-                    } else {
-                        self.move_navigator_selection(-3);
+                        self.scroll_navigator_preview(if up { lines } else { -lines }, outcome);
+                    } else if let Some(metrics) = self.hits.navigator_scroll_metrics {
+                        let scroll = metrics
+                            .max_offset_from_bottom
+                            .saturating_sub(metrics.offset_from_bottom);
+                        let scroll = if up {
+                            scroll.saturating_sub(3)
+                        } else {
+                            scroll.saturating_add(3)
+                        };
+                        self.scroll_navigator_to(scroll, metrics.viewport_rows);
                         outcome.repaint = true;
-                    }
-                }
-                MouseEventKind::ScrollDown => {
-                    if super::contains(self.hits.navigator_preview, point) {
-                        let lines = NAVIGATOR_PREVIEW_WHEEL_LINES as isize;
-                        self.scroll_navigator_preview(-lines, outcome);
                     } else {
-                        self.move_navigator_selection(3);
+                        self.move_navigator_selection(if up { -3 } else { 3 });
                         outcome.repaint = true;
                     }
                 }
