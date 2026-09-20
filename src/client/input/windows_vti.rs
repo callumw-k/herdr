@@ -4,6 +4,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(windows)]
 use std::sync::Arc;
+#[cfg(windows)]
+use std::{fs::OpenOptions, io::Write as _};
 
 #[cfg(windows)]
 use tokio::sync::mpsc;
@@ -55,6 +57,19 @@ pub(super) fn raw_console_reader_loop(
         }
     }
 }
+
+#[cfg(windows)]
+pub(super) fn trace_input_transport(value: &str) {
+    let Some(path) = std::env::var_os("HERDR_WINDOWS_INPUT_TRACE_FILE") else {
+        return;
+    };
+    if let Ok(mut output) = OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(output, "{value}");
+    }
+}
+
+#[cfg(not(windows))]
+fn trace_input_transport(_value: &str) {}
 
 #[cfg(windows)]
 fn process_platform_input_items(
@@ -774,6 +789,7 @@ impl WindowsInputMapper {
                     items.push(PlatformInputItem::Bytes(bytes))
                 }
                 WindowsWin32InputModeItem::Key { bytes, record } => {
+                    trace_input_transport("transport=win32-serialized");
                     let win32_paste_bytes =
                         self.paste_payload_bytes_for_key(record).unwrap_or_default();
                     if let Some(raw_bytes) = self.win32_input_mode_key_record_raw_bytes(record) {

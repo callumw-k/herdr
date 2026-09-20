@@ -348,7 +348,9 @@ fn set_windows_native_mouse_capture<W: io::Write>(
     sgr_pixels: bool,
     set_console_capture: impl FnOnce(bool) -> io::Result<()>,
 ) -> io::Result<()> {
-    crate::terminal_modes::clear_host_mouse_reporting(writer)?;
+    if !enabled {
+        crate::terminal_modes::clear_host_mouse_reporting(writer)?;
+    }
     set_console_capture(enabled)?;
     if enabled {
         crate::terminal_modes::set_windows_mouse_reporting(writer, true, sgr_pixels)?;
@@ -365,7 +367,9 @@ fn windows_uses_vt_mouse_reporting() -> bool {
 pub(super) fn set_mouse_capture(enabled: bool, sgr_pixels: bool) -> io::Result<()> {
     #[cfg(windows)]
     if windows_uses_vt_mouse_reporting() {
-        crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
+        if !enabled {
+            crate::terminal_modes::clear_host_mouse_reporting(&mut io::stdout())?;
+        }
         return crate::terminal_modes::set_windows_mouse_reporting(
             &mut io::stdout(),
             enabled,
@@ -501,7 +505,7 @@ fn pop_keyboard_enhancement_flags() -> io::Result<()> {
 pub(super) fn windows_win32_input_mode_enabled() -> bool {
     std::env::var("HERDR_WINDOWS_INPUT_PROBE")
         .map(|probe| probe.eq_ignore_ascii_case("win32"))
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 #[cfg(windows)]
@@ -642,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_native_mouse_capture_never_resets_encoding_after_native_enable() {
+    fn windows_native_mouse_capture_reasserts_final_encoding_after_native_enable() {
         let mut output = SharedOutput::default();
         for sgr_pixels in [false, false, true, false] {
             let start = output.0.borrow().len();
@@ -663,8 +667,8 @@ mod tests {
             let bytes = output.0.borrow();
             let before = std::str::from_utf8(&bytes[start..native_boundary.get()]).unwrap();
             let after = std::str::from_utf8(&bytes[native_boundary.get()..]).unwrap();
-            assert!(before.contains("\x1b[?1016l"));
-            for reset in ["\x1b[?1005l", "\x1b[?1006l", "\x1b[?1016l"] {
+            assert!(!before.contains("\x1b[?1016l"));
+            for reset in ["\x1b[?1005l", "\x1b[?1006l"] {
                 assert!(
                     !after.contains(reset),
                     "mouse format reset after native capture (sgr_pixels={sgr_pixels}): {after:?}"
@@ -672,22 +676,25 @@ mod tests {
             }
             assert!(after.contains("\x1b[?1003h\x1b[?1006h"));
             assert_eq!(after.contains("\x1b[?1016h"), sgr_pixels);
+            if !sgr_pixels {
+                assert!(after.starts_with("\x1b[?1016l"));
+            }
         }
     }
 
     #[test]
-    fn windows_native_mouse_capture_restores_reporting_after_reset() {
+    fn windows_native_mouse_capture_disable_clears_reporting() {
         let mut output = Vec::new();
 
-        set_windows_native_mouse_capture(&mut output, true, false, |enabled| {
-            assert!(enabled);
+        set_windows_native_mouse_capture(&mut output, false, false, |enabled| {
+            assert!(!enabled);
             Ok(())
         })
         .unwrap();
 
         assert_eq!(
             output,
-            b"\x1b[?1006l\x1b[?1016l\x1b[?1015l\x1b[?1005l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?9l\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h"
+            b"\x1b[?1006l\x1b[?1016l\x1b[?1015l\x1b[?1005l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?9l"
         );
     }
 }

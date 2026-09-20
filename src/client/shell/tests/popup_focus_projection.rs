@@ -891,6 +891,25 @@ fn pane_scrollbar_track_and_thumb_use_stable_endpoint_scroll_requests() {
 }
 
 #[test]
+fn clear_pane_binding_targets_the_focused_endpoint_pane() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let mut input = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::ClearPane),
+        &mut input,
+    );
+    assert!(input.requests.is_empty());
+    assert!(matches!(
+        &input.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(&request.method, crate::api::schema::Method::PaneClear(target)
+                if target.pane_id == "pane_1")
+    ));
+}
+
+#[test]
 fn edit_scrollback_binding_targets_the_focused_endpoint_pane() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
