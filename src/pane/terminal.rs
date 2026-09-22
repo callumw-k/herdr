@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
@@ -33,8 +32,7 @@ use super::{
     },
     kitty_keyboard::KittyKeyboardTracker,
     osc::{
-        contains_scrollback_clear_sequence, current_transient_default_color_owner,
-        maybe_filter_primary_screen_scrollback_clear, parse_reported_cwd,
+        current_transient_default_color_owner, parse_reported_cwd,
         restore_host_terminal_theme_if_needed, write_host_terminal_theme_selective,
         AgentOscStateTracker, DefaultColorEvent, DefaultColorEventTracker, DefaultColorOscTracker,
         DefaultColorQuery, DefaultColorTrackedEvent, OscDebugTracker,
@@ -1381,43 +1379,18 @@ impl GhosttyPaneTerminal {
         }
         let terminal_title_changed = core.agent_osc_state.observe(bytes);
 
-        let alternate_screen = core
-            .terminal
-            .active_screen()
-            .map(|screen| screen == crate::ghostty::ActiveScreen::Alternate)
-            .unwrap_or(false);
-        let filtered_bytes = if shell_pid > 0 {
-            let foreground_job = (!alternate_screen && contains_scrollback_clear_sequence(bytes))
-                .then(|| crate::detect::foreground_job(shell_pid))
-                .flatten();
-            maybe_filter_primary_screen_scrollback_clear(
-                bytes,
-                alternate_screen,
-                foreground_job.as_ref(),
-            )
-        } else {
-            Cow::Borrowed(bytes)
-        };
-        if filtered_bytes.len() != bytes.len() {
-            debug!(
-                pane = pane_id.raw(),
-                shell_pid, "ignored scrollback clear sequence for droid compatibility"
-            );
-        }
-
-        core.kitty_keyboard.observe(filtered_bytes.as_ref());
+        core.kitty_keyboard.observe(bytes);
         let mut terminal_responses = Vec::new();
-        core.default_color_event_tracker
-            .observe(filtered_bytes.as_ref());
-        core.c1_xtgettcap_tracker.observe(filtered_bytes.as_ref());
+        core.default_color_event_tracker.observe(bytes);
+        core.c1_xtgettcap_tracker.observe(bytes);
         let c1_xtgettcap_responses = core.c1_xtgettcap_tracker.drain_pending();
-        core.decscusr_tracker.observe(filtered_bytes.as_ref());
+        core.decscusr_tracker.observe(bytes);
         let in_progress_default_color_event = core.default_color_event_tracker.in_progress_event();
         let default_color_events = core.default_color_event_tracker.drain_pending();
         let write_started = crate::render_prof::timer();
         self.write_pty_bytes_with_ordered_responses(
             &mut core,
-            filtered_bytes.as_ref(),
+            bytes,
             default_color_events,
             in_progress_default_color_event,
             c1_xtgettcap_responses,
@@ -1435,8 +1408,8 @@ impl GhosttyPaneTerminal {
         windows_recent_fallback::update_after_write(&mut core);
         crate::render_prof::duration_since("pty.ghostty_write", write_started);
 
-        let has_kitty_graphics_sequence = crate::kitty_graphics::is_enabled()
-            && contains_kitty_graphics_sequence(filtered_bytes.as_ref());
+        let has_kitty_graphics_sequence =
+            crate::kitty_graphics::is_enabled() && contains_kitty_graphics_sequence(bytes);
         if has_kitty_graphics_sequence {
             debug!(pane = pane_id.raw(), "processed kitty graphics sequence");
         }

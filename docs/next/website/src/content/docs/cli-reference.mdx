@@ -206,6 +206,8 @@ herdr tab floats-toggle [--workspace <workspace_id>] [--toggle|--on|--off]
 
 A tab is another terminal layout inside a workspace. Without `--workspace`, `tab create` uses the active workspace and fails if none exists. Its JSON response exposes `.result.tab.tab_id` and `.result.root_pane.pane_id`. Closing a workspace's last tab also closes the workspace, matching the TUI close-tab action. If `confirm_close` is enabled and closing the tab would also close a whole worktree group, `tab close` returns a `confirmation_required` error instead.
 
+With `ui.confirm_close` enabled, the TUI asks for confirmation before closing a workspace's last tab from a keybinding or the tab menu. Ordinary CLI/API tab closes remain immediate.
+
 Workspace and tab creation, and pane splitting, leave focus unchanged by default. `--focus` selects the new layout; `--no-focus` states the default explicitly. Without `--cwd`, new terminals follow the configured `terminal.new_cwd` policy, which follows the source pane or workspace by default. Each `--env KEY=VALUE` adds or replaces that variable in the new root shell.
 
 `tab floats-toggle` shows or hides the active tab's floating pane layer without closing any float; `--toggle` is the default mode.
@@ -530,6 +532,17 @@ cells or percentages such as `80%`; omitted dimensions default to half the
 terminal size, and values smaller than the popup minimum are clamped. A popup
 is not a Herdr pane, does not export `HERDR_PANE_ID`, and does not participate
 in pane or agent APIs. Native non-terminal plugin panes are outside plugin v1.
+
+New panes identify as `TERM_PROGRAM=herdr`, with `TERM_PROGRAM_VERSION` set to
+Herdr's version. They keep `TERM=xterm-256color` and `COLORTERM=truecolor`.
+Herdr removes inherited outer-terminal session markers (iTerm2, WezTerm, Kitty,
+Windows Terminal, tmux, screen, and Zellij), iTerm2's `LC_TERMINAL` identity,
+and known Claude Code, Codex, and OMP session markers before applying explicit
+launch environment values. This prevents new panes from claiming the terminal
+or agent session that originally started the server. Ordinary environment
+variables, including API keys and display settings, remain inherited rather than
+being replaced with the attaching client's environment. SSH-agent forwarding has
+its own reconnect handling. Existing pane processes are unchanged by this cleanup.
 
 `--env KEY=VALUE` can be repeated on process-launching commands. It applies to the newly launched process only. Herdr-managed variables such as `HERDR_SOCKET_PATH`, `HERDR_BIN_PATH`, `HERDR_ENV`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID`, `HERDR_PANE_ID`, `HERDR_PLUGIN_ID`, `HERDR_PLUGIN_ROOT`, `HERDR_PLUGIN_CONFIG_DIR`, `HERDR_PLUGIN_STATE_DIR`, `HERDR_PLUGIN_ENTRYPOINT_ID`, and `HERDR_PLUGIN_CONTEXT_JSON` stay authoritative when they conflict with caller-provided env.
 

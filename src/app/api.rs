@@ -917,6 +917,13 @@ impl App {
                     result: ResponseResult::Ok {},
                 }
             }
+            Method::ServerSshAgentRegister(_) => {
+                return responses::encode_error(
+                    request.id,
+                    "connection_local_only",
+                    "SSH agent registration requires a persistent local JSON API connection",
+                );
+            }
             Method::ServerLiveHandoff(_) => {
                 let response = ErrorResponse {
                     id: request.id,

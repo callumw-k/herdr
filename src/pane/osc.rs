@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::path::PathBuf;
 
 use tracing::info;
@@ -719,68 +718,6 @@ pub(super) fn current_transient_default_color_owner(shell_pid: u32) -> Option<u3
     (!foreground_job_is_shell(&job, shell_pid)).then_some(job.process_group_id)
 }
 
-fn foreground_job_uses_droid_scrollback_compat(job: &crate::platform::ForegroundJob) -> bool {
-    job.processes.iter().any(|process| {
-        process.name.eq_ignore_ascii_case("droid")
-            || process
-                .argv0
-                .as_deref()
-                .is_some_and(|argv0| argv0.eq_ignore_ascii_case("droid"))
-            || process.cmdline.as_deref().is_some_and(|cmdline| {
-                cmdline.eq_ignore_ascii_case("droid")
-                    || cmdline.starts_with("droid ")
-                    || cmdline.to_ascii_lowercase().contains("/droid")
-            })
-    })
-}
-
-pub(super) fn contains_scrollback_clear_sequence(bytes: &[u8]) -> bool {
-    bytes.windows(4).any(|window| window == b"\x1b[3J")
-        || bytes.windows(5).any(|window| window == b"\x1b[?3J")
-}
-
-fn strip_scrollback_clear_sequences<'a>(bytes: &'a [u8]) -> Cow<'a, [u8]> {
-    if !contains_scrollback_clear_sequence(bytes) {
-        return Cow::Borrowed(bytes);
-    }
-
-    let mut filtered = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        let remaining = &bytes[index..];
-        if remaining.starts_with(b"\x1b[3J") {
-            index += 4;
-            continue;
-        }
-        if remaining.starts_with(b"\x1b[?3J") {
-            index += 5;
-            continue;
-        }
-        filtered.push(bytes[index]);
-        index += 1;
-    }
-
-    Cow::Owned(filtered)
-}
-
-pub(super) fn maybe_filter_primary_screen_scrollback_clear<'a>(
-    bytes: &'a [u8],
-    alternate_screen: bool,
-    foreground_job: Option<&crate::platform::ForegroundJob>,
-) -> Cow<'a, [u8]> {
-    // Droid redraws its primary-screen TUI with CSI 3 J, which erases pane
-    // scrollback inside herdr. Keep the hack scoped to Droid on the primary
-    // screen so normal terminal clear-history behavior still works elsewhere.
-    if alternate_screen
-        || !contains_scrollback_clear_sequence(bytes)
-        || !foreground_job.is_some_and(foreground_job_uses_droid_scrollback_compat)
-    {
-        return Cow::Borrowed(bytes);
-    }
-
-    strip_scrollback_clear_sequences(bytes)
-}
-
 #[cfg(target_os = "macos")]
 pub(super) fn should_restore_host_terminal_theme(
     owner_pgid: u32,
@@ -1415,81 +1352,6 @@ mod tests {
             tracked_default_color_events(tracker.drain_pending()),
             vec![DefaultColorEvent::Query(DefaultColorQuery::Background)]
         );
-    }
-
-    #[test]
-    fn droid_scrollback_compat_matches_process_name_and_cmdline() {
-        let name_only = crate::platform::ForegroundJob {
-            process_group_id: 42,
-            processes: vec![crate::platform::ForegroundProcess {
-                pid: 42,
-                name: "droid".to_string(),
-                argv0: None,
-                argv: Some(vec![
-                    "/opt/factory/droid".to_string(),
-                    "--resume".to_string(),
-                ]),
-                cmdline: Some("/opt/factory/droid --resume".to_string()),
-            }],
-        };
-        assert!(foreground_job_uses_droid_scrollback_compat(&name_only));
-
-        let cmdline_only = crate::platform::ForegroundJob {
-            process_group_id: 42,
-            processes: vec![crate::platform::ForegroundProcess {
-                pid: 42,
-                name: "bun".to_string(),
-                argv0: Some("bun".to_string()),
-                argv: Some(vec![
-                    "bun".to_string(),
-                    "/home/can/.local/bin/droid".to_string(),
-                    "--resume".to_string(),
-                ]),
-                cmdline: Some("/home/can/.local/bin/droid --resume".to_string()),
-            }],
-        };
-        assert!(foreground_job_uses_droid_scrollback_compat(&cmdline_only));
-
-        let shell = shell_job(7);
-        assert!(!foreground_job_uses_droid_scrollback_compat(&shell));
-    }
-
-    #[test]
-    fn strip_scrollback_clear_sequences_removes_ed3_only() {
-        let filtered = strip_scrollback_clear_sequences(b"a\x1b[3Jb\x1b[?3Jc\x1b[2Jd");
-        assert_eq!(filtered.as_ref(), b"abc\x1b[2Jd");
-    }
-
-    #[test]
-    fn primary_screen_droid_compat_ignores_scrollback_clear_only_for_droid() {
-        let droid_job = crate::platform::ForegroundJob {
-            process_group_id: 42,
-            processes: vec![crate::platform::ForegroundProcess {
-                pid: 42,
-                name: "droid".to_string(),
-                argv0: Some("droid".to_string()),
-                argv: Some(vec!["droid".to_string()]),
-                cmdline: Some("droid".to_string()),
-            }],
-        };
-
-        let filtered = maybe_filter_primary_screen_scrollback_clear(
-            b"\x1b[3J\x1b[2J",
-            false,
-            Some(&droid_job),
-        );
-        assert_eq!(filtered.as_ref(), b"\x1b[2J");
-
-        let shell = maybe_filter_primary_screen_scrollback_clear(
-            b"\x1b[3J\x1b[2J",
-            false,
-            Some(&shell_job(7)),
-        );
-        assert_eq!(shell.as_ref(), b"\x1b[3J\x1b[2J");
-
-        let alternate =
-            maybe_filter_primary_screen_scrollback_clear(b"\x1b[3J\x1b[2J", true, Some(&droid_job));
-        assert_eq!(alternate.as_ref(), b"\x1b[3J\x1b[2J");
     }
 
     #[test]

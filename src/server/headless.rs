@@ -51,7 +51,8 @@ use crate::server::client_accept::{
     accept_pending_client_connections, reject_pending_client_connections,
 };
 use crate::server::client_shell::{
-    render_pane_surface as render_client_shell_pane_surface, snapshot as client_shell_snapshot,
+    render_pane_surface as render_client_shell_pane_surface,
+    snapshot_with_completions as client_shell_snapshot,
 };
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{
@@ -250,6 +251,7 @@ pub struct HeadlessServer {
     pending_handoff_repaint_nudge: bool,
     /// Flag set by Ctrl+C or `server stop` signal.
     should_quit: Arc<AtomicBool>,
+    host_shutdown_requested: Arc<AtomicBool>,
     /// Channel for receiving server events from client connection threads.
     server_event_rx: mpsc::Receiver<ServerEvent>,
     /// Sender for server events (cloned for each client thread).
@@ -373,6 +375,7 @@ impl HeadlessServer {
             headless_size,
             effective_size: headless_size,
             shutting_down: false,
+            host_shutdown_requested: Arc::new(AtomicBool::new(false)),
             handoff_in_progress: false,
             #[cfg(unix)]
             pending_handoff_repaint_nudge: false,
@@ -398,6 +401,13 @@ impl HeadlessServer {
         let should_quit = self.should_quit.clone();
         let quit_notify = self.server_event_tx.clone();
         ctrlc_handler(should_quit, quit_notify);
+        let quit_notify = self.server_event_tx.clone();
+        let _host_shutdown = crate::platform::HostShutdownMonitor::start(
+            self.host_shutdown_requested.clone(),
+            move || {
+                let _ = quit_notify.try_send(ServerEvent::QuitSignal);
+            },
+        );
 
         let mut needs_render = true;
         let mut needs_full_render = true;
@@ -412,6 +422,13 @@ impl HeadlessServer {
             if self.shutting_down {
                 self.complete_shutdown().await?;
                 break;
+            }
+
+            // A host shutdown warning precedes process termination. Do not drain pane
+            // deaths here: logind's delay lock stays held until the final session save.
+            if self.host_shutdown_requested.load(Ordering::Acquire) {
+                self.initiate_shutdown();
+                continue;
             }
 
             // Check if we should start shutting down.
@@ -638,7 +655,9 @@ impl HeadlessServer {
                 }
             };
 
-            if self.should_quit.load(Ordering::Acquire) {
+            if self.should_quit.load(Ordering::Acquire)
+                || self.host_shutdown_requested.load(Ordering::Acquire)
+            {
                 match event {
                     LoopEvent::Internal(ev) => {
                         self.handle_internal_event_with_forwarding(ev);
@@ -2023,7 +2042,7 @@ impl HeadlessServer {
                 } else {
                     self.server_config_diagnostic_without_keybindings.as_deref()
                 };
-                let seed_snapshot = client_shell_snapshot(
+                let (seed_snapshot, completion_projection) = client_shell_snapshot(
                     &self.app,
                     &self.client_shell_boot_id,
                     connection.shell_projection_revision,
@@ -2055,8 +2074,18 @@ impl HeadlessServer {
                             return false;
                         }
                     };
+                let completion_message = match crate::protocol::endpoint::agent_completions_message(
+                    &completion_projection,
+                ) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        warn!(client_id, err = %err, "failed to encode agent completions");
+                        return false;
+                    }
+                };
                 connection.shell_location = Some(location);
                 connection.shell_snapshot = Some(seed_snapshot);
+                connection.shell_agent_completions = Some(completion_projection);
                 connection.shell_agent_view = agent_view;
                 self.clients.insert(client_id, connection);
                 if self.app.state.popup_pane.is_some() && self.popup_owner_tab_id.is_none() {
@@ -2065,6 +2094,7 @@ impl HeadlessServer {
                 if let Some(message) = projection_message {
                     self.send_to_client(client_id, message);
                 }
+                self.send_to_client(client_id, completion_message);
                 self.send_to_client(client_id, snapshot_message);
                 if surface_active {
                     self.foreground_client_id = Some(client_id);
@@ -3223,7 +3253,10 @@ impl HeadlessServer {
             };
 
             let new_state = terminal_after.state;
-            if new_state == *prev_state {
+            if new_state == *prev_state
+                || (new_state == crate::detect::AgentState::Idle
+                    && terminal_after.last_agent_completion_seq.is_none())
+            {
                 continue;
             }
 
@@ -3256,15 +3289,11 @@ impl HeadlessServer {
                 && self.app.state.toast_config.delay_seconds == 0
                 && should_forward_toast_to_clients(self.app.state.toast_config.delivery)
             {
-                if let Some(kind) =
-                    crate::app::actions::notification_toast_for_state_change_with_agent_labels(
-                        suppress_active_tab_notifications,
-                        *prev_state,
-                        new_state,
-                        prev_agent_label.as_deref(),
-                        agent_label.as_deref(),
-                    )
-                {
+                if let Some(kind) = crate::app::actions::notification_toast_for_state_change(
+                    suppress_active_tab_notifications,
+                    *prev_state,
+                    new_state,
+                ) {
                     if let Some(agent_label) = self
                         .app
                         .state
@@ -3301,15 +3330,11 @@ impl HeadlessServer {
             // Clients still decide locally whether they can execute the side effect.
             if self.app.state.toast_config.delay_seconds == 0 && self.app.state.sound.allows(agent)
             {
-                if let Some(sound) =
-                    crate::app::actions::notification_sound_for_state_change_with_agent_labels(
-                        suppress_active_tab_notifications,
-                        *prev_state,
-                        new_state,
-                        prev_agent_label.as_deref(),
-                        agent_label.as_deref(),
-                    )
-                {
+                if let Some(sound) = crate::app::actions::notification_sound_for_state_change(
+                    suppress_active_tab_notifications,
+                    *prev_state,
+                    new_state,
+                ) {
                     debug!(sound = ?sound, "forwarding sound notification from API request");
                     self.send_notify_to_foreground_client(
                         protocol::NotifyKind::Sound,

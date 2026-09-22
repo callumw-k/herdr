@@ -91,6 +91,10 @@ Use your profile's target. If you chose a named session when adding it, include 
 
 If authentication fails, check ordinary SSH first. For a passphrase-protected key, load it with `ssh-add` before starting Herdr's non-interactive background connections.
 
+For Git authentication or SSH signing inside remote panes, enable `ForwardAgent yes` for the trusted host in your SSH config. Herdr does not enable forwarding for you. When a session starts with an agent, updated Linux and macOS servers give panes a stable agent address, so existing and new panes can use the forwarded agent after `--remote` or a saved machine reconnects. A working inherited agent or earlier connection keeps priority over later clients and temporary setup checks; if it disappears, another live attachment can supply the agent.
+
+This requires an updated remote server, not just an updated local client. Local sessions started without an agent leave `SSH_AUTH_SOCK` alone. Panes created before the server update, or before an agent was first supplied to the session, keep their original environment and need to be recreated once to inherit the stable address. Older compatible servers and connections without agent forwarding can still attach normally.
+
 ## Settings and automation
 
 The UI uses the client's local theme, sidebar settings, and keybindings by default. Custom commands and plugins advertised by the selected server still run there. Herdr does not copy local command plugins, configuration, executables, or secrets onto SSH hosts. Missing remote commands fail visibly. Use the UI's `reload config` action after editing client settings; see [Configuration](/docs/configuration/#reload-config).

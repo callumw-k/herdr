@@ -344,6 +344,11 @@ fn direct_attach_initial_mouse_capture_follows_config() {
         "direct attach must enable host bracketed paste; output: {:?}",
         read_output(&output)
     );
+    assert!(
+        !read_output(&output).contains("\x1b[?u"),
+        "direct attach must not query rendered-client keyboard state; output: {:?}",
+        read_output(&output)
+    );
 
     let restore_watermark = output_len(&output);
     attach
@@ -1791,10 +1796,7 @@ fn client_receives_pane_surface_after_pane_output() {
 }
 
 #[test]
-fn pane_spawn_cwd_fallback_in_server() {
-    // Pane spawn failure cwd fallback in server context.
-    // This test verifies that the server can start even with invalid
-    // session data pointing to non-existent directories.
+fn unavailable_restored_pane_keeps_saved_cwd_in_server() {
     let _lock = test_lock();
     let base = unique_test_dir();
     let config_home = base.join("config");
@@ -1849,12 +1851,11 @@ fn pane_spawn_cwd_fallback_in_server() {
     assert_eq!(pane["result"]["pane"]["workspace_id"], workspace_id);
     let cwd = pane["result"]["pane"]["cwd"]
         .as_str()
-        .expect("restored pane should report fallback cwd");
-    assert_ne!(cwd, missing_cwd);
-    assert!(
-        std::path::Path::new(cwd).exists(),
-        "fallback cwd should exist: {cwd}"
-    );
+        .expect("restored pane should retain saved cwd");
+    assert_eq!(cwd, missing_cwd);
+    assert!(pane["result"]["pane"]["restore_error"]
+        .as_str()
+        .is_some_and(|error| error.contains("directory")));
 
     let client_shell = spawn_client_shell_process(&config_home, &runtime_dir, &api_socket);
     let output = spawn_pty_drain(
@@ -1867,14 +1868,47 @@ fn pane_spawn_cwd_fallback_in_server() {
     );
     assert!(
         wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
-            read_output(&output).contains("missing-cwd")
+            let screen = read_output(&output);
+            screen.contains("missing-cwd") && screen.contains("unavailable")
         }),
-        "client shell should render the restored session; output: {:?}",
+        "client shell should render the unavailable pane; output: {:?}",
         read_output(&output)
     );
-
+    drop(client_shell);
+    let stopped = send_json_request(
+        &api_socket,
+        r#"{"id":"stop","method":"server.stop","params":{}}"#,
+    );
+    assert!(stopped.get("error").is_none(), "{stopped}");
+    let mut spawned = spawned;
+    assert!(wait_until(
+        Duration::from_secs(10),
+        Duration::from_millis(20),
+        || { spawned.child.try_wait().unwrap().is_some() }
+    ));
     drop(spawned);
-    cleanup_spawned_herdr(client_shell, base);
+
+    fs::create_dir(missing_cwd).unwrap();
+    let restarted = spawn_server(&config_home, &runtime_dir, &api_socket, &client_socket);
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    let recovered = send_json_request(
+        &api_socket,
+        &format!(r#"{{"id":"recovered","method":"pane.get","params":{{"pane_id":"{pane_id}"}}}}"#),
+    );
+    assert_eq!(
+        std::fs::canonicalize(recovered["result"]["pane"]["cwd"].as_str().unwrap()).unwrap(),
+        std::fs::canonicalize(missing_cwd).unwrap()
+    );
+    assert!(recovered["result"]["pane"]["restore_error"].is_null());
+    let sent = send_json_request(
+        &api_socket,
+        &serde_json::json!({"id": "type", "method": "pane.send_text", "params": {
+            "pane_id": pane_id, "text": "printf 'RESTORE_RETRY_OK\\n'\n"
+        }})
+        .to_string(),
+    );
+    assert!(sent.get("error").is_none(), "{sent}");
+    cleanup_spawned_herdr(restarted, base);
 }
 
 #[test]

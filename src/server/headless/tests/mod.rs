@@ -9,12 +9,36 @@ mod surface_delta_tests;
 #[path = "surface_interest.rs"]
 mod surface_interest_tests;
 
-fn client_shell_snapshot(message: ServerMessage) -> Box<crate::protocol::ClientShellSnapshot> {
-    let ServerMessage::EndpointControl { kind, data } = message else {
-        panic!("expected client shell snapshot");
+fn client_shell_projection(
+    receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
+) -> (
+    Box<protocol::ClientShellSnapshot>,
+    protocol::endpoint::EndpointAgentCompletions,
+) {
+    let read_control = |expected| {
+        let ServerMessage::EndpointControl { kind, data } = read_server_message(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("endpoint projection"),
+        ) else {
+            panic!("expected endpoint control {expected}");
+        };
+        assert_eq!(kind, expected);
+        data
     };
-    assert_eq!(kind, crate::protocol::endpoint::ENDPOINT_SNAPSHOT_KIND);
-    Box::new(serde_json::from_str(&data).expect("decode client shell snapshot"))
+    let completions: protocol::endpoint::EndpointAgentCompletions =
+        serde_json::from_str(&read_control(protocol::endpoint::AGENT_COMPLETIONS_KIND)).unwrap();
+    let snapshot: Box<protocol::ClientShellSnapshot> =
+        serde_json::from_str(&read_control(protocol::endpoint::ENDPOINT_SNAPSHOT_KIND)).unwrap();
+    assert_eq!(completions.boot_id, snapshot.boot_id);
+    assert_eq!(completions.revision, snapshot.revision);
+    (snapshot, completions)
+}
+
+fn client_shell_snapshot(
+    receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
+) -> Box<protocol::ClientShellSnapshot> {
+    client_shell_projection(receiver).0
 }
 
 fn client_agent_view_projection(
@@ -96,6 +120,7 @@ fn test_headless_server_with_event_hub(event_hub: api::EventHub) -> HeadlessServ
         headless_size,
         effective_size: headless_size,
         shutting_down: false,
+        host_shutdown_requested: Arc::new(AtomicBool::new(false)),
         handoff_in_progress: false,
         #[cfg(unix)]
         pending_handoff_repaint_nudge: false,
@@ -714,6 +739,64 @@ async fn client_shell_attach_seeds_workspace() {
 }
 
 #[tokio::test]
+async fn completion_guard_endpoint_pairs_runtime_completions_with_snapshots() {
+    let mut server = test_headless_server();
+    let workspace = crate::workspace::Workspace::test_new("endpoint");
+    let pane_id = workspace.tabs[0].root_pane;
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    let (writer, control_rx, _render_rx) = test_client_writer();
+    server.handle_server_event(ServerEvent::ClientShellConnected {
+        client_id: 78,
+        surface_cols: 80,
+        surface_rows: 24,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        pixel_mouse: false,
+        direct_graphics: false,
+        endpoint_keybindings: false,
+        mouse_capture: false,
+        surface_active: false,
+        surface_reuse: false,
+        surface_delta: false,
+        writer,
+    });
+    let (_, initial) = client_shell_projection(&control_rx);
+    assert!(initial.completions.is_empty());
+    for first_state in [
+        crate::detect::AgentState::Working,
+        crate::detect::AgentState::Unknown,
+    ] {
+        for state in [first_state, crate::detect::AgentState::Idle] {
+            server.app.state.handle_app_event(AppEvent::StateChanged {
+                pane_id,
+                agent: Some(crate::detect::Agent::Pi),
+                state,
+                visible_blocker: false,
+                visible_working: state == crate::detect::AgentState::Working,
+                process_exited: false,
+                observed_at: Instant::now(),
+            });
+        }
+        server.render_and_stream();
+        let (snapshot, completions) = client_shell_projection(&control_rx);
+        assert_eq!(snapshot.agents.len(), 1);
+        let agent = &snapshot.agents[0];
+        let expected =
+            (first_state == crate::detect::AgentState::Working).then_some(agent.state_change_seq);
+        assert_eq!(
+            completions.completions.get(&agent.pane_id).copied(),
+            expected
+        );
+        assert_eq!(
+            server.app.session_snapshot().agents[0].completion_seq,
+            expected
+        );
+    }
+}
+
+#[tokio::test]
 async fn client_shell_endpoint_request_uses_the_selected_connection() {
     let mut server = test_headless_server();
     server.app.state.workspaces = vec![crate::workspace::Workspace::test_new("endpoint")];
@@ -738,7 +821,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
             writer,
         })
     );
-    let _initial_snapshot = control_rx.recv().expect("initial shell snapshot");
+    let _initial_snapshot = client_shell_snapshot(&control_rx);
     let boot_id = server.client_shell_boot_id.clone();
 
     assert!(
@@ -856,9 +939,7 @@ async fn client_shell_pairs_agent_view_set_replacement_and_clear_with_snapshots(
             writer,
         })
     );
-    let initial = client_shell_snapshot(read_server_message(
-        control_rx.recv().expect("initial snapshot"),
-    ));
+    let initial = client_shell_snapshot(&control_rx);
 
     let mut view = AgentViewSetParams {
         source: "example.views".into(),
@@ -874,9 +955,7 @@ async fn client_shell_pairs_agent_view_set_replacement_and_clear_with_snapshots(
     let set = client_agent_view_projection(read_server_message(
         control_rx.recv().expect("set projection"),
     ));
-    let set_snapshot = client_shell_snapshot(read_server_message(
-        control_rx.recv().expect("set snapshot"),
-    ));
+    let set_snapshot = client_shell_snapshot(&control_rx);
     assert!(set.revision > initial.revision);
     assert_eq!(set.revision, set_snapshot.revision);
     assert_eq!(
@@ -893,9 +972,7 @@ async fn client_shell_pairs_agent_view_set_replacement_and_clear_with_snapshots(
     let replacement = client_agent_view_projection(read_server_message(
         control_rx.recv().expect("replacement projection"),
     ));
-    let replacement_snapshot = client_shell_snapshot(read_server_message(
-        control_rx.recv().expect("replacement snapshot"),
-    ));
+    let replacement_snapshot = client_shell_snapshot(&control_rx);
     assert!(replacement.revision > set.revision);
     assert_eq!(replacement.revision, replacement_snapshot.revision);
     assert_eq!(
@@ -912,9 +989,7 @@ async fn client_shell_pairs_agent_view_set_replacement_and_clear_with_snapshots(
     let cleared = client_agent_view_projection(read_server_message(
         control_rx.recv().expect("clear projection"),
     ));
-    let cleared_snapshot = client_shell_snapshot(read_server_message(
-        control_rx.recv().expect("clear snapshot"),
-    ));
+    let cleared_snapshot = client_shell_snapshot(&control_rx);
     assert!(cleared.revision > replacement.revision);
     assert_eq!(cleared.revision, cleared_snapshot.revision);
     assert!(cleared.view.is_none());
@@ -966,9 +1041,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
             writer,
         })
     );
-    let snapshot = client_shell_snapshot(read_server_message(
-        control_rx.recv().expect("shell snapshot"),
-    ));
+    let snapshot = client_shell_snapshot(&control_rx);
     assert_eq!(snapshot.workspaces.len(), 1);
     assert_eq!(snapshot.workspaces[0].label, "shell-only-label");
     assert_eq!(
@@ -1601,9 +1674,7 @@ async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
             writer: local_writer,
         })
     );
-    let local_snapshot = client_shell_snapshot(read_server_message(
-        local_control.recv().expect("local shell snapshot"),
-    ));
+    let local_snapshot = client_shell_snapshot(&local_control);
     assert_eq!(
         local_snapshot.config_diagnostic.as_deref(),
         Some("theme warning")
@@ -1627,9 +1698,7 @@ async fn client_shell_config_diagnostics_follow_keybinding_ownership() {
             writer: endpoint_writer,
         })
     );
-    let endpoint_snapshot = client_shell_snapshot(read_server_message(
-        endpoint_control.recv().expect("endpoint shell snapshot"),
-    ));
+    let endpoint_snapshot = client_shell_snapshot(&endpoint_control);
     assert_eq!(
         endpoint_snapshot.config_diagnostic.as_deref(),
         Some("server keybinding warning\ntheme warning")
@@ -1660,12 +1729,8 @@ async fn client_shell_tab_focus_changes_only_the_source_connection() {
 
     let (first_control, _first_render) = connect_test_shell(&mut server, 7, 100, 30);
     let (second_control, _second_render) = connect_test_shell(&mut server, 8, 80, 24);
-    let first_initial = client_shell_snapshot(read_server_message(
-        first_control.recv().expect("first snapshot"),
-    ));
-    let second_initial = client_shell_snapshot(read_server_message(
-        second_control.recv().expect("second snapshot"),
-    ));
+    let first_initial = client_shell_snapshot(&first_control);
+    let second_initial = client_shell_snapshot(&second_control);
     assert_eq!(
         first_initial.focused_tab_id.as_deref(),
         Some(first_tab_id.as_str())
@@ -1701,9 +1766,7 @@ async fn client_shell_tab_focus_changes_only_the_source_connection() {
         first_control.try_recv().is_err(),
         "another shell must not receive a navigation replacement"
     );
-    let second_replacement = client_shell_snapshot(read_server_message(
-        second_control.recv().expect("second replacement snapshot"),
-    ));
+    let second_replacement = client_shell_snapshot(&second_control);
     assert_eq!(
         second_replacement.focused_tab_id.as_deref(),
         Some(second_tab_id.as_str())
@@ -2537,13 +2600,11 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
     let second_tab_id = server.app.public_tab_id(1, 0).unwrap();
 
     let (control_rx, render_rx) = connect_test_shell(&mut server, 9, 80, 23);
-    let _ = control_rx.recv().expect("initial snapshot");
+    let _ = client_shell_snapshot(&control_rx);
     assert!(server.focus_shell_client_on_tab(9, &second_tab_id));
     assert!(server.claim_shell_tab_geometry(9, false));
     server.render_and_stream();
-    let diverged = client_shell_snapshot(read_server_message(
-        control_rx.recv().expect("diverged snapshot"),
-    ));
+    let diverged = client_shell_snapshot(&control_rx);
     assert_eq!(
         diverged.focused_workspace_id.as_deref(),
         Some(server.app.public_workspace_id(1).as_str())
@@ -2588,9 +2649,7 @@ async fn public_agent_focus_replaces_a_diverged_client_shell_projection() {
     assert_eq!(location.focused_tab_id(), Some(first_tab_id.as_str()));
 
     server.render_and_stream();
-    let replacement = client_shell_snapshot(read_server_message(
-        control_rx.recv().expect("agent focus replacement snapshot"),
-    ));
+    let replacement = client_shell_snapshot(&control_rx);
     assert_eq!(
         replacement.focused_workspace_id.as_deref(),
         Some(first_workspace_id.as_str())
@@ -2633,10 +2692,7 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
             writer,
         })
     );
-    let initial_revision = client_shell_snapshot(read_server_message(
-        control_rx.recv().expect("initial snapshot"),
-    ))
-    .revision;
+    let initial_revision = client_shell_snapshot(&control_rx).revision;
 
     let (respond_to, _response_rx) = std::sync::mpsc::channel();
     server.handle_api_request_with_shutdown_check(crate::api::ApiRequestMessage {
@@ -2655,9 +2711,7 @@ async fn public_api_focus_replaces_every_client_shell_projection() {
     assert_eq!(server.app.state.active, Some(1));
     server.render_and_stream();
 
-    let replacement = client_shell_snapshot(read_server_message(
-        control_rx.recv().expect("replacement snapshot"),
-    ));
+    let replacement = client_shell_snapshot(&control_rx);
     assert!(replacement.revision > initial_revision);
     assert_eq!(
         replacement.focused_workspace_id.as_deref(),
@@ -2886,9 +2940,7 @@ async fn client_shell_streams_and_targets_popup_terminal_content() {
             writer,
         })
     );
-    let _snapshot = client_shell_snapshot(read_server_message(
-        control_rx.recv().expect("shell snapshot"),
-    ));
+    let _snapshot = client_shell_snapshot(&control_rx);
 
     server.render_and_stream();
     let ServerMessage::PaneSurface(surface) =
@@ -4330,6 +4382,37 @@ fn changed_git_refresh_requests_headless_render() {
     });
 
     assert!(changed);
+}
+
+#[tokio::test]
+async fn host_shutdown_preserves_panes_from_queued_and_selected_death_events() {
+    let mut server = test_headless_server();
+    let workspace = crate::workspace::Workspace::test_new("host-shutdown");
+    let pane_id = workspace.tabs[0].root_pane;
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    let event = || AppEvent::PaneDied {
+        pane_id,
+        exit_reason: crate::platform::ChildExitReason::Exited,
+    };
+    server.app.event_tx.try_send(event()).unwrap();
+    server
+        .host_shutdown_requested
+        .store(true, Ordering::Release);
+    assert_eq!(
+        server.drain_internal_events_with_forwarding_up_to(16),
+        (false, false)
+    );
+    assert!(!server.handle_internal_event_with_forwarding(event()));
+    assert!(server.app.find_pane(pane_id).is_some());
+    assert!(server.app.event_rx.try_recv().is_ok());
+    server
+        .host_shutdown_requested
+        .store(false, Ordering::Release);
+    assert!(server.handle_internal_event_with_forwarding(event()));
+    assert!(server.app.find_pane(pane_id).is_none());
+    shutdown_test_runtimes(&mut server);
 }
 
 #[tokio::test]
@@ -6843,6 +6926,225 @@ fn notification_show_api_includes_sound_in_semantic_event() {
     }
 }
 
+fn completion_guard_server(writer: ClientWriter) -> (HeadlessServer, crate::layout::PaneId) {
+    let mut server = test_headless_server();
+    server.app.state.workspaces = ["background", "active"]
+        .map(crate::workspace::Workspace::test_new)
+        .into();
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(1);
+    server.app.state.toast_config.delay_seconds = 0;
+    server.clients.insert(
+        1,
+        ClientConnection::new(
+            (80, 24),
+            Default::default(),
+            1,
+            RenderEncoding::SemanticFrame,
+            Some(writer),
+        ),
+    );
+    let pane_id = server.app.state.workspaces[0].tabs[0].root_pane;
+    (server, pane_id)
+}
+
+fn completion_guard_api_report(server: &mut HeadlessServer, method: api::schema::Method) {
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    server.handle_api_request_with_shutdown_check(api::ApiRequestMessage {
+        request: api::schema::Request {
+            id: "completion-probe".into(),
+            method,
+        },
+        respond_to,
+        response_write_complete: None,
+        stream_active: None,
+    });
+    let response = response_rx
+        .recv_timeout(Duration::from_millis(100))
+        .unwrap();
+    serde_json::from_str::<api::schema::SuccessResponse>(&response).expect("successful report");
+}
+
+fn completion_guard_notifications(
+    server: &mut HeadlessServer,
+    receiver: &std::sync::mpsc::Receiver<Vec<u8>>,
+) -> Vec<protocol::SemanticNotificationKind> {
+    server.send_to_client(
+        1,
+        ServerMessage::EndpointControl {
+            kind: "test.completion-barrier".into(),
+            data: String::new(),
+        },
+    );
+    let mut messages = Vec::new();
+    loop {
+        let message = read_server_message(
+            receiver
+                .recv_timeout(Duration::from_secs(1))
+                .expect("notification barrier"),
+        );
+        if matches!(&message, ServerMessage::EndpointControl { kind, .. } if kind == "test.completion-barrier")
+        {
+            return messages;
+        }
+        if let ServerMessage::SemanticNotification(notification) = message {
+            messages.push(notification.kind);
+        }
+    }
+}
+
+#[test]
+fn completion_guard_api_startup_blocker_respects_suppression() {
+    use protocol::SemanticNotificationKind::{Finished, NeedsAttention};
+
+    let (writer, control_rx, _render_rx) = test_client_writer();
+    let (mut server, pane_id) = completion_guard_server(writer);
+    server.handle_internal_event_with_forwarding(AppEvent::AgentProcessDetected {
+        pane_id,
+        agent: crate::detect::Agent::Pi,
+        observed_at: Instant::now(),
+    });
+    let public_pane_id = server.app.public_pane_id(0, pane_id).unwrap();
+    for (seq, state) in [
+        api::schema::PaneAgentState::Blocked,
+        api::schema::PaneAgentState::Idle,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        completion_guard_api_report(
+            &mut server,
+            api::schema::Method::PaneReportAgent(api::schema::PaneReportAgentParams {
+                pane_id: public_pane_id.clone(),
+                source: "custom:pi".into(),
+                agent: "pi".into(),
+                state,
+                message: None,
+                seq: Some(seq as u64 + 1),
+                agent_session_id: None,
+                agent_session_path: None,
+            }),
+        );
+    }
+    let notifications = completion_guard_notifications(&mut server, &control_rx);
+    assert!(notifications.contains(&NeedsAttention));
+    assert!(
+        !notifications.contains(&Finished),
+        "startup: {notifications:?}"
+    );
+}
+
+#[test]
+fn completion_guard_api_session_replacement_does_not_notify_finished() {
+    use crate::agent_resume::{AgentSessionRef, PersistedAgentSession};
+    use crate::detect::{Agent, AgentState};
+    use api::schema::{
+        Method, PaneAgentState, PaneReportAgentParams, PaneReportAgentSessionParams,
+    };
+    use protocol::SemanticNotificationKind::Finished;
+
+    for fallback_state in [
+        AgentState::Unknown,
+        AgentState::Working,
+        AgentState::Blocked,
+    ] {
+        for reason in ["new", "resume", "fork"] {
+            let (writer, control_rx, _render_rx) = test_client_writer();
+            let (mut server, pane_id) = completion_guard_server(writer);
+            let terminal_id = server.app.state.workspaces[0].panes[&pane_id]
+                .attached_terminal_id
+                .clone();
+            let terminal = server.app.state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_detected_state(Some(Agent::Pi), fallback_state);
+            let cwd = std::env::current_dir().unwrap();
+            let old_session =
+                AgentSessionRef::path(cwd.join("completion-old.jsonl").display().to_string())
+                    .unwrap();
+            let new_session = cwd.join("completion-new.jsonl").display().to_string();
+            terminal.set_persisted_agent_session(PersistedAgentSession {
+                source: "herdr:pi".into(),
+                agent: "pi".into(),
+                session_ref: old_session.clone(),
+            });
+            terminal
+                .set_hook_authority_with_session_ref(
+                    "herdr:pi".into(),
+                    "pi".into(),
+                    AgentState::Idle,
+                    None,
+                    Some(old_session),
+                    Some(10),
+                )
+                .expect("initial authority");
+            let public_pane_id = server.app.public_pane_id(0, pane_id).unwrap();
+            completion_guard_api_report(
+                &mut server,
+                Method::PaneReportAgentSession(PaneReportAgentSessionParams {
+                    pane_id: public_pane_id.clone(),
+                    source: "herdr:pi".into(),
+                    agent: "pi".into(),
+                    seq: Some(11),
+                    agent_session_id: None,
+                    agent_session_path: Some(new_session.clone()),
+                    session_start_source: Some(reason.into()),
+                }),
+            );
+            let mut report = PaneReportAgentParams {
+                pane_id: public_pane_id,
+                source: "herdr:pi".into(),
+                agent: "pi".into(),
+                state: PaneAgentState::Idle,
+                message: None,
+                seq: Some(12),
+                agent_session_id: None,
+                agent_session_path: Some(new_session.clone()),
+            };
+            completion_guard_api_report(&mut server, Method::PaneReportAgent(report.clone()));
+            let terminal = &server.app.state.terminals[&terminal_id];
+            assert_eq!(terminal.state, AgentState::Idle);
+            assert_eq!(
+                terminal
+                    .hook_authority
+                    .as_ref()
+                    .unwrap()
+                    .session_ref
+                    .as_ref()
+                    .unwrap()
+                    .value,
+                new_session
+            );
+            let notifications = completion_guard_notifications(&mut server, &control_rx);
+            assert!(
+                !notifications.contains(&Finished),
+                "{reason}: {notifications:?}"
+            );
+            assert!(server.app.state.workspaces[0].panes[&pane_id].seen);
+            for (seq, state, expected) in [
+                (13, PaneAgentState::Working, AgentState::Working),
+                (14, PaneAgentState::Idle, AgentState::Idle),
+            ] {
+                report.seq = Some(seq);
+                report.state = state;
+                completion_guard_api_report(&mut server, Method::PaneReportAgent(report.clone()));
+                let terminal = &server.app.state.terminals[&terminal_id];
+                assert_eq!(terminal.state, expected);
+                assert_eq!(
+                    terminal.last_agent_completion_seq.is_some(),
+                    expected == AgentState::Idle
+                );
+            }
+            let finished = completion_guard_notifications(&mut server, &control_rx)
+                .into_iter()
+                .filter(|kind| *kind == Finished)
+                .count();
+            assert_eq!(
+                finished, 1,
+                "the first real turn after {reason} must finish"
+            );
+        }
+    }
+}
+
 #[test]
 fn startup_idle_does_not_forward_completion() {
     let mut server = test_headless_server();
@@ -7089,7 +7391,7 @@ async fn client_shell_input_reaches_a_focused_float() {
     let float_id = server.app.public_pane_id(0, float).unwrap();
 
     let (control, _render) = connect_test_shell(&mut server, 31, 100, 30);
-    let snapshot = client_shell_snapshot(read_server_message(control.recv().expect("snapshot")));
+    let snapshot = client_shell_snapshot(&control);
     assert_eq!(
         snapshot.focused_pane_id.as_deref(),
         Some(float_id.as_str()),

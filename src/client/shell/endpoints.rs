@@ -108,6 +108,9 @@ impl ClientShellState {
     }
 
     pub(crate) fn retire_endpoint(&mut self, endpoint_id: &ClientEndpointId) {
+        if endpoint_id == &self.active_endpoint_id {
+            self.pending_workspace_highlight = None;
+        }
         self.retire_endpoint_notifications(endpoint_id);
         if let Some(endpoint) = self
             .endpoints
@@ -131,6 +134,9 @@ impl ClientShellState {
         endpoint_id: &ClientEndpointId,
         status: ClientEndpointStatus,
     ) {
+        if endpoint_id == &self.active_endpoint_id && status != ClientEndpointStatus::Online {
+            self.pending_workspace_highlight = None;
+        }
         if let Some(endpoint) = self
             .endpoints
             .iter_mut()
@@ -301,6 +307,23 @@ impl ClientShellState {
             .snapshot
             .as_deref()
             .map(|snapshot| (snapshot.boot_id.as_str(), snapshot.revision))
+    }
+
+    pub(crate) fn set_endpoint_agent_completions(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        projection: crate::protocol::endpoint::EndpointAgentCompletions,
+    ) {
+        if let Some(endpoint) = self
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        {
+            endpoint
+                .agent_presentation
+                .receive_completions(Some(generation), projection);
+        }
     }
 
     pub(crate) fn set_endpoint_agent_view_projection_for_generation(
@@ -540,7 +563,7 @@ impl ClientShellState {
         }
         self.endpoints[index]
             .agent_presentation
-            .project_snapshot(&mut snapshot);
+            .project_snapshot_for_generation(&mut snapshot, generation);
         let presented_surface = if acknowledge_surface && endpoint_id == &self.active_endpoint_id {
             self.pane_surface.as_ref()
         } else {

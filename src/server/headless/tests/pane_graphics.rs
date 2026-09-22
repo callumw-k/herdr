@@ -56,7 +56,8 @@ async fn client_shell_surface_sends_complete_placements_and_each_live_asset_once
 
 #[tokio::test]
 async fn client_shell_asset_delivery_is_bounded_to_the_current_live_scene() {
-    let (mut server, client_rx, pane_id) = retained_test_server(b"client shell graphics");
+    let (mut server, _control_rx, client_rx, pane_id) =
+        retained_test_server_with_control(b"client shell graphics");
     let client = server.clients.get_mut(&1).unwrap();
     client.mode = ClientConnectionMode::ClientShell;
     client.render_state =
@@ -92,7 +93,8 @@ async fn client_shell_asset_delivery_is_bounded_to_the_current_live_scene() {
 
 #[tokio::test]
 async fn first_kitty_image_updates_retained_surface_without_full_redraw() {
-    let (mut server, client_rx, pane_id) = retained_test_server(b"text before image");
+    let (mut server, _control_rx, client_rx, pane_id) =
+        retained_test_server_with_control(b"text before image");
     let client = server.clients.get_mut(&1).unwrap();
     client.mode = ClientConnectionMode::ClientShell;
     client.render_state =
@@ -183,7 +185,8 @@ async fn first_kitty_image_updates_retained_surface_without_full_redraw() {
 
 #[tokio::test]
 async fn retained_unicode_image_arrives_after_fragmented_upload_without_reupload() {
-    let (mut server, client_rx, pane_id) = retained_test_server(b"\x1b[?1049h");
+    let (mut server, _control_rx, client_rx, pane_id) =
+        retained_test_server_with_control(b"\x1b[?1049h");
     let client = server.clients.get_mut(&1).unwrap();
     client.mode = ClientConnectionMode::ClientShell;
     client.cell_size = crate::kitty_graphics::HostCellSize {
@@ -260,7 +263,8 @@ async fn render_scale_profile_retained_graphics() {
     for retained in [false, true] {
         for with_image in [false, true] {
             for count in [1, 15] {
-                let (mut server, client_rx, root) = retained_test_server(b"populated terminal\r\n");
+                let (mut server, _control_rx, client_rx, root) =
+                    retained_test_server_with_control(b"populated terminal\r\n");
                 let mut pane_ids = vec![root];
                 for index in 1..count {
                     let workspace = &mut server.app.state.workspaces[0];
@@ -336,8 +340,9 @@ async fn render_scale_profile_retained_graphics() {
 
 #[tokio::test]
 async fn client_shell_surface_projects_terminal_kitty_images_from_authoritative_runtime() {
-    let (mut server, client_rx, _pane_id) =
-        retained_test_server(b"\x1b_Ga=T,f=32,t=d,i=7,p=3,s=1,v=1,c=1,r=1,q=2;/wAA/w==\x1b\\");
+    let (mut server, _control_rx, client_rx, _pane_id) = retained_test_server_with_control(
+        b"\x1b_Ga=T,f=32,t=d,i=7,p=3,s=1,v=1,c=1,r=1,q=2;/wAA/w==\x1b\\",
+    );
     let client = server.clients.get_mut(&1).unwrap();
     client.mode = ClientConnectionMode::ClientShell;
     client.render_state =
@@ -366,7 +371,7 @@ async fn client_shell_surface_projects_terminal_kitty_images_from_authoritative_
 
 #[tokio::test]
 async fn client_shell_delivers_equal_pixels_for_distinct_terminal_image_ids() {
-    let (mut server, client_rx, _pane_id) = retained_test_server(
+    let (mut server, _control_rx, client_rx, _pane_id) = retained_test_server_with_control(
         b"\x1b_Ga=T,f=32,t=d,i=7,p=3,s=1,v=1,c=1,r=1,q=2;/wAA/w==\x1b\\\x1b_Ga=T,f=32,t=d,i=8,p=4,s=1,v=1,c=1,r=1,q=2;/wAA/w==\x1b\\",
     );
     let client = server.clients.get_mut(&1).unwrap();
@@ -406,7 +411,8 @@ async fn client_shell_delivers_equal_pixels_for_distinct_terminal_image_ids() {
 
 #[tokio::test]
 async fn full_client_shell_render_lane_does_not_commit_graphics_delivery() {
-    let (mut server, client_rx, pane_id) = retained_test_server(b"client shell graphics");
+    let (mut server, _control_rx, client_rx, pane_id) =
+        retained_test_server_with_control(b"client shell graphics");
     let client = server.clients.get_mut(&1).unwrap();
     client.mode = ClientConnectionMode::ClientShell;
     client.render_state =
@@ -975,7 +981,8 @@ fn resident_direct_stream_survives_non_direct_client_becoming_foreground() {
 #[cfg(unix)]
 #[tokio::test]
 async fn client_shell_direct_graphics_uploads_without_server_authored_coordinates() {
-    let (mut server, client_rx, pane_id) = retained_test_server(b"client shell direct");
+    let (mut server, _control_rx, client_rx, pane_id) =
+        retained_test_server_with_control(b"client shell direct");
     server.app.state.kitty_graphics_enabled = true;
     let client = server.clients.get_mut(&1).unwrap();
     client.mode = ClientConnectionMode::ClientShell;

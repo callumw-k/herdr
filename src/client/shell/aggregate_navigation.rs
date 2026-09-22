@@ -320,25 +320,43 @@ pub(super) fn navigator_rows(
         let endpoint_query_matches = !query.is_empty() && text(&endpoint.label);
         let mut endpoint_rows = Vec::new();
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
+            let agents = snapshot
+                .agents
+                .iter()
+                .map(|agent| (agent.pane_id.as_str(), agent))
+                .collect::<HashMap<_, _>>();
+            // Build endpoint-local indexes once. Walk each bucket in snapshot
+            // order so interleaved input and overlapping IDs on other endpoints
+            // retain their existing navigation order and targets.
+            let mut tabs_by_workspace = HashMap::new();
+            for tab in &snapshot.tabs {
+                tabs_by_workspace
+                    .entry(tab.workspace_id.as_str())
+                    .or_insert_with(Vec::new)
+                    .push(tab);
+            }
+            let mut panes_by_tab = HashMap::new();
+            for pane in &snapshot.panes {
+                panes_by_tab
+                    .entry(pane.tab_id.as_str())
+                    .or_insert_with(Vec::new)
+                    .push(pane);
+            }
             for workspace in &snapshot.workspaces {
                 let workspace_meta = workspace.branch.clone().unwrap_or_default();
                 let mut children = Vec::new();
-                for tab in snapshot
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.workspace_id == workspace.workspace_id)
-                {
+                let workspace_tabs = tabs_by_workspace
+                    .get(workspace.workspace_id.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                for tab in workspace_tabs {
+                    let tab_panes = panes_by_tab
+                        .get(tab.tab_id.as_str())
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
                     let mut panes = Vec::new();
-                    for (index, pane) in snapshot
-                        .panes
-                        .iter()
-                        .filter(|pane| pane.tab_id == tab.tab_id)
-                        .enumerate()
-                    {
-                        let agent = snapshot
-                            .agents
-                            .iter()
-                            .find(|agent| agent.pane_id == pane.pane_id);
+                    for (index, pane) in tab_panes.iter().enumerate() {
+                        let agent = agents.get(pane.pane_id.as_str()).copied();
                         if navigator.agents_only && !is_agent_pane(agent) {
                             continue;
                         }
@@ -383,14 +401,7 @@ pub(super) fn navigator_rows(
                         children.push(ClientNavigatorRow {
                             depth: 1 + depth_offset,
                             label: tab.label.clone(),
-                            meta: format!(
-                                "{} panes",
-                                snapshot
-                                    .panes
-                                    .iter()
-                                    .filter(|pane| pane.tab_id == tab.tab_id)
-                                    .count()
-                            ),
+                            meta: format!("{} panes", tab_panes.len()),
                             status: None,
                             stale,
                             current: false,
@@ -472,22 +483,37 @@ fn flat_query_rows(
             continue;
         };
         let stale = endpoint.status != ClientEndpointStatus::Online;
+        let agents = snapshot
+            .agents
+            .iter()
+            .map(|agent| (agent.pane_id.as_str(), agent))
+            .collect::<HashMap<_, _>>();
+        let mut tabs_by_workspace = HashMap::new();
+        for tab in &snapshot.tabs {
+            tabs_by_workspace
+                .entry(tab.workspace_id.as_str())
+                .or_insert_with(Vec::new)
+                .push(tab);
+        }
+        let mut panes_by_tab = HashMap::new();
+        for pane in &snapshot.panes {
+            panes_by_tab
+                .entry(pane.tab_id.as_str())
+                .or_insert_with(Vec::new)
+                .push(pane);
+        }
         for workspace in &snapshot.workspaces {
-            for tab in snapshot
-                .tabs
-                .iter()
-                .filter(|tab| tab.workspace_id == workspace.workspace_id)
-            {
-                for (index, pane) in snapshot
-                    .panes
-                    .iter()
-                    .filter(|pane| pane.tab_id == tab.tab_id)
-                    .enumerate()
-                {
-                    let agent = snapshot
-                        .agents
-                        .iter()
-                        .find(|agent| agent.pane_id == pane.pane_id);
+            let workspace_tabs = tabs_by_workspace
+                .get(workspace.workspace_id.as_str())
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            for tab in workspace_tabs {
+                let tab_panes = panes_by_tab
+                    .get(tab.tab_id.as_str())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                for (index, pane) in tab_panes.iter().enumerate() {
+                    let agent = agents.get(pane.pane_id.as_str()).copied();
                     if navigator.agents_only && !is_agent_pane(agent) {
                         continue;
                     }

@@ -667,6 +667,7 @@ impl ClientShellState {
     ) {
         use crate::input::{KeybindAction, KeybindDispatch, KeybindMatch};
 
+        self.pending_workspace_highlight = None;
         if key.code == KeyCode::Esc
             || crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
         {

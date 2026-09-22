@@ -5,6 +5,26 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
+fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
+    if palette.selection_bg == ratatui::style::Color::Reset {
+        palette.active_row_bg
+    } else {
+        palette.selection_bg
+    }
+}
+
+pub(in crate::client::shell) fn workspace_active_background(
+    palette: &Palette,
+    navigating: bool,
+) -> ratatui::style::Color {
+    // The fallback cursor shares the active-row color; only fill the cursor while navigating.
+    if navigating && palette.selection_bg == ratatui::style::Color::Reset {
+        palette.sidebar_bg
+    } else {
+        palette.active_row_bg
+    }
+}
+
 /// Sized to its contents so a short list does not strand the divider halfway down
 /// the column. `detail_area` still includes the bottom toggle row.
 pub(in crate::client::shell) fn collapsed_sidebar_sections(
@@ -349,18 +369,20 @@ pub(crate) fn render_sidebar(
         });
         let dragged = state.dragged_workspace_id == Some(workspace.workspace_id.as_str());
         if selected {
-            buffer.set_style(rect, Style::default().bg(palette.selection_bg));
+            buffer.set_style(
+                rect,
+                Style::default().bg(workspace_selection_background(palette)),
+            );
         } else if dragged {
             buffer.set_style(rect, Style::default().bg(palette.surface1));
         }
         render_workspace_rows(
             buffer,
             rect,
-            workspace,
             status,
             entry,
             rows,
-            true,
+            workspace.focused,
             selected,
             dragged,
             config,
@@ -755,11 +777,10 @@ pub(in crate::client::shell) fn render_status_ribbon(
 pub(in crate::client::shell) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
-    workspace: &ClientShellWorkspace,
     status: crate::api::schema::AgentStatus,
     entry: &WorkspaceEntry,
     rows: Vec<Vec<crate::ui::ResolvedToken>>,
-    endpoint_active: bool,
+    focused: bool,
     selected: bool,
     dragged: bool,
     config: &ClientShellConfig,
@@ -798,7 +819,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         } else {
             x = x.saturating_add(2);
         }
-        let highlighted = endpoint_active && workspace.focused || dragged;
+        let highlighted = focused || dragged;
         let workspace_style = Style::default()
             .fg(if highlighted {
                 palette.text
@@ -810,7 +831,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
             } else {
                 Modifier::empty()
             });
-        let secondary_style = Style::default().fg(if endpoint_active && workspace.focused {
+        let secondary_style = Style::default().fg(if focused {
             palette.mauve
         } else {
             palette.overlay0
@@ -835,7 +856,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
     }
 
     let background = if selected {
-        Some(palette.selection_bg)
+        Some(workspace_selection_background(palette))
     } else if dragged {
         Some(palette.surface1)
     } else {
@@ -856,11 +877,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         area.x,
         area.y,
         area.height,
-        workspace_ribbon(
-            palette,
-            selected || dragged,
-            endpoint_active && workspace.focused,
-        ),
+        workspace_ribbon(palette, selected || dragged, focused),
     );
 }
 

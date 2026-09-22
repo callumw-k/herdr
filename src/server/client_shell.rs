@@ -3,6 +3,7 @@ use ratatui::layout::Rect;
 use crate::app;
 use crate::protocol::{self, FrameData};
 
+#[cfg(test)]
 pub(super) fn snapshot(
     app: &app::App,
     boot_id: &str,
@@ -10,7 +11,29 @@ pub(super) fn snapshot(
     config_diagnostic: Option<&str>,
     location: Option<&crate::server::clients::ClientShellLocation>,
 ) -> protocol::ClientShellSnapshot {
+    snapshot_with_completions(app, boot_id, revision, config_diagnostic, location).0
+}
+
+pub(super) fn snapshot_with_completions(
+    app: &app::App,
+    boot_id: &str,
+    revision: u64,
+    config_diagnostic: Option<&str>,
+    location: Option<&crate::server::clients::ClientShellLocation>,
+) -> (
+    protocol::ClientShellSnapshot,
+    protocol::endpoint::EndpointAgentCompletions,
+) {
     let snapshot = app.session_snapshot();
+    let completions = protocol::endpoint::EndpointAgentCompletions {
+        boot_id: boot_id.to_owned(),
+        revision,
+        completions: snapshot
+            .agents
+            .iter()
+            .filter_map(|agent| agent.completion_seq.map(|seq| (agent.pane_id.clone(), seq)))
+            .collect(),
+    };
     let focused_workspace_id = location
         .and_then(|location| location.focused_workspace_id.clone())
         .or_else(|| snapshot.focused_workspace_id.clone());
@@ -221,7 +244,7 @@ pub(super) fn snapshot(
                 preview: notes.preview,
             });
 
-    protocol::ClientShellSnapshot {
+    let shell = protocol::ClientShellSnapshot {
         boot_id: boot_id.to_owned(),
         revision,
         config_diagnostic: config_diagnostic.map(str::to_owned),
@@ -245,7 +268,8 @@ pub(super) fn snapshot(
         panes,
         agents,
         commands: app.client_shell_command_manifest(),
-    }
+    };
+    (shell, completions)
 }
 
 pub(super) struct RenderedPaneSurface {

@@ -29,6 +29,15 @@ pub const HEALTH_PING_KIND: &str = "endpoint.health.ping.v1";
 pub const HEALTH_PONG_KIND: &str = "endpoint.health.pong.v1";
 pub const AGENT_VIEW_PROJECTION_CAPABILITY: &str = "agent_view_projection";
 pub const AGENT_VIEW_PROJECTION_KIND: &str = "endpoint.agent-view.v1";
+pub const AGENT_COMPLETIONS_CAPABILITY: &str = "agent_completions";
+pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointAgentCompletions {
+    pub boot_id: String,
+    pub revision: u64,
+    pub completions: std::collections::BTreeMap<String, u64>,
+}
 
 fn default_true() -> bool {
     true
@@ -101,6 +110,15 @@ pub fn snapshot_message(snapshot: &ClientShellSnapshot) -> serde_json::Result<Se
     })
 }
 
+pub fn agent_completions_message(
+    projection: &EndpointAgentCompletions,
+) -> serde_json::Result<ServerMessage> {
+    Ok(ServerMessage::EndpointControl {
+        kind: AGENT_COMPLETIONS_KIND.into(),
+        data: serde_json::to_string(projection)?,
+    })
+}
+
 pub fn agent_view_projection_message(
     boot_id: &str,
     revision: u64,
@@ -151,6 +169,7 @@ impl EndpointServerWelcome {
                 PRESENTATION_EFFECTS_FENCE_CAPABILITY.into(),
                 HEALTH_CHECK_CAPABILITY.into(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
+                AGENT_COMPLETIONS_CAPABILITY.into(),
             ],
             error: None,
         }
@@ -357,6 +376,7 @@ mod tests {
                 PRESENTATION_EFFECTS_FENCE_CAPABILITY.to_string(),
                 HEALTH_CHECK_CAPABILITY.to_string(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
+                AGENT_COMPLETIONS_CAPABILITY.to_string(),
             ]
         );
     }

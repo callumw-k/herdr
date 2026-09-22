@@ -79,10 +79,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
             writer,
         })
     );
-    assert!(matches!(
-        read_server_message(control_rx.recv().expect("metadata snapshot")),
-        ServerMessage::EndpointControl { .. }
-    ));
+    let _ = client_shell_snapshot(&control_rx);
     assert_eq!(server.foreground_client_id, None);
     assert_eq!(server.effective_size, original_size);
 
@@ -410,7 +407,7 @@ async fn presentation_sync_epoch_replays_modes_and_title() {
             writer,
         })
     );
-    let _ = control_rx.recv().expect("initial snapshot");
+    let _ = client_shell_snapshot(&control_rx);
     server.api_window_title = Some("target title".into());
     {
         let client = server.clients.get_mut(&client_id).unwrap();
@@ -526,11 +523,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             writer: source_writer,
         })
     );
-    let source_snapshot = client_shell_snapshot(read_server_message(
-        source_control
-            .recv()
-            .expect("real source metadata snapshot"),
-    ));
+    let source_snapshot = client_shell_snapshot(&source_control);
 
     let mut target_server = test_headless_server();
     let _target_input = install_focused_test_runtime(&mut target_server, b"remote target");
@@ -553,11 +546,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
             writer: target_writer,
         })
     );
-    let remote_snapshot = client_shell_snapshot(read_server_message(
-        target_control
-            .recv()
-            .expect("real target metadata snapshot"),
-    ));
+    let remote_snapshot = client_shell_snapshot(&target_control);
 
     let profile = SavedSshEndpoint {
         id: ProfileId::parse("0123456789abcdef0123456789abcdef").unwrap(),
@@ -685,9 +674,7 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     );
 
     target_server.render_and_stream();
-    let coherent_snapshot = client_shell_snapshot(read_server_message(
-        target_control.recv().expect("target replacement snapshot"),
-    ));
+    let coherent_snapshot = client_shell_snapshot(&target_control);
     let snapshot_progress = activation.receive_snapshot(&target_id, 7, &coherent_snapshot);
     shell.set_endpoint_snapshot(&target_id, coherent_snapshot);
     assert_eq!(

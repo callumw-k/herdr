@@ -96,7 +96,25 @@ fn apply_pane_terminal_env(cmd: &mut CommandBuilder) {
     // when the remote side lacks matching terminfo entries.
     cmd.env("TERM", PANE_TERM);
     cmd.env("COLORTERM", PANE_COLORTERM);
-    cmd.env_remove("WT_SESSION");
+    cmd.env("TERM_PROGRAM", "herdr");
+    cmd.env("TERM_PROGRAM_VERSION", crate::build_info::version());
+    // Host handles refer to the outer terminal, never to this pane.
+    for key in [
+        "ITERM_SESSION_ID",
+        "LC_TERMINAL",
+        "LC_TERMINAL_VERSION",
+        "WEZTERM_PANE",
+        "KITTY_WINDOW_ID",
+        "WT_SESSION",
+        "TMUX",
+        "TMUX_PANE",
+        "STY",
+        "ZELLIJ",
+        "ZELLIJ_SESSION_NAME",
+        "ZELLIJ_PANE_ID",
+    ] {
+        cmd.env_remove(key);
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -146,10 +164,20 @@ impl PaneLaunchEnv {
 }
 
 fn apply_pane_launch_env(cmd: &mut CommandBuilder, launch_env: &PaneLaunchEnv) {
-    cmd.env_remove("CODEX_THREAD_ID");
-    // OMP sets OMPCODE for shells it spawns. A pane launched from inside OMP
-    // must not inherit it or its root agent would look like a nested session.
-    cmd.env_remove("OMPCODE");
+    #[cfg(unix)]
+    crate::platform::ssh_agent::apply_pane_env(cmd);
+    // A new pane is not a child agent of the process that started the server.
+    // Explicit launch env below can opt back into an intentional child session.
+    for key in [
+        "CODEX_THREAD_ID",
+        "OMPCODE",
+        "CLAUDECODE",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_MESSAGING_TOKEN",
+    ] {
+        cmd.env_remove(key);
+    }
     for (key, value) in &launch_env.extra {
         cmd.env(key, value);
     }
@@ -1333,6 +1361,8 @@ pub struct PaneRuntime {
     current_size: Cell<(u16, u16, u32, u32)>,
     child_pid: Arc<AtomicU32>,
     reported_cwd: Arc<Mutex<Option<std::path::PathBuf>>>,
+    persistence_cwd: Mutex<Option<std::path::PathBuf>>,
+    cwd_process_exited: Arc<AtomicBool>,
     child_wait_completed: Option<Arc<AtomicBool>>,
     kitty_keyboard_flags: Arc<AtomicU16>,
     content_seq: Arc<AtomicU64>,
@@ -2382,6 +2412,7 @@ impl PaneRuntime {
         let compression = TerminalCompressionTask::spawn(pane_id, terminal.clone());
         let child_pid = Arc::new(AtomicU32::new(child_pid));
         let reported_cwd = Arc::new(Mutex::new(None));
+        let cwd_process_exited = Arc::new(AtomicBool::new(false));
         let kitty_keyboard_flags = Arc::new(AtomicU16::new(keyboard_protocol_flags));
         let content_seq = Arc::new(AtomicU64::new(0));
         let content_write_lock = Arc::new(Mutex::new(()));
@@ -2448,7 +2479,9 @@ impl PaneRuntime {
                 }
             });
             let exit_events = events.clone();
+            let cwd_process_exited = cwd_process_exited.clone();
             let on_reader_exit = Box::new(move || {
+                cwd_process_exited.store(true, Ordering::Release);
                 // Imported handoff panes have no child wait handle, so their exit cause is
                 // unknowable. Checkpoint conservatively; normal autosave settles clean exits.
                 let _ = rt.block_on(exit_events.send(AppEvent::PaneDied {
@@ -2484,6 +2517,8 @@ impl PaneRuntime {
             current_size: Cell::new((rows, cols, cell_width_px, cell_height_px)),
             child_pid,
             reported_cwd,
+            persistence_cwd: Mutex::new(None),
+            cwd_process_exited,
             child_wait_completed: None,
             kitty_keyboard_flags,
             content_seq,
@@ -3086,6 +3121,8 @@ impl PaneRuntime {
             current_size: Cell::new((rows, cols, 0, 0)),
             child_pid,
             reported_cwd,
+            persistence_cwd: Mutex::new(None),
+            cwd_process_exited: child_wait_completed.clone(),
             child_wait_completed: Some(child_wait_completed),
             kitty_keyboard_flags,
             content_seq,
@@ -3596,6 +3633,27 @@ impl PaneRuntime {
         crate::platform::process_cwd(pid)
     }
 
+    pub fn cwd_for_persistence(&self) -> Option<std::path::PathBuf> {
+        let pid = self.child_pid.load(Ordering::Acquire);
+        let exited = self.cwd_process_exited.load(Ordering::Acquire);
+        if let Some(cwd) = (!exited)
+            .then(|| crate::platform::process_cwd(pid))
+            .flatten()
+            .filter(|cwd| cwd.is_absolute())
+        {
+            // Persistence observations must not change OSC authority or follow-cwd behavior.
+            if let Ok(mut known) = self.persistence_cwd.lock() {
+                *known = Some(cwd.clone());
+            }
+            return Some(cwd);
+        }
+        self.persistence_cwd
+            .lock()
+            .ok()
+            .and_then(|cwd| cwd.clone())
+            .or_else(|| self.reported_cwd.lock().ok().and_then(|cwd| cwd.clone()))
+    }
+
     pub fn child_pid(&self) -> Option<u32> {
         let pid = self.child_pid.load(Ordering::Acquire);
         (pid > 0).then_some(pid)
@@ -3766,6 +3824,8 @@ impl PaneRuntime {
                 current_size: Cell::new((rows, cols, 0, 0)),
                 child_pid: Arc::new(AtomicU32::new(0)),
                 reported_cwd: Arc::new(Mutex::new(None)),
+                persistence_cwd: Mutex::new(None),
+                cwd_process_exited: Arc::new(AtomicBool::new(false)),
                 child_wait_completed: None,
                 kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
                 content_seq: Arc::new(AtomicU64::new(0)),
@@ -3786,6 +3846,7 @@ impl PaneRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
 
     #[tokio::test]
     async fn clear_pane_preserves_wrapped_input_and_unfinished_vt_sequence() {
@@ -3895,13 +3956,32 @@ mod tests {
     }
 
     #[test]
-    fn pane_launch_env_removes_outer_codex_thread_id() {
+    fn pane_launch_env_removes_outer_agent_identity() {
+        let keys = [
+            "CODEX_THREAD_ID",
+            "OMPCODE",
+            "CLAUDECODE",
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+        ];
         let mut cmd = CommandBuilder::new("shell");
-        cmd.env("CODEX_THREAD_ID", "outer-session");
+        for key in keys {
+            cmd.env(key, "outer-session");
+        }
+        cmd.env("ANTHROPIC_API_KEY", "fake-api-key");
+        cmd.env("DISPLAY", ":42");
 
         apply_pane_launch_env(&mut cmd, &PaneLaunchEnv::default());
 
-        assert!(cmd.get_env("CODEX_THREAD_ID").is_none());
+        for key in keys {
+            assert!(cmd.get_env(key).is_none(), "{key} must not leak into panes");
+        }
+        assert_eq!(
+            cmd.get_env("ANTHROPIC_API_KEY"),
+            Some(OsStr::new("fake-api-key"))
+        );
+        assert_eq!(cmd.get_env("DISPLAY"), Some(OsStr::new(":42")));
     }
 
     #[test]
@@ -3971,23 +4051,55 @@ mod tests {
     }
 
     #[test]
-    fn pane_launch_env_removes_outer_ompcode_marker() {
+    fn pane_terminal_identity_removes_outer_terminal_identity() {
+        let keys = [
+            "ITERM_SESSION_ID",
+            "LC_TERMINAL",
+            "LC_TERMINAL_VERSION",
+            "WEZTERM_PANE",
+            "KITTY_WINDOW_ID",
+            "WT_SESSION",
+            "TMUX",
+            "TMUX_PANE",
+            "STY",
+            "ZELLIJ",
+            "ZELLIJ_SESSION_NAME",
+            "ZELLIJ_PANE_ID",
+        ];
         let mut cmd = CommandBuilder::new("shell");
-        cmd.env("OMPCODE", "1");
-
-        apply_pane_launch_env(&mut cmd, &PaneLaunchEnv::default());
-
-        assert!(cmd.get_env("OMPCODE").is_none());
-    }
-
-    #[test]
-    fn pane_terminal_identity_removes_outer_windows_terminal_session() {
-        let mut cmd = CommandBuilder::new("shell");
-        cmd.env("WT_SESSION", "outer-session");
+        for key in keys {
+            cmd.env(key, "outer-session");
+        }
+        cmd.env("TERM_PROGRAM", "iTerm.app");
+        cmd.env("TERM_PROGRAM_VERSION", "outer-version");
 
         apply_pane_terminal_env(&mut cmd);
 
-        assert!(cmd.get_env("WT_SESSION").is_none());
+        for key in keys {
+            assert!(cmd.get_env(key).is_none(), "{key} must not leak into panes");
+        }
+        assert_eq!(cmd.get_env("TERM_PROGRAM"), Some(OsStr::new("herdr")));
+        assert_eq!(
+            cmd.get_env("TERM_PROGRAM_VERSION"),
+            Some(OsStr::new(&crate::build_info::version()))
+        );
+    }
+
+    #[test]
+    fn pane_launch_env_allows_explicit_session_identity() {
+        let extra = vec![
+            ("CLAUDE_CODE_CHILD_SESSION".into(), "1".into()),
+            ("CLAUDE_CODE_SESSION_ID".into(), "intentional-child".into()),
+            ("CLAUDE_CODE_MESSAGING_TOKEN".into(), "fake-token".into()),
+            ("ITERM_SESSION_ID".into(), "intentional-host".into()),
+        ];
+        let mut cmd = CommandBuilder::new("shell");
+        apply_pane_terminal_env(&mut cmd);
+        apply_pane_launch_env(&mut cmd, &PaneLaunchEnv::from_extra(extra.clone()));
+
+        for (key, value) in extra {
+            assert_eq!(cmd.get_env(key), Some(OsStr::new(&value)));
+        }
     }
 
     #[tokio::test]
@@ -4801,6 +4913,23 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn ended_handoff_keeps_persistence_cwd_when_pid_is_reused() {
+        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        assert!(runtime.child_wait_completed.is_none());
+        let saved = std::env::temp_dir().join("saved-handoff-cwd");
+        *runtime.persistence_cwd.lock().unwrap() = Some(saved.clone());
+        // A different live process now owns the imported shell's numeric PID.
+        runtime
+            .child_pid
+            .store(std::process::id(), Ordering::Release);
+        runtime.cwd_process_exited.store(true, Ordering::Release);
+        assert_eq!(runtime.cwd_for_persistence(), Some(saved));
+        *runtime.persistence_cwd.lock().unwrap() = None;
+        assert_eq!(runtime.cwd_for_persistence(), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn handoff_runtime_state_captures_terminal_input_and_title_state() {
         let runtime = PaneRuntime::test_with_screen_bytes(
             80,
@@ -4956,6 +5085,8 @@ mod tests {
         ));
         let compression = TerminalCompressionTask::spawn(pane_id, terminal.clone());
         let runtime = PaneRuntime {
+            cwd_process_exited: Arc::new(AtomicBool::new(false)),
+            persistence_cwd: Mutex::new(None),
             pane_id,
             terminal,
             io: PaneRuntimeIo::TestChannel {
@@ -4993,6 +5124,8 @@ mod tests {
         ));
         let compression = TerminalCompressionTask::spawn(pane_id, terminal.clone());
         let runtime = PaneRuntime {
+            cwd_process_exited: Arc::new(AtomicBool::new(false)),
+            persistence_cwd: Mutex::new(None),
             pane_id,
             terminal,
             io: PaneRuntimeIo::TestChannel {
