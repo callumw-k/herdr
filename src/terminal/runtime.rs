@@ -352,6 +352,10 @@ impl TerminalRuntime {
         self.0.synchronized_output_active()
     }
 
+    pub(crate) fn synchronized_output_state(&self) -> (bool, u64) {
+        self.0.synchronized_output_state()
+    }
+
     pub fn visible_text(&self) -> String {
         self.0.visible_text()
     }
@@ -589,6 +593,11 @@ impl TerminalRuntime {
 
 #[cfg(test)]
 impl TerminalRuntime {
+    #[cfg(unix)]
+    pub(crate) fn test_enable_kitty_source_forwarding(&self) {
+        self.0.test_enable_kitty_source_forwarding();
+    }
+
     pub(crate) fn test_contend_during_dirty_collection(
         &self,
         bytes: Vec<u8>,

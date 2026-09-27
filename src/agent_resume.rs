@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 const MAX_SESSION_ID_LEN: usize = 512;
 const MAX_SESSION_PATH_LEN: usize = 4096;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSessionRef {
     pub kind: AgentSessionRefKind,
     pub value: String,

@@ -279,6 +279,13 @@ pub(super) struct RenderedPaneSurface {
     pub(super) popup: Option<Box<protocol::ClientShellPopupSurface>>,
     pub(super) graphics: protocol::SurfaceGraphicsScene,
     pub(super) graphics_delivery: crate::kitty_graphics::surface::DeliveryCache,
+    pub(super) graphics_sources: crate::kitty_graphics::surface::SourceFiles,
+}
+
+#[derive(Debug)]
+pub(super) enum SurfaceRenderDeferred {
+    Synchronized,
+    Changed,
 }
 
 pub(super) fn render_pane_surface(
@@ -290,7 +297,7 @@ pub(super) fn render_pane_surface(
     cell_size: crate::kitty_graphics::HostCellSize,
     graphics_delivery: &crate::kitty_graphics::surface::DeliveryCache,
     client_id: u64,
-) -> RenderedPaneSurface {
+) -> Result<RenderedPaneSurface, SurfaceRenderDeferred> {
     // A tab's tree is regenerated lazily under its arrangement. compute_view
     // only reflows the server's active tab, and runs after this frame, so the
     // client's own tab has to be reflowed here or the frame shows the layout
@@ -298,33 +305,53 @@ pub(super) fn render_pane_surface(
     if let Some(target) = target {
         crate::ui::reflow_tab_for_area(&mut app.state, target, area);
     }
-    let content_revisions_before = target
-        .and_then(|target| {
-            let workspace = app.state.workspaces.get(target.workspace_index)?;
-            let tab = workspace.tabs.get(target.tab_index)?;
-            Some(
-                tab.all_pane_ids()
-                    .filter_map(|pane_id| {
-                        app.state
-                            .runtime_for_pane_in_workspace(
-                                &app.terminal_runtimes,
-                                target.workspace_index,
-                                pane_id,
-                            )
-                            .map(|runtime| (pane_id, runtime.content_seq()))
-                    })
-                    .collect::<std::collections::HashMap<_, _>>(),
-            )
-        })
-        .unwrap_or_default();
+    let layout = crate::ui::compute_tab_surface_for(
+        &app.state,
+        &app.terminal_runtimes,
+        target,
+        area,
+        resize_panes,
+        cell_size,
+    );
+    let mut content_revisions_before = std::collections::HashMap::new();
+    if let Some(target) = target {
+        for pane in &layout.pane_infos {
+            if let Some(runtime) = app.state.runtime_for_pane_in_workspace(
+                &app.terminal_runtimes,
+                target.workspace_index,
+                pane.id,
+            ) {
+                let (synchronized, epoch) = runtime.synchronized_output_state();
+                if synchronized {
+                    return Err(SurfaceRenderDeferred::Synchronized);
+                }
+                let revision = runtime.content_seq();
+                content_revisions_before.insert(pane.id, (epoch, revision));
+            }
+        }
+    }
+    let popup_revision_before = if show_popup {
+        app.state
+            .popup_pane
+            .as_ref()
+            .and_then(|popup| app.terminal_runtimes.get(&popup.terminal_id))
+            .map(|runtime| {
+                let (synchronized, epoch) = runtime.synchronized_output_state();
+                if synchronized {
+                    return Err(SurfaceRenderDeferred::Synchronized);
+                }
+                Ok(epoch)
+            })
+            .transpose()?
+    } else {
+        None
+    };
     let (buffer, cursor, hyperlinks, layout) =
         crate::server::render_stream::render_tab_surface_virtual(
             &app.state,
             &app.terminal_runtimes,
-            target,
+            layout,
             area,
-            resize_panes,
-            cell_size,
         );
     let panes = target
         .map(|target| {
@@ -353,7 +380,9 @@ pub(super) fn render_pane_surface(
                         };
                         let content_revision = runtime.map_or(0, |runtime| {
                             let after = runtime.content_seq();
-                            if content_revisions_before.get(&pane.id).copied() == Some(after)
+                            if content_revisions_before
+                                .get(&pane.id)
+                                .is_some_and(|&(_, before)| before == after)
                                 && after.is_multiple_of(2)
                             {
                                 after
@@ -422,24 +451,59 @@ pub(super) fn render_pane_surface(
     let popup = show_popup
         .then(|| render_popup_surface(app, area, resize_panes, cell_size))
         .flatten();
-    let (graphics, next_graphics_delivery) = crate::server::client_shell_graphics::collect(
-        app,
-        &layout.pane_infos,
-        &layout.split_borders,
-        popup.as_deref(),
-        target,
-        cell_size,
-        graphics_delivery,
-        client_id,
-    );
-    RenderedPaneSurface {
+    let (graphics, next_graphics_delivery, graphics_sources) =
+        crate::server::client_shell_graphics::collect(
+            app,
+            &layout.pane_infos,
+            &layout.split_borders,
+            popup.as_deref(),
+            target,
+            cell_size,
+            graphics_delivery,
+            client_id,
+        );
+    if let Some(target) = target {
+        for (&pane_id, &(epoch, _)) in &content_revisions_before {
+            if let Some(runtime) = app.state.runtime_for_pane_in_workspace(
+                &app.terminal_runtimes,
+                target.workspace_index,
+                pane_id,
+            ) {
+                let (synchronized, after_epoch) = runtime.synchronized_output_state();
+                if synchronized {
+                    return Err(SurfaceRenderDeferred::Synchronized);
+                }
+                if after_epoch != epoch {
+                    return Err(SurfaceRenderDeferred::Changed);
+                }
+            }
+        }
+    }
+    if let Some(before) = popup_revision_before {
+        if let Some(runtime) = app
+            .state
+            .popup_pane
+            .as_ref()
+            .and_then(|popup| app.terminal_runtimes.get(&popup.terminal_id))
+        {
+            let (synchronized, after_epoch) = runtime.synchronized_output_state();
+            if synchronized {
+                return Err(SurfaceRenderDeferred::Synchronized);
+            }
+            if after_epoch != before {
+                return Err(SurfaceRenderDeferred::Changed);
+            }
+        }
+    }
+    Ok(RenderedPaneSurface {
         frame: FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, cursor, &hyperlinks),
         panes,
         splits,
         popup,
         graphics,
         graphics_delivery: next_graphics_delivery,
-    }
+        graphics_sources,
+    })
 }
 
 fn render_popup_surface(
@@ -711,7 +775,8 @@ mod tests {
             crate::kitty_graphics::HostCellSize::default(),
             &crate::kitty_graphics::surface::DeliveryCache::default(),
             1,
-        );
+        )
+        .expect("pane surface");
 
         let revision_for = |pane_id: &str| {
             rendered

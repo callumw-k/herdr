@@ -3,19 +3,25 @@ const BOUNDARY_BONUS: i32 = 12;
 const PREFIX_BONUS: i32 = 16;
 const GAP_PENALTY: i32 = 1;
 
-/// Greedy left-to-right subsequence match. Returns `None` when `query` is not
-/// a subsequence of `text`, otherwise a score where higher is better.
+/// Scores each whitespace-separated term of `query` against `text`
+/// independently, in any order. Returns `None` when any term is not a
+/// subsequence of `text`, otherwise the summed score where higher is better.
+pub(crate) fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
+    let haystack: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    query
+        .split_whitespace()
+        .map(|term| term_score(term, &haystack))
+        .sum()
+}
+
+/// Greedy left-to-right subsequence match.
 ///
 /// Greedy rather than optimal: an optimal matcher would backtrack to find the
 /// best alignment, which costs O(n*m) for a picker that never sees more than a
 /// few hundred rows. If ranking ever feels wrong on real data, that is the
 /// upgrade path.
-pub(crate) fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
-    if query.is_empty() {
-        return Some(0);
-    }
-    let haystack: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
-    let needles: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+fn term_score(term: &str, haystack: &[char]) -> Option<i32> {
+    let needles: Vec<char> = term.chars().flat_map(char::to_lowercase).collect();
 
     let mut score = 0;
     let mut haystack_idx = 0usize;
@@ -32,7 +38,7 @@ pub(crate) fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
         }
         if found == 0 {
             score += PREFIX_BONUS;
-        } else if is_boundary(&haystack, found) {
+        } else if is_boundary(haystack, found) {
             score += BOUNDARY_BONUS;
         }
         if let Some(previous) = previous_match {
@@ -73,6 +79,13 @@ mod tests {
     #[test]
     fn an_empty_query_matches_everything() {
         assert!(fuzzy_score("", "anything").is_some());
+    }
+
+    #[test]
+    fn matches_terms_independently_in_any_order() {
+        assert!(fuzzy_score("gamma alpha", "alpha beta gamma").is_some());
+        assert!(fuzzy_score("  ALP\tGAM  ", "alpha beta gamma").is_some());
+        assert_eq!(fuzzy_score("alpha missing", "alpha beta gamma"), None);
     }
 
     #[test]

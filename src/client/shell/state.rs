@@ -902,6 +902,7 @@ pub(super) struct ClientCopyModeState {
 }
 
 pub(crate) struct ClientShellState {
+    pub(super) machine_diagnostics: super::machine_diagnostics::MachineDiagnostics,
     pub(super) config: ClientShellConfig,
     pub(super) snapshot: Option<Box<ClientShellSnapshot>>,
     pub(super) active_snapshot_generation: Option<u64>,
@@ -1076,13 +1077,14 @@ impl ClientShellState {
                 .extend(saved.collapsed_groups);
         }
         Self {
+            machine_diagnostics: Default::default(),
             config,
             snapshot: None,
             active_snapshot_generation: None,
             pane_surface_generation: None,
             pane_surface: None,
             pending_pane_surface: None,
-            graphics: crate::kitty_graphics::surface::ClientState::default(),
+            graphics: crate::kitty_graphics::surface::ClientState::new(),
             graphics_cell_size: crate::kitty_graphics::HostCellSize {
                 width_px: 1,
                 height_px: 1,

@@ -7,7 +7,7 @@ pub mod manifest;
 pub mod manifest_update;
 
 /// The detected state of a terminal pane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AgentState {
     /// Agent finished, prompt visible, nothing happening.
     Idle,
@@ -318,10 +318,6 @@ pub fn detect_agent_with_osc(
             osc_progress,
         },
     )
-}
-
-pub fn should_skip_state_update(agent: Option<Agent>, screen_content: &str) -> bool {
-    agent.is_some_and(|agent| manifest::should_skip_state_update(agent, screen_content))
 }
 
 pub(crate) fn full_lifecycle_hook_authority(source: &str, agent_label: &str) -> bool {
@@ -647,6 +643,15 @@ fn agent_name_from_known_package_path(path: &str) -> Option<String> {
         "cli.js",
     ]) {
         return Some(agent_label(Agent::Pi).to_string());
+    }
+    if ends_with(&[
+        "node_modules",
+        "@oh-my-pi",
+        "pi-coding-agent",
+        "dist",
+        "cli.js",
+    ]) {
+        return Some(agent_label(Agent::Omp).to_string());
     }
     if ends_with(&[
         "node_modules",
@@ -1433,19 +1438,36 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_bun_wrapped_omp() {
-        let job = crate::platform::ForegroundJob {
+        for (runtime, script) in [
+            ("bun", "/home/can/.bun/bin/omp"),
+            (
+                "bun.exe",
+                r"C:\Users\herdr\AppData\Roaming\npm\node_modules\@oh-my-pi\pi-coding-agent\dist\cli.js",
+            ),
+        ] {
+            let job = crate::platform::ForegroundJob {
+                process_group_id: 123,
+                processes: vec![foreground_process(123, runtime, &[runtime, script])],
+            };
+            assert_eq!(
+                identify_agent_in_job(&job),
+                Some((Agent::Omp, "omp".to_string())),
+                "script: {script}"
+            );
+        }
+
+        let other_script = crate::platform::ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
                 123,
-                "bun",
-                &["bun", "/home/can/.bun/bin/omp"],
+                "bun.exe",
+                &[
+                    "bun.exe",
+                    r"C:\Users\herdr\AppData\Roaming\npm\node_modules\@oh-my-pi\pi-coding-agent\dist\setup.js",
+                ],
             )],
         };
-
-        assert_eq!(
-            identify_agent_in_job(&job),
-            Some((Agent::Omp, "omp".to_string()))
-        );
+        assert_eq!(identify_agent_in_job(&other_script), None);
     }
 
     #[test]

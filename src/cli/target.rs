@@ -257,7 +257,7 @@ fn parse_machine_prefix(args: &[String]) -> Result<Option<(String, Vec<String>)>
     Ok(Some((machine, cleaned)))
 }
 
-fn resolve_machine<'a>(
+pub(super) fn resolve_machine<'a>(
     profiles: &'a [SavedSshEndpoint],
     selector: &str,
 ) -> Result<&'a SavedSshEndpoint, String> {

@@ -1584,6 +1584,12 @@ impl AppState {
                 })
                 .into_iter()
                 .collect(),
+            AppEvent::CodexPromptObserved { pane_id, ready } => self
+                .update_terminal_state(pane_id, |terminal| {
+                    terminal.observe_codex_prompt_ready(ready)
+                })
+                .into_iter()
+                .collect(),
             AppEvent::StateChanged {
                 pane_id,
                 agent,
@@ -1759,6 +1765,7 @@ impl AppState {
             }
             AppEvent::WorktreeAddFinished(_) => Vec::new(),
             AppEvent::WorktreeRemoveFinished(_) => Vec::new(),
+            AppEvent::WorktreeReadFinished(_) => Vec::new(),
             AppEvent::TabBarCommandFinished { .. } => Vec::new(),
             AppEvent::PluginCommandFinished { .. } => Vec::new(),
         }
@@ -2564,7 +2571,7 @@ mod tests {
     fn link_resolution_regions_keep_grapheme_byte_offsets() {
         let mut terminal = crate::ghostty::Terminal::new(40, 3, 1024).unwrap();
         terminal.write("e\u{301}(https://example.com/路e\u{301}),".as_bytes());
-        let expected = vec![crate::api::schema::PaneLinkRegion {
+        let expected = vec![crate::ghostty::LinkRegion {
             row: 0,
             start_col: 2,
             end_col: 24,
@@ -2592,7 +2599,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             regions,
-            vec![crate::api::schema::PaneLinkRegion {
+            vec![crate::ghostty::LinkRegion {
                 row: 0,
                 start_col: 0,
                 end_col: 3
@@ -3356,6 +3363,42 @@ mod tests {
                 first_state == AgentState::Working
             );
         }
+    }
+
+    #[test]
+    fn codex_prompt_observation_changes_readiness_without_completing_a_turn() {
+        let mut app = app_with_workspaces(&["active", "background"]);
+        let pane_id = app.workspaces[1].tabs[0].root_pane;
+        let terminal_id = app.workspaces[1].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .begin_managed_agent(
+                "reviewer".into(),
+                Agent::Codex,
+                Instant::now(),
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(60),
+            );
+        app.handle_app_event(AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Codex),
+            state: AgentState::Unknown,
+            visible_blocker: false,
+            visible_working: false,
+            process_exited: false,
+            observed_at: Instant::now(),
+        });
+        app.handle_app_event(AppEvent::CodexPromptObserved {
+            pane_id,
+            ready: true,
+        });
+        let terminal = &app.terminals[&terminal_id];
+        assert!(terminal.managed_agent_interactive_ready());
+        assert_eq!(terminal.state, AgentState::Unknown);
+        assert!(terminal.last_agent_completion_seq.is_none());
     }
 
     #[test]

@@ -270,12 +270,15 @@ pub struct SessionConfig {
     /// Resume supported AI-agent panes into their native conversation sessions
     /// when restoring a Herdr session. Default: true.
     pub resume_agents_on_restore: bool,
+    /// Milliseconds between automatic agent restores. Zero disables spacing.
+    pub startup_per_agent_delay_ms: u32,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             resume_agents_on_restore: true,
+            startup_per_agent_delay_ms: 100,
         }
     }
 }
@@ -1486,13 +1489,16 @@ new_cwd = "~/Projects"
     fn resume_agents_on_restore_defaults_on_and_parses() {
         let default_config = Config::default();
         assert!(default_config.session.resume_agents_on_restore);
+        assert_eq!(default_config.session.startup_per_agent_delay_ms, 100);
 
         let toml = r#"
 [session]
 resume_agents_on_restore = false
+startup_per_agent_delay_ms = 0
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.session.resume_agents_on_restore);
+        assert_eq!(config.session.startup_per_agent_delay_ms, 0);
     }
 
     #[test]

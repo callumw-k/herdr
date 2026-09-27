@@ -290,19 +290,25 @@ impl HeadlessServer {
     }
 
     fn handle_internal_event_with_forwarding_inner(&mut self, mut ev: AppEvent) -> bool {
-        let mut focused_worktree_response = if let AppEvent::WorktreeAddFinished(result) = &mut ev {
-            result
+        let focus_response = match &mut ev {
+            AppEvent::WorktreeAddFinished(result) => result
                 .api_request
                 .as_mut()
                 .filter(|request| request.focus)
-                .map(|request| {
-                    let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
-                    let original = std::mem::replace(&mut request.respond_to, proxy_tx);
-                    (original, proxy_rx)
-                })
-        } else {
-            None
+                .map(|request| &mut request.respond_to),
+            AppEvent::WorktreeReadFinished(result)
+                if matches!(&result.request.method,
+                api::schema::Method::WorktreeOpen(params) if params.focus) =>
+            {
+                Some(&mut result.respond_to)
+            }
+            _ => None,
         };
+        let mut focused_worktree_response = focus_response.map(|respond_to| {
+            let (proxy_tx, proxy_rx) = std::sync::mpsc::channel();
+            let original = std::mem::replace(respond_to, proxy_tx);
+            (original, proxy_rx)
+        });
         match &ev {
             AppEvent::TerminalBell { pane_id, count } => {
                 if !self.send_to_foreground_client(ServerMessage::TerminalBell { count: *count }) {
@@ -556,16 +562,29 @@ impl HeadlessServer {
 
                 true
             }
-            AppEvent::WorktreeAddFinished(result) => {
-                let deferred_request_id = result
-                    .api_request
-                    .as_ref()
-                    .map(|request| request.id.as_str());
-                let shell_navigation_pending = deferred_request_id.is_some_and(|request_id| {
-                    self.clients.values().any(|client| {
-                        client.shell_deferred_navigation_request_id.as_deref() == Some(request_id)
-                    })
-                });
+            AppEvent::WorktreeReadFinished(result)
+                if matches!(&result.request.method, api::schema::Method::WorktreeList(_)) =>
+            {
+                self.app.handle_internal_event_with_render_impact(ev)
+            }
+            AppEvent::WorktreeAddFinished(_) | AppEvent::WorktreeReadFinished(_) => {
+                let deferred_request_id = match &ev {
+                    AppEvent::WorktreeAddFinished(result) => result
+                        .api_request
+                        .as_ref()
+                        .map(|request| request.id.as_str()),
+                    AppEvent::WorktreeReadFinished(result) => Some(result.request.id.as_str()),
+                    _ => None,
+                };
+                let client_local =
+                    matches!(&ev, AppEvent::WorktreeReadFinished(result) if result.client_local);
+                let shell_navigation_pending = client_local
+                    || deferred_request_id.is_some_and(|request_id| {
+                        self.clients.values().any(|client| {
+                            client.shell_deferred_navigation_request_id.as_deref()
+                                == Some(request_id)
+                        })
+                    });
                 let changed = self.app.handle_internal_event_with_render_impact(ev);
                 let api_focus_succeeded = super::client_views::forward_proxied_api_response(
                     focused_worktree_response.take(),

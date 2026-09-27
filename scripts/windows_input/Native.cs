@@ -108,7 +108,15 @@ namespace HerdrInputGauntlet {
         [DllImport("user32.dll", SetLastError=true)] static extern uint SendInput(uint count, Input[] events, int size);
         [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
         [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
-        [DllImport("user32.dll")] public static extern int CountClipboardFormats();
+        [DllImport("user32.dll",EntryPoint="CountClipboardFormats",SetLastError=true)] static extern int NativeCountClipboardFormats();
+        public static int CountClipboardFormats() {
+            int count=NativeCountClipboardFormats();
+            if(count==0) {
+                int error=Marshal.GetLastWin32Error();
+                if(error!=0) throw new Win32Exception(error,"Clipboard format count failed");
+            }
+            return count;
+        }
         [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
         [DllImport("user32.dll")] static extern IntPtr GetClipboardOwner();
         [DllImport("user32.dll")] static extern bool OpenClipboard(IntPtr owner);
@@ -140,6 +148,14 @@ namespace HerdrInputGauntlet {
             int result=manager.ActivateApplication(appUserModelId,string.Join(" ",Array.ConvertAll(arguments,QuoteArgument)),0,out pid);
             if(result<0) Marshal.ThrowExceptionForHR(result);
             return checked((int)pid);
+        }
+        public static int ClearClipboardForRun() {
+            if(!OpenClipboard(IntPtr.Zero)) throw new Exception("Clipboard busy; cannot start paste qualification");
+            try {
+                int formats=CountClipboardFormats();
+                if(formats!=0 && !EmptyClipboard()) throw new Exception("Clipboard clear failed");
+                return formats;
+            } finally { CloseClipboard(); }
         }
 
         public static uint SetEmptyClipboard(IntPtr owner,string text) {
@@ -389,7 +405,7 @@ namespace HerdrInputGauntlet {
         [DllImport("kernel32.dll")] static extern bool SetConsoleCP(uint cp);
         [DllImport("kernel32.dll")] static extern bool ReadFile(IntPtr handle,byte[] buffer,uint size,out uint count,IntPtr overlap);
         [DllImport("kernel32.dll")] static extern bool WriteFile(IntPtr handle,byte[] buffer,uint size,out uint count,IntPtr overlap);
-        [DllImport("kernel32.dll")] static extern bool ReadConsoleInputW(IntPtr handle,Record[] records,uint size,out uint count);
+        [DllImport("kernel32.dll")] static extern bool ReadConsoleInputW(IntPtr handle,[Out] Record[] records,uint size,out uint count);
         [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
         [DllImport("kernel32.dll")] static extern IntPtr OpenThread(uint access,bool inherit,uint id);
         [DllImport("kernel32.dll")] static extern bool CancelSynchronousIo(IntPtr thread);
@@ -459,7 +475,11 @@ namespace HerdrInputGauntlet {
         public void Clear() { lock(gate) { bytes.Clear(); records.Clear(); } }
         public bool ClearIfCount(int expected) {
             lock(gate) {
-                if(bytes.Count+records.Count!=expected) return false;
+                if(bytes.Count+records.Count!=expected) {
+                    if(!native || bytes.Count!=0 || records.Count<expected) return false;
+                    for(int i=expected;i<records.Count;i++)
+                        if(records[i][0]!=4 && records[i][0]!=16) return false; // resize/focus between captures
+                }
                 bytes.Clear(); records.Clear(); return true;
             }
         }

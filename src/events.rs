@@ -52,6 +52,27 @@ pub struct WorktreeRemoveResult {
     pub result: Result<(), String>,
 }
 
+#[derive(Debug)]
+pub struct WorktreeReadResult {
+    // Keep the slot until completion is consumed, including time queued on the app loop.
+    pub(crate) _permit: tokio::sync::OwnedSemaphorePermit,
+    pub(crate) client_local: bool,
+    pub(crate) request: crate::api::schema::Request,
+    pub(crate) source_workspace_id: Option<String>,
+    pub(crate) source_cwd: Option<std::path::PathBuf>,
+    pub(crate) result: Result<WorktreeReadData, (String, String)>,
+    pub(crate) respond_to: std::sync::mpsc::Sender<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct WorktreeReadData {
+    pub source_checkout_path: std::path::PathBuf,
+    pub source_repo_root: std::path::PathBuf,
+    pub repo_key: String,
+    pub repo_name: String,
+    pub entries: Vec<crate::worktree::ExistingWorktree>,
+}
+
 /// An event from a background task to the main loop.
 #[derive(Debug)]
 pub enum AppEvent {
@@ -68,6 +89,8 @@ pub enum AppEvent {
         agent: Agent,
         observed_at: Instant,
     },
+    /// The current Codex input screen is visible during managed startup.
+    CodexPromptObserved { pane_id: PaneId, ready: bool },
     /// Fallback detector state changed in a pane.
     StateChanged {
         pane_id: PaneId,
@@ -179,4 +202,6 @@ pub enum AppEvent {
     WorktreeAddFinished(Box<WorktreeAddResult>),
     /// Background `git worktree remove` completed.
     WorktreeRemoveFinished(Box<WorktreeRemoveResult>),
+    /// Background worktree discovery completed for an API list/open request.
+    WorktreeReadFinished(Box<WorktreeReadResult>),
 }

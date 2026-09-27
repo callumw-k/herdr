@@ -163,6 +163,9 @@ impl ClientShellState {
             outcome.repaint = true;
         }
         for event in events {
+            if self.handle_machine_badge_event(&event, &mut outcome) {
+                continue;
+            }
             if let Some(update) = host_theme_update(&event) {
                 push_host_theme_update(&mut outcome.requests, update);
             }

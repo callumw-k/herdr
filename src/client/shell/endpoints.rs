@@ -26,6 +26,7 @@ pub(crate) struct ClientShellEndpoint {
 
 pub(super) struct MachineHit {
     pub(super) rect: Rect,
+    pub(super) status_badge: Rect,
     pub(super) collapse_toggle: Rect,
     pub(super) endpoint_id: ClientEndpointId,
 }
@@ -108,6 +109,7 @@ impl ClientShellState {
     }
 
     pub(crate) fn retire_endpoint(&mut self, endpoint_id: &ClientEndpointId) {
+        self.clear_machine_diagnostic(endpoint_id);
         if endpoint_id == &self.active_endpoint_id {
             self.pending_workspace_highlight = None;
         }
@@ -134,6 +136,12 @@ impl ClientShellState {
         endpoint_id: &ClientEndpointId,
         status: ClientEndpointStatus,
     ) {
+        if matches!(
+            status,
+            ClientEndpointStatus::Online | ClientEndpointStatus::Disabled
+        ) {
+            self.clear_machine_diagnostic(endpoint_id);
+        }
         if endpoint_id == &self.active_endpoint_id && status != ClientEndpointStatus::Online {
             self.pending_workspace_highlight = None;
         }
