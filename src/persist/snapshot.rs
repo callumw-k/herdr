@@ -125,7 +125,16 @@ pub struct PaneSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<PaneAgentSessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_resume: Option<PaneAgentResumeSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneAgentResumeSnapshot {
+    pub source: String,
+    pub agent: String,
+    pub argv: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -436,6 +445,13 @@ fn capture_tab(
                     value: session.session_ref.value.clone(),
                 })
         });
+        let agent_resume = terminal
+            .and_then(|terminal| terminal.reported_resume())
+            .map(|resume| PaneAgentResumeSnapshot {
+                source: resume.source.clone(),
+                agent: resume.agent.clone(),
+                argv: resume.argv.clone(),
+            });
         panes.insert(
             id.raw(),
             PaneSnapshot {
@@ -444,6 +460,7 @@ fn capture_tab(
                 agent_name,
                 managed_agent_kind,
                 agent_session,
+                agent_resume,
                 launch_argv,
             },
         );
@@ -778,6 +795,7 @@ mod tests {
                 agent_name: None,
                 managed_agent_kind: None,
                 agent_session: None,
+                agent_resume: None,
                 launch_argv: None,
             },
         );
@@ -789,6 +807,7 @@ mod tests {
                 agent_name: None,
                 managed_agent_kind: None,
                 agent_session: None,
+                agent_resume: None,
                 launch_argv: None,
             },
         );
@@ -1389,6 +1408,40 @@ mod tests {
     }
 
     #[test]
+    fn capture_contract_includes_reported_agent_resume() {
+        let mut state = state_with_workspaces(&["one"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        state.ensure_test_terminals();
+        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        let terminal = state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_hook_authority(
+            "prime-agent".into(),
+            "prime-agent".into(),
+            crate::detect::AgentState::Idle,
+            None,
+            Some(1),
+        );
+        assert!(terminal.record_reported_resume(
+            "prime-agent",
+            "prime-agent",
+            Some(1),
+            vec!["prime-agent".into(), "--resume".into(), "a".into()],
+        ));
+
+        let snapshot = capture_from_state(&state);
+        let resume = snapshot.workspaces[0].tabs[0].panes[&root.raw()]
+            .agent_resume
+            .as_ref()
+            .expect("reported resume should be captured");
+
+        assert_eq!(resume.source, "prime-agent");
+        assert_eq!(resume.agent, "prime-agent");
+        assert_eq!(resume.argv, vec!["prime-agent", "--resume", "a"]);
+    }
+
+    #[test]
     fn capture_contract_preserves_restored_agent_session() {
         let mut state = state_with_workspaces(&["one"]);
         let root = state.workspaces[0].tabs[0].root_pane;
@@ -1452,6 +1505,7 @@ mod tests {
                 agent_name: None,
                 managed_agent_kind: None,
                 agent_session: None,
+                agent_resume: None,
                 launch_argv: None,
             },
         );
@@ -1465,6 +1519,7 @@ mod tests {
                 agent_name: None,
                 managed_agent_kind: None,
                 agent_session: None,
+                agent_resume: None,
                 launch_argv: None,
             },
         );

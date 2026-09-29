@@ -147,6 +147,10 @@ pub enum ClientInputEvent {
     },
     FocusGained,
     FocusLost,
+    HostDefaultColor {
+        kind: ClientHostDefaultColorKind,
+        color: ClientHostColor,
+    },
 }
 
 /// Pane-domain input after the client has classified and consumed shell actions.
@@ -458,6 +462,19 @@ impl ClientInputEvent {
             Self::Paste { text } => crate::raw_input::RawInputEvent::Paste(text.clone()),
             Self::FocusGained => crate::raw_input::RawInputEvent::OuterFocusGained,
             Self::FocusLost => crate::raw_input::RawInputEvent::OuterFocusLost,
+            Self::HostDefaultColor { kind, color } => {
+                crate::raw_input::RawInputEvent::HostDefaultColor {
+                    kind: match kind {
+                        ClientHostDefaultColorKind::Foreground => {
+                            crate::terminal_theme::DefaultColorKind::Foreground
+                        }
+                        ClientHostDefaultColorKind::Background => {
+                            crate::terminal_theme::DefaultColorKind::Background
+                        }
+                    },
+                    color: (*color).into(),
+                }
+            }
         }
     }
 }

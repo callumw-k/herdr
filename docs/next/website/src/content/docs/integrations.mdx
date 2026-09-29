@@ -66,36 +66,13 @@ Herdr uses integrations in two ways:
 
 Custom integrations can also report state that is not visible in the native terminal UI. They do not need to be built into Herdr or use a recognized agent executable.
 
-## Integrate your own agent
-
-An agent running in a Herdr pane inherits `HERDR_ENV`, `HERDR_PANE_ID`, `HERDR_BIN_PATH`, and `HERDR_SOCKET_PATH`. If the agent exposes lifecycle hooks, use those hooks to report semantic state through Herdr's CLI:
-
-```bash
-"$HERDR_BIN_PATH" pane report-agent "$HERDR_PANE_ID" \
-  --source custom:my-agent \
-  --agent my-agent \
-  --state working
-```
-
-Report `idle` when the agent is ready for input and `blocked` when it needs a user decision. Use `--message` to describe a block. When the agent exits, release the same source's lifecycle authority:
-
-```bash
-"$HERDR_BIN_PATH" pane release-agent "$HERDR_PANE_ID" \
-  --source custom:my-agent \
-  --agent my-agent
-```
-
-Report only when `HERDR_ENV=1` and the required variables are present. This keeps the integration a no-op outside Herdr. Keep `--source` stable and unique to the integration. If reports can arrive out of order, include a strictly increasing `--seq`; Herdr ignores stale sequence numbers from the same source.
-
-You can include `--agent-session-id` or `--agent-session-path` with `report-agent`, or use `pane report-agent-session` when session identity changes independently of state. Herdr exposes that reference through its pane and agent APIs. Automatic session restore also requires Herdr to know how to launch that agent and resume the referenced session.
-
-Use `HERDR_BIN_PATH` and the CLI wrappers for portable integrations. Code that needs direct IPC can send the equivalent `pane.report_agent`, `pane.report_agent_session`, and `pane.release_agent` requests described in the [Socket API](/docs/socket-api/#agent-state-reporting).
-
-[Prime Agent's built-in Herdr reporter](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/src/core/extensions/builtin/herdr-agent-state.ts) is a real-world example. It activates only inside Herdr, maps agent events to `working`, `idle`, and `blocked`, preserves report ordering across sessions, and releases authority on exit.
-
 Some integrations report native agent session references. Herdr uses official session references to resume Claude Code, Codex, Devin CLI, Droid, Kimi Code CLI, Qoder CLI, Qwen Code, Letta Code, Cursor Agent CLI, Grok CLI, GitHub Copilot CLI, Pi, OMP, Hermes Agent, OpenCode, Kilo Code CLI, MastraCode, and Antigravity CLI panes after a Herdr server restart unless `[session] resume_agents_on_restore = false` disables it.
 
 Native session restore requires current Herdr integrations: Pi integration version `2`, OMP version `3`, Claude Code version `6`, Codex version `5`, GitHub Copilot CLI version `2`, Devin CLI version `2`, Droid version `2`, Kimi Code CLI version `3`, Qoder CLI version `2`, Qwen Code version `1`, Letta Code version `1`, Cursor Agent CLI version `1`, Grok CLI version `2`, OpenCode version `5`, Kilo Code CLI version `1`, Hermes Agent version `5`, MastraCode version `1`, or Antigravity CLI version `1`. Check installed versions with `herdr integration status`.
+
+## Integrate your own agent
+
+If you build a coding agent, you can report its state and resume command to Herdr from your own code, without adding native support to Herdr. See [Add Herdr support to your agent](/docs/add-herdr-support/).
 
 ## Pi
 

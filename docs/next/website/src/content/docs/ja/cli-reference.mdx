@@ -258,7 +258,8 @@ herdr pane report-agent <pane_id> \
   [--message TEXT] \
   [--seq N] \
   [--agent-session-id ID] \
-  [--agent-session-path PATH]
+  [--agent-session-path PATH] \
+  [-- RESUME_COMMAND...]
 
 herdr pane report-agent-session <pane_id> \
   --source ID \
@@ -266,7 +267,8 @@ herdr pane report-agent-session <pane_id> \
   [--seq N] \
   [--agent-session-id ID] \
   [--agent-session-path PATH] \
-  [--session-start-source SOURCE]
+  [--session-start-source SOURCE] \
+  [-- RESUME_COMMAND...]
 
 herdr pane release-agent <pane_id> \
   --source ID \
@@ -275,6 +277,8 @@ herdr pane release-agent <pane_id> \
 ```
 
 `report-agent-session` はライフサイクル状態を報告せずにネイティブセッション識別子を更新します。`release-agent` は、そのエージェントプロセスが終了したときに、そのソースのライフサイクル権限を終了します。
+
+`--` の後の引数は、サーバー再起動後にこのセッションを再開するために Herdr が実行するコマンドです。最初の引数は `PATH` 上の単純なコマンド名でなければならず、どの引数にもアポストロフィを含めることはできません。
 
 公式インテグレーションがネイティブセッション参照を報告している場合、`pane get`、`pane list`、`agent get`、`agent list` は読み取り専用の `agent_session` オブジェクトを含みます。ネイティブセッション参照が保存されていない場合、このフィールドは省略されます。
 
@@ -351,7 +355,7 @@ herdr terminal title clear
 ```
 
 ダイレクトアタッチからは `ctrl+b q` でデタッチします。リテラルの `ctrl+b` は `ctrl+b ctrl+b` で送ります。
-`terminal session control` は、ペイン、ターミナル、エージェントを対象に書き込み可能なライブストリームを開きます。observe と同じ改行区切り JSON の `terminal.frame` と `terminal.closed` を出力し、標準入力から `terminal.input`、`terminal.resize`、`terminal.scroll`、`terminal.release` を受け取ります。制御クライアントは同時に 1 つだけで、`--takeover` で置き換えられます。
+`terminal session control` は、ペイン、ターミナル、エージェントを対象に書き込み可能なライブストリームを開きます。observe と同じ改行区切り JSON の `terminal.frame` と `terminal.closed` を出力し、標準入力から `terminal.input`、`terminal.resize`、`terminal.scroll`、`terminal.mouse`、`terminal.release` を受け取ります。制御クライアントは同時に 1 つだけで、`--takeover` で置き換えられます。`terminal.mouse` は 0 始まりのセル位置にマウスイベントを 1 つ送ります(例: `{"type":"terminal.mouse","action":"down","button":"left","column":12,"row":5}`)。`action` は `down`、`up`、`drag`、`move` のいずれかで、`button` は `left`(既定)、`right`、`middle`、`modifiers` は省略可能で Shift = 1、Ctrl = 2、Alt = 4 の組み合わせです(既定 0)。クリックは `down` の後に `up` を送ります。Herdr はアプリのマウスモードに合わせてエンコードし、マウス報告を有効にしていないアプリには送らないため、通常のシェルに余計な入力が届くことはありません。`move` はすべてのマウス移動を追跡するアプリにのみ届きます。
 
 `terminal session observe` は同じ対象の読み取り専用ストリームを開きます。base64 の ANSI バイト列を含む `terminal.frame` と、サーバー終了時の `terminal.closed` を改行区切り JSON で出力します。複数の観測クライアントは入力、リサイズ、スクロール、制御権を取得せずに同じターミナルを監視できます。Linux/macOS ではソケットへの書き込みが 30 秒間進まない観測クライアントを切断します。その場合は最後の `terminal.closed` が届かないことがありますが、ペインや他のクライアントは動き続けます。出力のない静かなペインはこのタイムアウトの対象ではありません。
 

@@ -20,7 +20,6 @@ use crossterm::execute;
 use crossterm::terminal::{DisableLineWrap, EnableLineWrap};
 
 use super::frame_output::clear_received_kitty_graphics;
-use super::terminal_geometry::should_query_host_terminal_theme;
 
 // ---------------------------------------------------------------------------
 // Terminal setup / restore
@@ -86,7 +85,7 @@ pub(super) fn setup_terminal_with_capabilities(
         }
         (active, buffered_input)
     } else {
-        if should_query_host_terminal_theme() {
+        if should_enable_host_color_scheme_reports(true) {
             write_host_color_scheme_report_mode(&mut io::stdout(), false)?;
         }
         set_mouse_capture(mouse_capture, false)?;
@@ -128,7 +127,7 @@ pub(super) fn setup_terminal_with_capabilities(
 }
 
 pub(super) fn should_enable_host_color_scheme_reports(enable_client_protocols: bool) -> bool {
-    enable_client_protocols && should_query_host_terminal_theme()
+    enable_client_protocols && !cfg!(windows)
 }
 
 /// Guard that restores the terminal when dropped.

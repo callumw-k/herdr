@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
     ptr::{copy_nonoverlapping, null_mut},
     sync::{
-        atomic::{AtomicU64, Ordering as AtomicOrdering},
+        atomic::{AtomicU32, AtomicU64, Ordering as AtomicOrdering},
         Arc, LazyLock, Mutex, OnceLock,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -315,11 +315,13 @@ pub(crate) fn set_default_plugin_pane_pwd(
 }
 
 use windows_sys::{
+    Wdk::System::Threading::ProcessCommandLineInformation,
     Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation},
     Win32::{
         Foundation::{
             CloseHandle, GlobalFree, LocalFree, FILETIME, HANDLE, HWND, INVALID_HANDLE_VALUE,
-            MAX_PATH, NTSTATUS, STATUS_SUCCESS, UNICODE_STRING,
+            MAX_PATH, NTSTATUS, STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL,
+            STATUS_INFO_LENGTH_MISMATCH, STATUS_SUCCESS, UNICODE_STRING,
         },
         Globalization::{CompareStringOrdinal, CSTR_EQUAL, CSTR_GREATER_THAN, CSTR_LESS_THAN},
         Security::SECURITY_ATTRIBUTES,
@@ -327,7 +329,8 @@ use windows_sys::{
         System::{
             Console::GetConsoleWindow,
             DataExchange::{
-                CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard,
+                CloseClipboard, CountClipboardFormats, EmptyClipboard, EnumClipboardFormats,
+                GetClipboardData, GetClipboardOwner, GetClipboardSequenceNumber, OpenClipboard,
                 RegisterClipboardFormatW, SetClipboardData,
             },
             Diagnostics::{
@@ -348,7 +351,7 @@ use windows_sys::{
                 GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, VirtualQueryEx, GMEM_MOVEABLE,
                 MEMORY_BASIC_INFORMATION,
             },
-            Ole::{CF_DIB, CF_DIBV5, CF_UNICODETEXT},
+            Ole::{CF_DIB, CF_DIBV5, CF_LOCALE, CF_OEMTEXT, CF_TEXT, CF_UNICODETEXT},
             Threading::{
                 GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, IsWow64Process2,
                 OpenProcess, OpenThread, QueryFullProcessImageNameW, ResumeThread,
@@ -1829,6 +1832,19 @@ impl ProcessSnapshotCache {
 }
 
 fn read_process_command(pid: u32, name: &str) -> WindowsProcessCommand {
+    // Prefer the command-line information class: it needs only
+    // `PROCESS_QUERY_LIMITED_INFORMATION`, while the PEB path below also needs
+    // `PROCESS_VM_READ`, which hardened runtimes (Electron/Node) and security
+    // products deny. Without a command line an agent launched through a runtime
+    // is indistinguishable from a bare `node.exe`/`bun.exe` process, so the
+    // pane would never register as an agent.
+    if let Some(process) = ProcessHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION) {
+        if let Some(cmdline) = read_process_command_line(process.0) {
+            let creation_time = process_creation_time(process.0);
+            return WindowsProcessCommand::from_cmdline(name, creation_time, Some(cmdline));
+        }
+    }
+
     let Some(process) =
         ProcessHandle::open(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ)
     else {
@@ -2140,6 +2156,89 @@ fn environment_variable_from_utf16(environment: &[u16], name: &str) -> Option<St
     None
 }
 
+/// Read a process command line with only `PROCESS_QUERY_LIMITED_INFORMATION`.
+///
+/// `ProcessCommandLineInformation` has been available since Windows 8.1.
+/// Prefer it over walking the target PEB, which additionally requires
+/// `PROCESS_VM_READ` access that hardened runtimes and security products deny.
+///
+/// Returns `None` for a process without a stored command line; the caller then
+/// tries the PEB path before giving up.
+fn read_process_command_line(process: HANDLE) -> Option<String> {
+    let mut required = 0_u32;
+    // SAFETY: a null buffer with length 0 only asks for the required size, and
+    // `required` is a valid out-pointer for the duration of the call.
+    let status = unsafe {
+        NtQueryInformationProcess(
+            process,
+            ProcessCommandLineInformation,
+            null_mut(),
+            0,
+            &mut required,
+        )
+    };
+    // A process with no command line is already handled as a miss below.
+    if status != STATUS_BUFFER_TOO_SMALL
+        && status != STATUS_INFO_LENGTH_MISMATCH
+        && status != STATUS_BUFFER_OVERFLOW
+    {
+        return None;
+    }
+
+    // `required` is already at least a UNICODE_STRING sized buffer.
+    let mut buffer = vec![0_u8; required as usize];
+    for _ in 0..2 {
+        // SAFETY: `buffer` is `required` bytes and both pointers are valid for
+        // the call; the kernel writes the length back into `required`.
+        let status = unsafe {
+            NtQueryInformationProcess(
+                process,
+                ProcessCommandLineInformation,
+                buffer.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        };
+        // These three statuses all mean the command line grew between the probe
+        // and the read. Some data was written; retry once with the larger buffer
+        // the call just reported. They are negative as `NTSTATUS`, so they must
+        // be checked before the failure test below.
+        let grew = status == STATUS_BUFFER_OVERFLOW
+            || status == STATUS_BUFFER_TOO_SMALL
+            || status == STATUS_INFO_LENGTH_MISMATCH;
+        if grew {
+            buffer = vec![0_u8; required as usize];
+            continue;
+        }
+        if status < 0 {
+            return None;
+        }
+        break;
+    }
+
+    // SAFETY: on success the kernel wrote a UNICODE_STRING followed by its
+    // UTF-16 contents into `buffer`. A `Vec<u8>` only guarantees byte
+    // alignment, so read the header unaligned.
+    let unicode = unsafe { buffer.as_ptr().cast::<UNICODE_STRING>().read_unaligned() };
+    let length = usize::from(unicode.Length);
+    // A short command line leaves `Length` inside the header itself; guard
+    // against reading a malformed header as string data.
+    if length == 0 || !length.is_multiple_of(2) {
+        return None;
+    }
+    let string_offset = size_of::<UNICODE_STRING>();
+    if string_offset + length > buffer.len() {
+        return None;
+    }
+    let units = buffer[string_offset..string_offset + length]
+        .chunks_exact(2)
+        .map(|unit| u16::from_ne_bytes([unit[0], unit[1]]))
+        .collect::<Vec<_>>();
+    String::from_utf16(&units)
+        .ok()
+        .filter(|command_line| !command_line.is_empty())
+}
+
 fn read_process_parameters(process: HANDLE) -> Option<RtlUserProcessParameters> {
     let mut basic_info = MaybeUninit::<PROCESS_BASIC_INFORMATION>::uninit();
     let status = unsafe {
@@ -2257,6 +2356,8 @@ pub fn process_exists(pid: u32) -> bool {
     ok && exit_code == STILL_ACTIVE
 }
 
+static LAST_CLIPBOARD_WRITE_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
 pub fn write_clipboard(bytes: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return false;
@@ -2299,11 +2400,91 @@ pub fn write_clipboard(bytes: &[u8]) -> bool {
             return false;
         }
 
+        // Closing may generate additional text formats and advance the sequence.
+        drop(_clipboard);
+        // Read the sequence first: a later writer must not become our last write.
+        let sequence = GetClipboardSequenceNumber();
+        let sequence = if GetClipboardOwner() == owner {
+            sequence
+        } else {
+            0
+        };
+        LAST_CLIPBOARD_WRITE_SEQUENCE.store(sequence, AtomicOrdering::Relaxed);
         true
     }
 }
 
 pub fn read_clipboard_text() -> Option<String> {
+    None
+}
+
+/// Whether the system clipboard currently holds exactly this text.
+///
+/// Returns `None` when the clipboard changed since our last write, cannot be read,
+/// or has non-text formats.
+/// Kept separate from [`read_clipboard_text`] so unsupported modal paste on
+/// Windows is unchanged.
+pub fn clipboard_text_matches(bytes: &[u8]) -> Option<bool> {
+    let current = read_clipboard_unicode_text()?;
+    Some(clipboard_text_equals(&current, bytes))
+}
+
+fn clipboard_text_equals(current: &str, bytes: &[u8]) -> bool {
+    let Ok(payload) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    normalized_clipboard_newlines(payload) == normalized_clipboard_newlines(current)
+}
+
+fn normalized_clipboard_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains("\r\n") {
+        std::borrow::Cow::Owned(text.replace("\r\n", "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+fn plain_text_clipboard_format(format: u32) -> bool {
+    format == CF_UNICODETEXT as u32
+        || format == CF_TEXT as u32
+        || format == CF_OEMTEXT as u32
+        || format == CF_LOCALE as u32
+}
+
+fn read_clipboard_unicode_text() -> Option<String> {
+    const MAX_CLIPBOARD_TEXT_BYTES: usize = 1024 * 1024;
+
+    for attempt in 0..10 {
+        if unsafe { OpenClipboard(null_mut()) } != 0 {
+            let _clipboard = ClipboardGuard;
+            let sequence = unsafe { GetClipboardSequenceNumber() };
+            if sequence == 0
+                || sequence != LAST_CLIPBOARD_WRITE_SEQUENCE.load(AtomicOrdering::Relaxed)
+            {
+                return None;
+            }
+            let format_count = unsafe { CountClipboardFormats() };
+            if format_count <= 0 {
+                return None;
+            }
+            let mut format = 0;
+            for _ in 0..format_count {
+                format = unsafe { EnumClipboardFormats(format) };
+                if format == 0 || !plain_text_clipboard_format(format) {
+                    return None;
+                }
+            }
+            let bytes = clipboard_global_bytes(CF_UNICODETEXT as u32, MAX_CLIPBOARD_TEXT_BYTES)?;
+            let units = bytes
+                .chunks_exact(2)
+                .map(|pair| u16::from_ne_bytes([pair[0], pair[1]]))
+                .take_while(|unit| *unit != 0);
+            return String::from_utf16(&units.collect::<Vec<_>>()).ok();
+        }
+        if attempt < 9 {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
     None
 }
 
@@ -2938,6 +3119,31 @@ mod tests {
     use windows_sys::Win32::System::Console::{
         AllocConsole, FreeConsole, GetConsoleProcessList, GetConsoleWindow,
     };
+
+    #[test]
+    fn clipboard_text_equals_normalizes_line_endings() {
+        assert!(super::clipboard_text_equals("hello", b"hello"));
+        assert!(super::clipboard_text_equals("a\r\nb", b"a\nb"));
+        assert!(super::clipboard_text_equals("a\nb", b"a\r\nb"));
+        assert!(!super::clipboard_text_equals("hello ", b"hello"));
+        assert!(!super::clipboard_text_equals("hello", b"world"));
+        assert!(!super::clipboard_text_equals("hello", &[0xff]));
+        assert!(!super::clipboard_text_equals("a\rb", b"a\nb"));
+    }
+
+    #[test]
+    fn clipboard_format_check_rejects_rich_content() {
+        for format in [
+            super::CF_UNICODETEXT,
+            super::CF_TEXT,
+            super::CF_OEMTEXT,
+            super::CF_LOCALE,
+        ] {
+            assert!(super::plain_text_clipboard_format(format as u32));
+        }
+        assert!(!super::plain_text_clipboard_format(super::CF_DIB as u32));
+        assert!(!super::plain_text_clipboard_format(0xC000));
+    }
 
     #[test]
     fn windows_standard_plugin_runtime_paths_drop_only_disk_and_unc_verbatim_prefixes() {
@@ -3610,6 +3816,59 @@ mod tests {
         let _ = child.wait();
 
         assert_eq!(observed.as_deref(), Some("pane-test"));
+    }
+
+    #[test]
+    fn windows_process_command_line_reads_live_process_with_limited_access() {
+        // The point of the fix: the command line must be readable from a handle
+        // that does not request `PROCESS_VM_READ`. Verification against a
+        // process that actually denies that access needs a hardened host, which
+        // this suite cannot provide.
+        let handle = super::ProcessHandle::open(
+            std::process::id(),
+            super::PROCESS_QUERY_LIMITED_INFORMATION,
+        )
+        .expect("open self with limited access");
+
+        let command_line =
+            super::read_process_command_line(handle.0).expect("command line must be readable");
+        assert!(
+            !command_line.is_empty(),
+            "command line for the test process must not be empty"
+        );
+    }
+
+    #[test]
+    fn windows_process_command_line_reads_spawned_process_marker() {
+        let shell =
+            std::env::var_os("ComSpec").unwrap_or_else(|| r"C:\Windows\System32\cmd.exe".into());
+        // `rem` keeps the marker inside cmd.exe's own command line without
+        // becoming a target for `ping`, so the process stays alive for the read.
+        let mut child = Command::new(shell)
+            .args([
+                "/D",
+                "/Q",
+                "/C",
+                "ping -n 11 127.0.0.1 > NUL & rem unique-cmdline-marker",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn cmd");
+
+        let command_line =
+            super::ProcessHandle::open(child.id(), super::PROCESS_QUERY_LIMITED_INFORMATION)
+                .and_then(|process| super::read_process_command_line(process.0));
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        let command_line = command_line.expect("command line must be readable");
+        assert!(
+            command_line.contains("unique-cmdline-marker"),
+            "unexpected command line: {command_line}"
+        );
     }
 
     #[test]

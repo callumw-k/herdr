@@ -366,6 +366,11 @@ pub fn foreground_process_group_id(child_pid: u32) -> Option<u32> {
     crate::platform::foreground_process_group_id(child_pid)
 }
 
+/// True when the pane's own shell is at its prompt with nothing running in it.
+pub fn pane_shell_is_idle(child_pid: u32) -> bool {
+    crate::platform::available_pane_shell(child_pid).is_some()
+}
+
 fn normalized_process_name(process: &crate::platform::ForegroundProcess) -> String {
     let effective = process.argv0.as_deref().unwrap_or(&process.name);
     let lower_effective = effective.to_lowercase();
@@ -1492,6 +1497,9 @@ mod tests {
 
     #[test]
     fn identify_agent_in_job_detects_node_wrapped_pi_bundled_cli() {
+        // Hardened runtimes deny `PROCESS_VM_READ`, so the command line can come
+        // from a LimitedInformation query with the launcher path intact. The
+        // detection path must not depend on how that command line was obtained.
         let job = crate::platform::ForegroundJob {
             process_group_id: 123,
             processes: vec![foreground_process(
@@ -1924,6 +1932,55 @@ mod tests {
             identify_agent_in_job(&job),
             Some((Agent::Codex, "codex".to_string()))
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pane_shell_is_idle_tracks_foreground_command() {
+        use portable_pty::CommandBuilder;
+        use std::io::Write;
+
+        fn wait_for(expected: bool, pid: u32) -> bool {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while std::time::Instant::now() < deadline {
+                if pane_shell_is_idle(pid) == expected {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            false
+        }
+
+        let pair = open_test_pty();
+        let mut cmd = CommandBuilder::new("sh");
+        cmd.arg("-i");
+        cmd.env("ENV", "/dev/null");
+        let mut child = pair.slave.spawn_command(cmd).expect("failed to spawn");
+        let pid = child.process_id().expect("no pid");
+        let mut reader = pair.master.try_clone_reader().expect("no reader");
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1024];
+            while matches!(std::io::Read::read(&mut reader, &mut buf), Ok(n) if n > 0) {}
+        });
+        let mut writer = pair.master.take_writer().expect("no writer");
+
+        assert!(wait_for(true, pid), "interactive shell should start idle");
+        // End the foreground command with EOF rather than SIGINT. An interrupt
+        // sent while the shell is still moving the command into its own
+        // foreground process group can be delivered before the command resets
+        // its signal dispositions, leaving it running in a stale foreground
+        // group while the shell shows a prompt. `cat` blocks until stdin hits
+        // EOF, so it stays reliably busy until we end it.
+        writer.write_all(b"cat\n").unwrap();
+        assert!(wait_for(false, pid), "shell running a command is not idle");
+        writer.write_all(&[4]).unwrap();
+        assert!(
+            wait_for(true, pid),
+            "shell should be idle after the command ends"
+        );
+
+        child.kill().ok();
+        child.wait().ok();
     }
 
     #[cfg(target_os = "linux")]

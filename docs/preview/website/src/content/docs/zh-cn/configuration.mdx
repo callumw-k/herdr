@@ -528,7 +528,10 @@ kitty_graphics = false
 ```toml
 [session]
 resume_agents_on_restore = true
+startup_per_agent_delay_ms = 100
 ```
+
+为减少启动时的资源争用，自动恢复默认每隔 100 毫秒启动一个智能体。第一个满足条件的智能体会立即启动。设置 `startup_per_agent_delay_ms = 0` 可禁用间隔。手动启动和显式连接终端不受影响。修改后需重启 Herdr 服务器。
 
 只有通过官方集成获得有效原生会话引用的窗格才能恢复；其他窗格会作为普通 shell 恢复。有关受支持的智能体和持久化行为，请参阅[会话状态与恢复](/docs/session-state/)。
 

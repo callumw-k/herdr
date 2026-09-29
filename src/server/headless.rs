@@ -82,6 +82,11 @@ mod render;
 mod retained_surface;
 mod surface_interest;
 
+// Producers can refill even a bounded channel while it is being drained.
+// Yield to scheduled work and rendering between batches; select! below
+// immediately wakes for any messages left in either external queue.
+const EXTERNAL_EVENT_DRAIN_LIMIT: usize = 64;
+
 pub use bootstrap::run_server;
 use lifecycle::wait_for_live_handoff_response_write;
 #[cfg(unix)]
@@ -1011,7 +1016,10 @@ impl HeadlessServer {
     /// Drains server events from the dedicated channel.
     fn drain_server_events(&mut self) -> bool {
         let mut changed = false;
-        while !self.should_quit.load(Ordering::Acquire) {
+        for _ in 0..EXTERNAL_EVENT_DRAIN_LIMIT {
+            if self.should_quit.load(Ordering::Acquire) {
+                break;
+            }
             let Ok(ev) = self.server_event_rx.try_recv() else {
                 break;
             };
@@ -1853,6 +1861,7 @@ impl HeadlessServer {
                 surface_active,
                 surface_reuse,
                 surface_delta,
+                surface_scroll,
                 writer,
             } => {
                 if self.handoff_in_progress {
@@ -1900,6 +1909,9 @@ impl HeadlessServer {
                 connection.shell_surface_active = surface_active;
                 connection.render_state.enable_surface_reuse(surface_reuse);
                 connection.render_state.enable_surface_delta(surface_delta);
+                connection
+                    .render_state
+                    .enable_surface_scroll(surface_scroll);
                 connection.shell_projection_revision = 1;
                 let config_diagnostic = if endpoint_keybindings {
                     self.server_config_diagnostic.as_deref()
@@ -2788,7 +2800,10 @@ impl HeadlessServer {
     /// During shutdown, remaining requests get a `server_unavailable` error.
     fn drain_api_requests_with_shutdown_check(&mut self) -> bool {
         let mut changed = false;
-        while !self.should_quit.load(Ordering::Acquire) {
+        for _ in 0..EXTERNAL_EVENT_DRAIN_LIMIT {
+            if self.should_quit.load(Ordering::Acquire) {
+                break;
+            }
             let Ok(msg) = self.app.api_rx.try_recv() else {
                 break;
             };

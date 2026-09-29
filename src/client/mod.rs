@@ -70,7 +70,7 @@ use terminal_geometry::{
 };
 use terminal_geometry::{
     host_cell_size_query_required, initial_terminal_geometry, query_host_cell_size,
-    query_host_terminal_theme, resize_poll_loop, should_query_host_terminal_theme,
+    query_host_terminal_theme, resize_poll_loop,
 };
 #[cfg(unix)]
 use terminal_geometry::{reported_cell_size_from_events, store_reported_cell_size};
@@ -144,6 +144,16 @@ use crate::protocol::{self, ClientMessage, ServerMessage, MAX_GRAPHICS_FRAME_SIZ
 #[cfg(test)]
 use crate::protocol::{AttachScrollDirection, AttachScrollSource, NotifyKind};
 use crate::server::socket_paths::client_socket_path;
+
+/// The decoder for whichever optional surface encodings this connection negotiated.
+fn negotiated_surface_decoder(
+    negotiation: &endpoint::EndpointNegotiation,
+) -> Option<protocol::surface_reuse::Decoder> {
+    let reuse = negotiation.supports_capability(protocol::surface_reuse::CAPABILITY);
+    let delta = negotiation.supports_capability(protocol::surface_delta::CAPABILITY);
+    let scroll = negotiation.supports_capability(protocol::surface_scroll::CAPABILITY);
+    (reuse || delta || scroll).then(|| protocol::surface_reuse::Decoder::new(delta, scroll))
+}
 
 fn run_client_with_mode(
     attach_request: Option<(String, bool)>,
@@ -507,8 +517,7 @@ async fn run_client_loop(
     let mut endpoint_commands = endpoint_commands::EndpointCommands::default();
 
     // Spawn the stdin reader thread.
-    let will_query_host_terminal_theme =
-        state.attach_escape.is_none() && should_query_host_terminal_theme();
+    let will_query_host_terminal_theme = state.attach_escape.is_none();
     let host_theme_query_pending = Arc::new(AtomicU32::new(0));
     let stdin_host_theme_query_pending = host_theme_query_pending.clone();
     // Terminals behind ConPTY report no pixel size through the ioctl, so ask the
@@ -545,9 +554,9 @@ async fn run_client_loop(
         );
     });
 
+    #[cfg(unix)]
     if will_query_host_terminal_theme {
         query_host_terminal_theme();
-        #[cfg(not(windows))]
         if state.shell.is_some() {
             query_host_terminal_appearance();
         }
@@ -588,10 +597,7 @@ async fn run_client_loop(
             handshake.endpoint_methods.unwrap_or_default(),
             handshake.endpoint_capabilities.unwrap_or_default(),
         );
-        let surface_reuse = negotiation.supports_capability(protocol::surface_reuse::CAPABILITY);
-        let surface_delta = negotiation.supports_capability(protocol::surface_delta::CAPABILITY);
-        let surface_decoder = (surface_reuse || surface_delta)
-            .then(|| protocol::surface_reuse::Decoder::new(surface_delta));
+        let surface_decoder = negotiated_surface_decoder(&negotiation);
         let transport = start_endpoint_transport(
             stream,
             (),
@@ -1184,9 +1190,9 @@ async fn run_client_loop(
                 cell_height_px,
                 pixel_geometry_exact,
             ) => {
-                // Palette updates through OSC do not necessarily produce a color-scheme
-                // notification. Re-query on redraw, including SIGWINCH without a resize,
-                // so desktop theme switchers can refresh the existing panes in place.
+                // On Unix, palette changes may lack a color-scheme notification.
+                // Re-query on redraw, including SIGWINCH without a resize.
+                #[cfg(unix)]
                 if will_query_host_terminal_theme {
                     host_theme_query_pending.fetch_add(1, Ordering::AcqRel);
                     query_host_terminal_theme();
@@ -1285,10 +1291,7 @@ async fn run_client_loop(
                     ) {
                         continue;
                     }
-                    let surface_reuse =
-                        negotiation.supports_capability(protocol::surface_reuse::CAPABILITY);
-                    let surface_delta =
-                        negotiation.supports_capability(protocol::surface_delta::CAPABILITY);
+                    let surface_decoder = negotiated_surface_decoder(&negotiation);
                     let agent_view_projection_supported = negotiation.supports_capability(
                         crate::protocol::endpoint::AGENT_VIEW_PROJECTION_CAPABILITY,
                     );
@@ -1313,8 +1316,6 @@ async fn run_client_loop(
                     if let Some(frame) = frame {
                         state.present_frame(frame);
                     }
-                    let surface_decoder = (surface_reuse || surface_delta)
-                        .then(|| protocol::surface_reuse::Decoder::new(surface_delta));
                     let reader_tx = event_tx.clone();
                     std::thread::spawn(move || {
                         server_reader_thread(

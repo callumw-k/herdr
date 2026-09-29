@@ -63,13 +63,13 @@ fn indexed_range_prefix(bindings: &[IndexedKeybind]) -> Option<&str> {
 
 pub(crate) fn keybind_help_groups(
     keybinds: &Keybinds,
-    prefix: (crossterm::event::KeyCode, crossterm::event::KeyModifiers),
+    prefixes: &[crate::config::KeyCombo],
 ) -> Vec<KeybindHelpGroup> {
     let mut groups = vec![
         (
             "global",
             vec![
-                entry(crate::config::format_key_combo(prefix), "prefix mode"),
+                entry(crate::config::format_prefix_combos(prefixes), "prefix mode"),
                 entry(binding_label(&keybinds.help), "keybinds"),
                 entry(binding_label(&keybinds.settings), "settings"),
                 entry(binding_label(&keybinds.detach), "detach"),
@@ -290,12 +290,10 @@ mod tests {
 
     #[test]
     fn help_lists_every_arrangement_float_and_pin_binding() {
-        let keybinds = crate::config::Keybinds::default();
-        let prefix = (
-            crossterm::event::KeyCode::Char('b'),
-            crossterm::event::KeyModifiers::CONTROL,
+        let groups = keybind_help_groups(
+            &Keybinds::default(),
+            &[(KeyCode::Char('b'), KeyModifiers::CONTROL)],
         );
-        let groups = keybind_help_groups(&keybinds, prefix);
         let labels: Vec<&str> = groups
             .iter()
             .flat_map(|(_, entries)| entries.iter().map(|(_, label)| label.as_ref()))
@@ -312,5 +310,19 @@ mod tests {
         ] {
             assert!(labels.contains(&expected), "missing help entry {expected}");
         }
+    }
+
+    #[test]
+    fn help_lists_every_configured_prefix() {
+        let groups = keybind_help_groups(
+            &Keybinds::default(),
+            &[
+                (KeyCode::Char(' '), KeyModifiers::CONTROL),
+                (KeyCode::Char('s'), KeyModifiers::CONTROL),
+            ],
+        );
+        let global = &groups[0].1;
+        assert_eq!(global[0].0, "ctrl+space / ctrl+s");
+        assert_eq!(global[0].1, "prefix mode");
     }
 }

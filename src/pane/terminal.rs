@@ -579,6 +579,10 @@ impl PaneTerminal {
             .kitty_image_placements_with_data_filter(needs_data)
     }
 
+    pub(crate) fn kitty_image_fingerprints(&self, image_ids: &[u32]) -> Vec<Option<u64>> {
+        self.ghostty.kitty_image_fingerprints(image_ids)
+    }
+
     pub fn apply_host_terminal_theme(&self, theme: crate::terminal_theme::TerminalTheme) {
         self.ghostty.apply_host_terminal_theme(theme);
     }
@@ -2349,6 +2353,14 @@ impl GhosttyPaneTerminal {
             .unwrap_or_default()
     }
 
+    pub(crate) fn kitty_image_fingerprints(&self, image_ids: &[u32]) -> Vec<Option<u64>> {
+        self.core
+            .lock()
+            .ok()
+            .and_then(|core| core.terminal.kitty_image_fingerprints(image_ids).ok())
+            .unwrap_or_else(|| vec![None; image_ids.len()])
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect, show_cursor: bool) {
         let Ok(mut core) = self.core.lock() else {
             return;
@@ -2665,6 +2677,7 @@ fn ghostty_collect_dirty_patch(
     let mut grapheme_bytes = Vec::new();
     let mut symbol_scratch = String::new();
     let mut patch_rows = Vec::new();
+    let blank = blank_cell_data(default_fg, default_bg);
     while let Some(y) = rows.next_dirty() {
         if y >= area_height {
             break;
@@ -2680,6 +2693,15 @@ fn ghostty_collect_dirty_patch(
         let mut patch_cells = Vec::with_capacity(usize::from(area_width));
         let mut x = 0u16;
         while x < area_width && cells.next() {
+            match cells.is_default_blank() {
+                Ok(true) => {
+                    patch_cells.push(blank.clone());
+                    x += 1;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(_) => fallback!("raw_cell_error"),
+            }
             let Ok(basic) = cells.basic_data() else {
                 fallback!("basic_data_error");
             };
@@ -2708,10 +2730,7 @@ fn ghostty_collect_dirty_patch(
             patch_cells.push(cell_data_from_style(symbol, style));
             x += 1;
         }
-        while x < area_width {
-            patch_cells.push(blank_cell_data(default_fg, default_bg));
-            x += 1;
-        }
+        patch_cells.resize(usize::from(area_width), blank.clone());
         patch_rows.push((y, patch_cells));
     }
 

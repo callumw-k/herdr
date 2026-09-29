@@ -531,7 +531,7 @@ impl ClientShellState {
         if self.overlay.is_some() {
             let navigator_prefix = matches!(self.overlay, Some(ClientShellOverlay::Navigator(_)))
                 && (self.mode == ClientShellMode::Prefix
-                    || crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix));
+                    || self.config.keybinds.matches_prefix(key));
             if !navigator_prefix {
                 self.route_overlay_key(key, outcome);
                 return None;
@@ -539,9 +539,7 @@ impl ClientShellState {
             if self.mode == ClientShellMode::Prefix {
                 self.mode = self.copy_or_terminal_mode();
                 outcome.repaint = true;
-                if key.code != KeyCode::Esc
-                    && !crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
-                {
+                if key.code != KeyCode::Esc && !self.config.keybinds.matches_prefix(key) {
                     if let Some(binding) =
                         crate::input::resolve_prefix_binding(&self.config.keybinds.keybinds, key)
                     {
@@ -591,7 +589,7 @@ impl ClientShellState {
                     self.record_binding(binding, outcome);
                     return None;
                 }
-                if crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
+                if self.config.keybinds.matches_prefix(key) {
                     self.mode = ClientShellMode::Prefix;
                     outcome.repaint = true;
                     return None;
@@ -606,7 +604,7 @@ impl ClientShellState {
                 } else {
                     ClientShellMode::Terminal
                 };
-                if crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
+                if self.config.keybinds.matches_prefix(key) {
                     self.mode = return_mode;
                     outcome.repaint = true;
                     return self.focused_pane_id().map(ClientInputTarget::Pane);
@@ -641,7 +639,7 @@ impl ClientShellState {
                     .copy_mode
                     .as_ref()
                     .is_none_or(|copy_mode| copy_mode.search_prompt.is_none())
-                    && crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
+                    && self.config.keybinds.matches_prefix(key)
                 {
                     self.mode = ClientShellMode::Prefix;
                     outcome.repaint = true;
@@ -671,9 +669,7 @@ impl ClientShellState {
         use crate::input::{KeybindAction, KeybindDispatch, KeybindMatch};
 
         self.pending_workspace_highlight = None;
-        if key.code == KeyCode::Esc
-            || crate::config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
-        {
+        if key.code == KeyCode::Esc || self.config.keybinds.matches_prefix(key) {
             self.mode = self.copy_or_terminal_mode();
             self.navigate_workspace_id = None;
             outcome.repaint = true;

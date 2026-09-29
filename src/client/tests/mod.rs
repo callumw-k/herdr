@@ -439,11 +439,6 @@ fn color_scheme_change_event_requests_host_theme_query() {
 }
 
 #[test]
-fn host_terminal_theme_query_is_disabled_on_windows() {
-    assert_eq!(should_query_host_terminal_theme(), !cfg!(windows));
-}
-
-#[test]
 fn write_host_cell_size_query_emits_xtwinops_request() {
     let mut output = Vec::new();
     write_host_cell_size_query(&mut output).unwrap();
@@ -887,6 +882,67 @@ fn terminal_control_resize_command_maps_to_client_resize() {
 }
 
 #[test]
+fn terminal_control_mouse_command_maps_to_attach_mouse() {
+    let action = terminal_control_command_from_json(
+        r#"{"type":"terminal.mouse","action":"down","column":12,"row":5}"#,
+    )
+    .unwrap();
+    let ClientMessage::AttachMouse {
+        kind,
+        position,
+        geometry,
+        modifiers,
+        lines,
+    } = action
+    else {
+        panic!("expected attach mouse command");
+    };
+    assert_eq!(
+        kind,
+        crate::protocol::ClientMouseKind::Down(crate::protocol::ClientMouseButton::Left)
+    );
+    assert_eq!(
+        position,
+        crate::protocol::ClientMousePosition::Cell { column: 12, row: 5 }
+    );
+    assert_eq!((geometry, modifiers, lines), (None, 0, 1));
+}
+
+#[test]
+fn terminal_control_mouse_command_maps_every_action_and_button() {
+    use crate::protocol::{ClientMouseButton as Button, ClientMouseKind as Kind};
+    for (json, expected) in [
+        (r#""action":"up","button":"right""#, Kind::Up(Button::Right)),
+        (
+            r#""action":"drag","button":"middle""#,
+            Kind::Drag(Button::Middle),
+        ),
+        (r#""action":"move""#, Kind::Moved),
+    ] {
+        let raw = format!(r#"{{"type":"terminal.mouse",{json},"column":0,"row":0,"modifiers":4}}"#);
+        let ClientMessage::AttachMouse {
+            kind, modifiers, ..
+        } = terminal_control_command_from_json(&raw).unwrap()
+        else {
+            panic!("expected attach mouse command");
+        };
+        assert_eq!((kind, modifiers), (expected, 4), "{raw}");
+    }
+}
+
+#[test]
+fn terminal_control_mouse_command_rejects_unknown_actions_and_missing_cells() {
+    assert!(terminal_control_command_from_json(
+        r#"{"type":"terminal.mouse","action":"click","column":1,"row":1}"#
+    )
+    .is_err());
+    assert!(terminal_control_command_from_json(
+        r#"{"type":"terminal.mouse","action":"down","column":1}"#
+    )
+    .is_err());
+}
+
+#[test]
 fn terminal_control_scroll_command_maps_to_attach_scroll() {
     let action = terminal_control_command_from_json(
         r#"{"type":"terminal.scroll","direction":"up","lines":3}"#,
@@ -904,12 +960,4 @@ fn terminal_control_scroll_command_maps_to_attach_scroll() {
     assert_eq!(source, AttachScrollSource::Wheel);
     assert_eq!(direction, AttachScrollDirection::Up);
     assert_eq!(lines, 3);
-}
-
-#[test]
-fn forward_clipboard_uses_local_clipboard_path() {
-    let _guard = env_lock().lock().unwrap();
-    let _ssh = EnvVarGuard::set("SSH_CONNECTION", "1 2 3 4");
-    assert!(forward_clipboard("dGVzdA=="));
-    assert!(!forward_clipboard("not base64"));
 }
