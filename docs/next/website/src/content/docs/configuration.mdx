@@ -536,6 +536,8 @@ Choose `herdr` for an in-app toast, `terminal` for an outer-terminal notificatio
 
 On macOS, `system` tries `terminal-notifier` first and falls back to `/usr/bin/osascript` when it is unavailable or fails. The fallback appears as Script Editor in Notification Center and cannot activate the hosting terminal. Install `terminal-notifier` with `brew install terminal-notifier`. For a supported, detected terminal, it can activate the terminal app when you click the notification. Alternatively, choose `terminal` to let a supported outer terminal own the notification.
 
+On Windows, `system` notifications remain in Notification Center. Clicking one selects its originating pane in the running Herdr client and brings its terminal window forward when Windows exposes that window. A click cannot reopen a closed client or select a pane from a restarted server. Windows Terminal can bring the owning window forward, but cannot reliably select a different outer terminal tab.
+
 ## Sound
 
 Sound notifications play through the local Herdr client. Custom sounds must be mp3 files; Herdr resolves relative paths from the config file's directory.
@@ -565,7 +567,7 @@ Search the [Config reference](/docs/config-reference/) for scrollback limits, ne
 
 Applications and plugins integrate through the standard Kitty graphics protocol emitted in pane terminal output. Herdr renders these images by default in compatible outer terminals. The external socket pane-overlay API has been removed; there is no replacement socket image API.
 
-Popups, menus, and notifications temporarily hide only the image placements they overlap. Uncovered images stay visible, and hidden placements return when uncovered. Images do not dim with dialog backgrounds.
+Popups, menus, and notifications crop images around the area they cover; the rest of each image stays visible and the covered part returns when the overlay closes. Images do not dim with dialog backgrounds.
 
 Herdr automatically chooses eligible file transports, with no application changes or environment switches. On local Unix Ghostty clients, it can send image data through temporary files instead of encoding it into terminal output. A small file-consumption probe checks support first. Other terminals, SSH-launched clients, and nested multiplexers retain inline output for this last-hop optimization.
 

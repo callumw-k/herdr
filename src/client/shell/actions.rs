@@ -111,19 +111,7 @@ impl ClientShellState {
                 }
                 if action == crate::input::KeybindAction::CloseWorkspace {
                     if let Some(workspace_id) = self.workspace_action_id() {
-                        if self.config.confirm_close {
-                            self.open_confirm_close_overlay(workspace_id);
-                        } else {
-                            self.push_endpoint_method(
-                                crate::api::schema::Method::WorkspaceClose(
-                                    crate::api::schema::WorkspaceCloseParams {
-                                        workspace_id,
-                                        close_group: true,
-                                    },
-                                ),
-                                outcome,
-                            );
-                        }
+                        self.request_workspace_close(workspace_id, None, outcome);
                     }
                     outcome.repaint = true;
                     return;
@@ -455,6 +443,10 @@ impl ClientShellState {
         &mut self,
         target: ClientEndpointFocusTarget,
     ) -> Vec<ClientShellAction> {
+        #[cfg(windows)]
+        if !self.notification_target_is_current(&self.active_endpoint_id, &target) {
+            return Vec::new();
+        }
         let method = match target {
             ClientEndpointFocusTarget::Workspace(workspace_id) => {
                 crate::api::schema::Method::WorkspaceFocus(crate::api::schema::WorkspaceTarget {
@@ -465,6 +457,10 @@ impl ClientShellState {
                 crate::api::schema::Method::TabFocus(crate::api::schema::TabTarget { tab_id })
             }
             ClientEndpointFocusTarget::Pane(pane_id) => {
+                crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id })
+            }
+            #[cfg(windows)]
+            ClientEndpointFocusTarget::Notification { pane_id, .. } => {
                 crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id })
             }
         };

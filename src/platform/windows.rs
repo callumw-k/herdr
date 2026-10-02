@@ -15,6 +15,94 @@ use std::{
 
 mod clipboard_image;
 mod config_backup;
+mod notifications;
+pub(crate) use notifications::{
+    foreground_desktop_notification_host, maybe_activate_desktop_notification,
+    show_actionable_desktop_notification, show_desktop_notification,
+};
+
+pub(crate) fn probe_local_server(path: &std::path::Path) -> std::io::Result<()> {
+    use interprocess::os::windows::named_pipe::{pipe_mode::Bytes, DuplexPipeStream};
+    use interprocess::ConnectWaitMode;
+
+    // The local-socket wrapper ignores wait_mode on Windows in interprocess
+    // 2.4.2. Its named-pipe API honors it without importing/reopening a handle.
+    let name = format!(r"\\.\pipe\{}", path.to_string_lossy());
+    DuplexPipeStream::<Bytes>::connect_by_path_with_wait_mode(
+        name.as_str(),
+        ConnectWaitMode::Timeout(Duration::from_millis(500)),
+    )
+    .map(|_| ())
+    .map_err(local_server_connection_error)
+}
+
+pub(crate) fn local_server_security_descriptor(
+) -> std::io::Result<interprocess::os::windows::security_descriptor::SecurityDescriptor> {
+    user_security_descriptor("GRGW")
+}
+
+fn user_security_descriptor(
+    access: &str,
+) -> std::io::Result<interprocess::os::windows::security_descriptor::SecurityDescriptor> {
+    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+    use widestring::{U16CStr, U16CString};
+    use windows_sys::Win32::Security::{
+        Authorization::ConvertSidToStringSidW, GetTokenInformation, TokenUser, TOKEN_QUERY,
+        TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let mut needed = 0;
+    unsafe { GetTokenInformation(token.as_raw_handle(), TokenUser, null_mut(), 0, &mut needed) };
+    if needed == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // usize storage keeps TOKEN_USER aligned and its trailing SID alive.
+    let mut buffer = vec![0usize; (needed as usize).div_ceil(size_of::<usize>())];
+    if unsafe {
+        GetTokenInformation(
+            token.as_raw_handle(),
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: GetTokenInformation initialized the aligned TOKEN_USER and SID.
+    let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
+    let mut sid = null_mut();
+    if unsafe { ConvertSidToStringSidW(user.User.Sid, &mut sid) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let sid_text = unsafe { U16CStr::from_ptr_str(sid) }.to_string_lossy();
+    unsafe { LocalFree(sid.cast()) };
+    // The elevated token's default owner can be Administrators. Authorize the
+    // account instead: its ordinary clients deliberately control elevated panes.
+    let sddl = U16CString::from_str(format!("D:P(A;;GA;;;SY)(A;;{access};;;{sid_text})"))
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
+    SecurityDescriptor::deserialize(&sddl)
+}
+
+pub(crate) fn local_server_connection_error(error: std::io::Error) -> std::io::Error {
+    if error.kind() != std::io::ErrorKind::PermissionDenied {
+        return error;
+    }
+    std::io::Error::new(
+        error.kind(),
+        format!(
+            "For an older elevated server, stop it in an admin shell and \
+             reopen Herdr (closes panes). {error}"
+        ),
+    )
+}
 
 pub(crate) fn windows_virtual_terminal_input_active() -> bool {
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
@@ -177,10 +265,7 @@ pub(crate) fn create_config_temporary(
             .create_new(true)
             .open(path);
     }
-    use interprocess::os::windows::security_descriptor::{
-        AsSecurityDescriptorExt as _, SecurityDescriptor,
-    };
-    use widestring::U16CString;
+    use interprocess::os::windows::security_descriptor::AsSecurityDescriptorExt as _;
     use windows_sys::Win32::{
         Foundation::GENERIC_WRITE,
         Storage::FileSystem::{
@@ -188,9 +273,7 @@ pub(crate) fn create_config_temporary(
             FILE_SHARE_WRITE,
         },
     };
-    let sddl =
-        U16CString::from_str("D:P(A;;GA;;;SY)(A;;GA;;;OW)").map_err(std::io::Error::other)?;
-    let descriptor = SecurityDescriptor::deserialize(&sddl)?;
+    let descriptor = user_security_descriptor("GA")?;
     let mut attributes = SECURITY_ATTRIBUTES {
         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
         lpSecurityDescriptor: null_mut(),
@@ -368,13 +451,10 @@ use windows_sys::{
                     KEYBDINPUT, KEYEVENTF_KEYUP,
                 },
             },
-            Shell::{
-                CommandLineToArgvW, ShellExecuteW, Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_TIP,
-                NIIF_INFO, NIIF_NOSOUND, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
-            },
+            Shell::{CommandLineToArgvW, ShellExecuteW},
             WindowsAndMessaging::{
-                CreateWindowExW, DestroyWindow, GetForegroundWindow, GetWindowThreadProcessId,
-                LoadIconW, SendMessageTimeoutW, IDI_APPLICATION, SMTO_ABORTIFHUNG, WM_IME_CONTROL,
+                GetForegroundWindow, GetWindowThreadProcessId, SendMessageTimeoutW,
+                SMTO_ABORTIFHUNG, WM_IME_CONTROL,
             },
         },
     },
@@ -2581,112 +2661,6 @@ fn clipboard_global_bytes(format: u32, max_bytes: usize) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-pub fn show_desktop_notification(title: &str, body: Option<&str>) -> std::io::Result<bool> {
-    let title = title.to_owned();
-    let body = body.unwrap_or(&title).to_owned();
-    let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-    std::thread::Builder::new()
-        .name("herdr-windows-notification".into())
-        .spawn(move || show_desktop_notification_on_thread(&title, &body, ready_tx))?;
-    ready_rx
-        .recv_timeout(Duration::from_secs(2))
-        .map_err(|err| match err {
-            std::sync::mpsc::RecvTimeoutError::Timeout => std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "Windows notification setup timed out",
-            ),
-            std::sync::mpsc::RecvTimeoutError::Disconnected => std::io::Error::other(
-                "Windows notification thread exited before reporting readiness",
-            ),
-        })?
-}
-
-fn show_desktop_notification_on_thread(
-    title: &str,
-    body: &str,
-    ready_tx: std::sync::mpsc::SyncSender<std::io::Result<bool>>,
-) {
-    let class_name = wide_null("STATIC");
-    let window_name = wide_null("Herdr notifications");
-    let hwnd = unsafe {
-        CreateWindowExW(
-            0,
-            class_name.as_ptr(),
-            window_name.as_ptr(),
-            0,
-            0,
-            0,
-            0,
-            0,
-            null_mut(),
-            null_mut(),
-            null_mut(),
-            std::ptr::null(),
-        )
-    };
-    if hwnd.is_null() {
-        let _ = ready_tx.send(Err(std::io::Error::last_os_error()));
-        return;
-    }
-
-    let mut notification = unsafe { std::mem::zeroed::<NOTIFYICONDATAW>() };
-    notification.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
-    notification.hWnd = hwnd;
-    notification.uID = 1;
-    notification.hIcon = unsafe { LoadIconW(null_mut(), IDI_APPLICATION) };
-    notification.uFlags = NIF_TIP;
-    if !notification.hIcon.is_null() {
-        notification.uFlags |= NIF_ICON;
-    }
-    copy_wide_truncated(&mut notification.szTip, "Herdr");
-
-    if unsafe { Shell_NotifyIconW(NIM_ADD, &notification) } == 0 {
-        let _ = ready_tx.send(Err(std::io::Error::other(
-            "failed to add Herdr notification-area icon",
-        )));
-        unsafe {
-            DestroyWindow(hwnd);
-        }
-        return;
-    }
-
-    notification.uFlags = NIF_INFO;
-    notification.dwInfoFlags = NIIF_INFO | NIIF_NOSOUND;
-    copy_wide_truncated(&mut notification.szInfoTitle, title);
-    copy_wide_truncated(&mut notification.szInfo, body);
-    if unsafe { Shell_NotifyIconW(NIM_MODIFY, &notification) } == 0 {
-        unsafe {
-            Shell_NotifyIconW(NIM_DELETE, &notification);
-            DestroyWindow(hwnd);
-        }
-        let _ = ready_tx.send(Err(std::io::Error::other(
-            "failed to show Herdr desktop notification",
-        )));
-        return;
-    }
-
-    let _ = ready_tx.send(Ok(true));
-    std::thread::sleep(Duration::from_secs(10));
-    unsafe {
-        Shell_NotifyIconW(NIM_DELETE, &notification);
-        DestroyWindow(hwnd);
-    }
-}
-
-fn copy_wide_truncated<const N: usize>(destination: &mut [u16; N], value: &str) {
-    destination.fill(0);
-    let mut offset = 0;
-    for ch in value.chars() {
-        let mut units = [0; 2];
-        let encoded = ch.encode_utf16(&mut units);
-        if offset + encoded.len() >= N {
-            break;
-        }
-        destination[offset..offset + encoded.len()].copy_from_slice(encoded);
-        offset += encoded.len();
-    }
-}
-
 fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
@@ -3121,6 +3095,152 @@ mod tests {
     };
 
     #[test]
+    fn local_resources_authorize_account_without_admin_rights() {
+        use interprocess::local_socket::traits::Listener as _;
+        use std::io::{Read, Write};
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows_sys::Win32::Security::{
+            CreateRestrictedToken, GetTokenInformation, ImpersonateLoggedOnUser, RevertToSelf,
+            TokenUser, DISABLE_MAX_PRIVILEGE, LUA_TOKEN, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE,
+            TOKEN_QUERY, TOKEN_USER,
+        };
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        let path =
+            std::env::temp_dir().join(format!("herdr-user-pipe-{}.sock", std::process::id()));
+        let listener = crate::ipc::bind_local_listener(&path).unwrap();
+        let mut raw_token = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_DUPLICATE | TOKEN_QUERY,
+                    &mut raw_token,
+                )
+            },
+            0
+        );
+        let token = unsafe { OwnedHandle::from_raw_handle(raw_token) };
+        let mut restricted = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                CreateRestrictedToken(
+                    token.as_raw_handle(),
+                    DISABLE_MAX_PRIVILEGE | LUA_TOKEN,
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    &mut restricted,
+                )
+            },
+            0
+        );
+        let restricted = unsafe { OwnedHandle::from_raw_handle(restricted) };
+        let private_path = path.with_extension("private");
+        super::create_config_temporary(&private_path, true)
+            .unwrap()
+            .write_all(b"recovery")
+            .unwrap();
+        assert_ne!(
+            unsafe { ImpersonateLoggedOnUser(restricted.as_raw_handle()) },
+            0
+        );
+        let connection = crate::ipc::connect_local_stream(&path);
+        let private_read = fs::read(&private_path);
+        let private_write = fs::write(&private_path, b"updated");
+        let reverted = unsafe { RevertToSelf() };
+        assert_ne!(reverted, 0);
+        assert_eq!(private_read.unwrap(), b"recovery");
+        private_write.unwrap();
+        let mut client = connection.expect("the account SID must work without admin membership");
+        let mut server = listener.accept().unwrap();
+        client.write_all(b"account").unwrap();
+        let mut received = [0; 7];
+        server.read_exact(&mut received).unwrap();
+        assert_eq!(&received, b"account");
+
+        // Removing the account SID must not leave access through Everyone or
+        // another ordinary group. This exercises the real DACL access check.
+        let mut size = 0;
+        unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TokenUser,
+                std::ptr::null_mut(),
+                0,
+                &mut size,
+            )
+        };
+        let mut user = vec![0usize; (size as usize).div_ceil(std::mem::size_of::<usize>())];
+        assert_ne!(
+            unsafe {
+                GetTokenInformation(
+                    token.as_raw_handle(),
+                    TokenUser,
+                    user.as_mut_ptr().cast(),
+                    size,
+                    &mut size,
+                )
+            },
+            0
+        );
+        let user = unsafe { &*user.as_ptr().cast::<TOKEN_USER>() };
+        let disabled = SID_AND_ATTRIBUTES {
+            Sid: user.User.Sid,
+            Attributes: 0,
+        };
+        let mut without_account = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                CreateRestrictedToken(
+                    token.as_raw_handle(),
+                    DISABLE_MAX_PRIVILEGE | LUA_TOKEN,
+                    1,
+                    &disabled,
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    &mut without_account,
+                )
+            },
+            0
+        );
+        let without_account = unsafe { OwnedHandle::from_raw_handle(without_account) };
+        assert_ne!(
+            unsafe { ImpersonateLoggedOnUser(without_account.as_raw_handle()) },
+            0
+        );
+        let denied = crate::ipc::connect_local_stream(&path);
+        let private_denied = fs::read(&private_path);
+        let reverted = unsafe { RevertToSelf() };
+        assert_ne!(reverted, 0);
+        assert_eq!(
+            denied.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            private_denied.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_ne!(
+            unsafe { ImpersonateLoggedOnUser(restricted.as_raw_handle()) },
+            0
+        );
+        let removed = fs::remove_file(private_path);
+        let reverted = unsafe { RevertToSelf() };
+        assert_ne!(reverted, 0);
+        removed.expect("the account must be able to remove its private recovery files");
+        drop(client);
+        drop(server);
+        drop(listener);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn clipboard_text_equals_normalizes_line_endings() {
         assert!(super::clipboard_text_equals("hello", b"hello"));
         assert!(super::clipboard_text_equals("a\r\nb", b"a\nb"));
@@ -3320,15 +3440,6 @@ mod tests {
             )),
             None
         );
-    }
-
-    #[test]
-    fn windows_notification_text_is_null_terminated_and_unicode_safe() {
-        let mut destination = [u16::MAX; 6];
-        super::copy_wide_truncated(&mut destination, "abc😀def");
-
-        assert_eq!(String::from_utf16(&destination[..5]).unwrap(), "abc😀");
-        assert_eq!(destination[5], 0);
     }
 
     #[test]

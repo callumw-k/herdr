@@ -563,7 +563,16 @@ impl WindowsInputPump {
     ) -> Vec<crate::protocol::ClientInputEvent> {
         for event in &mut events {
             if let crate::raw_input::RawInputEvent::Paste(text) = event {
-                decode_windows_terminal_paste_enters(text);
+                let decoded = if self.paste_from_win32_key_records {
+                    None
+                } else {
+                    decode_win32_paste_payload(text)
+                };
+                if let Some(decoded) = decoded {
+                    *text = decoded;
+                } else {
+                    decode_windows_terminal_paste_enters(text);
+                }
                 self.paste_from_win32_key_records = false;
             }
         }
@@ -678,6 +687,54 @@ impl PlatformInputItem {
         )
         .then(|| event.clone())
     }
+}
+
+/// WezTerm can put serialized key records inside raw bracketed-paste markers.
+/// Only recognize a complete payload of matching text press/release pairs and
+/// modifier-only reports. Mixed, incomplete, or unsupported payloads stay opaque.
+fn decode_win32_paste_payload(text: &str) -> Option<String> {
+    let mut reports = text.split_inclusive('_');
+    let mut units = Vec::new();
+    while let Some(report) = reports.next() {
+        let pressed = parse_win32_paste_record(report)?;
+        if WindowsInputMapper::key_record_is_modifier_only(pressed) {
+            continue;
+        }
+        if !pressed.key_down || pressed.unicode == 0 {
+            return None;
+        }
+        let released = parse_win32_paste_record(reports.next()?)?;
+        if released
+            != (WindowsKeyRecord {
+                key_down: false,
+                ..pressed
+            })
+        {
+            return None;
+        }
+        units.push(pressed.unicode);
+    }
+    if units.is_empty() {
+        return None;
+    }
+    // Decode locally so invalid or incomplete surrogates cannot leak into the
+    // next paste, and reject rather than partially replacing malformed text.
+    String::from_utf16(&units).ok()
+}
+
+fn parse_win32_paste_record(report: &str) -> Option<WindowsKeyRecord> {
+    let body = report.strip_prefix("\x1b[")?.strip_suffix('_')?;
+    if !body
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || byte == b';')
+        || !matches!(body.split(';').nth(3), Some("0" | "1"))
+    {
+        return None;
+    }
+    let record = parse_win32_input_mode_key_record(body)?;
+    // This compatibility exception covers the captured one-unit records, not
+    // repeated key streams that could expand a small paste into large output.
+    (record.repeat_count == 1).then_some(record)
 }
 
 fn decode_windows_terminal_paste_enters(text: &mut String) {
@@ -2034,6 +2091,108 @@ mod tests {
             vec![crate::protocol::ClientInputEvent::Paste {
                 text: "About\ragent multiplexer that lives in your terminal.".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn vti_reported_wezterm_paste_preserves_clipboard_text() {
+        // Exact raw Unicode fields from #4725, comments 5877227755/5877228192.
+        // All records have the other fields supplied by key_char. Preserve the
+        // seven paste batch boundaries and the preceding modifier records.
+        let batches = [
+            "\x1b[17;29;0;1;8;1_",
+            "\x1b[16;42;0;1;24;1_",
+            "\x1b[200~\x1b[65;30;97;1;0;1_\x1b[65;30;97;0;0;1_\x1b[76;38;108;1;0;1_\x1b[76;3",
+            "8;108;0;0;1_\x1b[80;25;112;1;0;1_\x1b[80;25;112;0;0;1_\x1b[72;35;104;1;0;",
+            "1_\x1b[72;35;104;0;0;1_\x1b[65;30;97;1;0;1_\x1b[65;30;97;0;0;1_\x1b[17;29;0;",
+            "1;8;1_\x1b[13;28;10;1;8;1_\x1b[13;28;10;0;8;1_\x1b[17;29;0;0;0;1_\x1b[66;48;",
+            "98;1;0;1_\x1b[66;48;98;0;0;1_\x1b[69;18;101;1;0;1_\x1b[69;18;101;0;0;1_\x1b[",
+            "84;20;116;1;0;1_\x1b[84;20;116;0;0;1_\x1b[65;30;97;1;0;1_\x1b[65;30;97;0;",
+            "0;1_\x1b[201~",
+        ];
+        let mut translator = WindowsInputTranslator::default();
+        let mut events = Vec::new();
+        for batch in batches {
+            for record in batch.chars().map(key_char) {
+                events.extend(translator.translate(record));
+            }
+        }
+        assert_eq!(
+            events,
+            vec![crate::protocol::ClientInputEvent::Paste {
+                text: "alpha\nbeta".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn win32_paste_payload_rejects_incomplete_or_unsupported_records() {
+        const PAIR: &str = "\x1b[65;30;97;1;0;1_\x1b[65;30;97;0;0;1_";
+        for payload in [
+            format!("{PAIR}trailing text"),
+            format!("{PAIR}\x1b[65;30;97;1;0;"),
+            "\x1b[65;30;97;1;0;1_".into(),
+            "\x1b[65;30;97;0;0;1_".into(),
+            "\x1b[65;30;97;1;0;1_\x1b[66;48;98;0;0;1_".into(),
+            PAIR.replace(";97;1;", ";97;2;"),
+            PAIR.replace(";0;1_", ";0;0_"),
+            PAIR.replace(";0;1_", ";0;65535_"),
+            PAIR.replace(";97;", ";65536;"),
+            PAIR.replace(";97;", ";+97;"),
+            PAIR.replace(";97;", ";0;"),
+            PAIR.replace(";97;", ";55296;"),
+            "\x1b[17;29;0;1;8;1_\x1b[17;29;0;0;0;1_".into(),
+        ] {
+            assert_eq!(decode_win32_paste_payload(&payload), None, "{payload:?}");
+        }
+    }
+
+    fn serialized_paste_text(text: &str) -> String {
+        text.encode_utf16()
+            .map(|unit| format!("\x1b[0;0;{unit};1;0;1_\x1b[0;0;{unit};0;0;1_"))
+            .collect()
+    }
+
+    #[test]
+    fn vti_raw_win32_paste_keeps_decoded_controls_as_text_and_surrogates_local() {
+        let text = "😀\x1b[201~\x1b[<0;1;1M";
+        let high = "\x1b[0;0;55357;1;0;1_\x1b[0;0;55357;0;0;1_";
+        let low = "\x1b[0;0;56832;1;0;1_\x1b[0;0;56832;0;0;1_";
+        let payloads = [
+            serialized_paste_text(text),
+            high.into(),
+            low.into(),
+            "plain".into(),
+        ];
+        let mut translator = WindowsInputTranslator::default();
+        let mut events = Vec::new();
+        for payload in payloads {
+            for record in format!("\x1b[200~{payload}\x1b[201~").chars().map(key_char) {
+                events.extend(translator.translate(record));
+            }
+            events.extend(translator.idle());
+        }
+        assert_eq!(
+            events,
+            [text, high, low, "plain"]
+                .into_iter()
+                .map(|text| crate::protocol::ClientInputEvent::Paste { text: text.into() })
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn vti_encoded_paste_preserves_reports_then_raw_paste_decodes() {
+        let text = serialized_paste_text("a");
+        let framed = format!("\x1b[200~{text}\x1b[201~");
+        let mut records = win32_input_mode_encoded_key_bytes(framed.as_bytes());
+        records.extend(framed.chars().map(key_char));
+        assert_eq!(
+            translate(records),
+            vec![
+                crate::protocol::ClientInputEvent::Paste { text },
+                crate::protocol::ClientInputEvent::Paste { text: "a".into() },
+            ]
         );
     }
 

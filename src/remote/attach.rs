@@ -138,7 +138,8 @@ impl SavedSshSetup {
             manage,
             crate::session::DEFAULT_SESSION_NAME.to_owned(),
         );
-        let remote_herdr = RemoteHerdr::for_platform(detect_remote_platform(&ssh)?);
+        let remote_herdr =
+            RemoteHerdr::for_platform(detect_remote_platform(&ssh)?.into_setup_platform());
         let candidates = remote_binary_candidates(&ssh, &remote_herdr)?;
         Ok(Self {
             ssh,
@@ -256,6 +257,21 @@ struct RemoteSessionListJson {
 struct RemoteSessionJson {
     name: String,
     running: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct DetectedRemotePlatform {
+    platform: RemotePlatform,
+    setup_note: Option<&'static str>,
+}
+
+impl DetectedRemotePlatform {
+    fn into_setup_platform(self) -> RemotePlatform {
+        if let Some(note) = self.setup_note {
+            eprintln!("note: {note}");
+        }
+        self.platform
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1272,7 +1288,7 @@ pub(super) fn prepare_remote_herdr(
     live_handoff_enabled: bool,
     require_surface_interest: bool,
 ) -> io::Result<PreparedRemoteHerdr> {
-    let platform = detect_remote_platform(ssh)?;
+    let platform = detect_remote_platform(ssh)?.into_setup_platform();
     let remote_herdr = RemoteHerdr::for_platform(platform);
     let candidates = remote_binary_candidates(ssh, &remote_herdr)?;
     prepare_discovered_remote_herdr(
@@ -1365,7 +1381,7 @@ fn prepare_discovered_remote_herdr(
 }
 
 pub(super) fn find_installed_remote_herdr(ssh: &RemoteSsh) -> io::Result<RemoteHerdr> {
-    let platform = detect_remote_platform(ssh)?;
+    let platform = detect_remote_platform(ssh)?.platform;
     let remote_herdr = RemoteHerdr::for_platform(platform);
     let candidates = remote_binary_candidates(ssh, &remote_herdr)?;
     for mut candidate in candidates {
@@ -1459,7 +1475,7 @@ pub(super) fn discover_remote_api_metadata(
     ssh: &RemoteSsh,
     session: &str,
 ) -> io::Result<crate::client::endpoint::SshMachineMetadata> {
-    let platform = detect_remote_platform(ssh)?;
+    let platform = detect_remote_platform(ssh)?.platform;
     if !platform.is_windows() {
         let output =
             ssh.framed_user_shell_output(&posix_remote_api_discovery_command(&platform, session))?;
@@ -1501,7 +1517,7 @@ pub(super) fn discover_remote_api_metadata(
     ))
 }
 
-fn detect_remote_platform(ssh: &RemoteSsh) -> io::Result<RemotePlatform> {
+fn detect_remote_platform(ssh: &RemoteSsh) -> io::Result<DetectedRemotePlatform> {
     let output = ssh.sh_output("uname -s\nuname -m\n")?;
     let mut windows_uname_hint = false;
     let posix_error = if output.status.success() {
@@ -1510,7 +1526,10 @@ fn detect_remote_platform(ssh: &RemoteSsh) -> io::Result<RemotePlatform> {
         let os = lines.next().unwrap_or_default();
         let arch = lines.next().unwrap_or_default();
         if let Some(platform) = RemotePlatform::from_uname(os, arch) {
-            return Ok(platform);
+            return Ok(DetectedRemotePlatform {
+                platform,
+                setup_note: None,
+            });
         }
         windows_uname_hint = looks_like_windows_uname(os);
         io::Error::other(format!(
@@ -1561,20 +1580,27 @@ fn windows_platform_probe_command() -> String {
     )
 }
 
-fn parse_windows_platform_probe(stdout: &str) -> Result<Option<RemotePlatform>, String> {
+fn parse_windows_platform_probe(stdout: &str) -> Result<Option<DetectedRemotePlatform>, String> {
     let Some(arch) = stdout
         .lines()
         .find_map(|line| line.trim().strip_prefix("herdr-windows:"))
     else {
         return Ok(None);
     };
-    match arch.trim().to_ascii_uppercase().as_str() {
-        "AMD64" | "X86_64" => Ok(Some(RemotePlatform {
+    let setup_note = match arch.trim().to_ascii_uppercase().as_str() {
+        "AMD64" | "X86_64" => None,
+        "ARM64" => Some(
+            "Windows ARM64 support is best-effort and uses x64 emulation; bugs and issues are expected.",
+        ),
+        arch => return Err(format!("unsupported remote platform: Windows {arch}")),
+    };
+    Ok(Some(DetectedRemotePlatform {
+        platform: RemotePlatform {
             os: "windows",
             arch: "x86_64",
-        })),
-        arch => Err(format!("unsupported remote platform: Windows {arch}")),
-    }
+        },
+        setup_note,
+    }))
 }
 
 fn remote_binary_candidates(
@@ -4394,19 +4420,39 @@ mod tests {
     }
 
     #[test]
-    fn windows_platform_probe_accepts_only_x86_64() {
-        assert_eq!(
-            parse_windows_platform_probe("profile noise\r\nherdr-windows:AMD64\r\n").unwrap(),
-            Some(RemotePlatform {
-                os: "windows",
-                arch: "x86_64",
-            })
-        );
+    fn windows_platform_probe_preserves_native_and_unsupported_architectures() {
+        for arch in ["AMD64", "x86_64"] {
+            assert_eq!(
+                parse_windows_platform_probe(&format!("profile noise\r\nherdr-windows:{arch}\r\n"))
+                    .unwrap(),
+                Some(DetectedRemotePlatform {
+                    platform: RemotePlatform {
+                        os: "windows",
+                        arch: "x86_64",
+                    },
+                    setup_note: None,
+                })
+            );
+        }
         assert_eq!(parse_windows_platform_probe("other output").unwrap(), None);
         assert_eq!(
-            parse_windows_platform_probe("herdr-windows:ARM64").unwrap_err(),
-            "unsupported remote platform: Windows ARM64"
+            parse_windows_platform_probe("herdr-windows:x86").unwrap_err(),
+            "unsupported remote platform: Windows X86"
         );
+    }
+
+    #[test]
+    fn windows_arm64_probe_selects_x64_package() {
+        let platform = parse_windows_platform_probe("herdr-windows:ARM64")
+            .expect("Windows ARM64 should use the x64 build on a best-effort basis")
+            .expect("the Windows platform marker should be recognized");
+        assert_eq!(platform.platform.asset_key(), "windows-x86_64");
+        let note = platform
+            .setup_note
+            .expect("ARM64 setup must warn about emulation");
+        assert!(note.contains("best-effort"));
+        assert!(note.contains("x64 emulation"));
+        assert!(note.contains("bugs and issues are expected"));
     }
 
     #[test]
