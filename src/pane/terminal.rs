@@ -187,6 +187,8 @@ pub(crate) enum TerminalCompressionStep {
 
 pub(crate) struct GhosttyPaneTerminal {
     pub core: Mutex<GhosttyPaneCore>,
+    #[cfg(test)]
+    pub(super) scroll_metrics_reads: std::sync::atomic::AtomicUsize,
     key_encoder: Mutex<crate::ghostty::KeyEncoder>,
     pending_pty_responses: Arc<Mutex<Vec<Bytes>>>,
 }
@@ -1160,18 +1162,20 @@ impl GhosttyPaneTerminal {
             })
             .map_err(|e| std::io::Error::other(e.to_string()))?;
 
-        let mut render_state =
+        let render_state =
             crate::ghostty::RenderState::new().map_err(|e| std::io::Error::other(e.to_string()))?;
-        let initial_colors = render_state
-            .update(&terminal)
-            .ok()
-            .and_then(|_| render_state.colors().ok());
+        // Callers pass a terminal with unset default colors, so an updated render
+        // state would report the same baseline as an empty one. Updating here would
+        // build a cell snapshot at the spawn size, which hidden panes keep alive.
+        let initial_colors = render_state.colors().ok();
         let initial_default_foreground = initial_colors.map(|colors| colors.foreground);
         let initial_default_background = initial_colors.map(|colors| colors.background);
         let mut key_encoder =
             crate::ghostty::KeyEncoder::new().map_err(|e| std::io::Error::other(e.to_string()))?;
         key_encoder.set_from_terminal(&terminal);
         Ok(Self {
+            #[cfg(test)]
+            scroll_metrics_reads: std::sync::atomic::AtomicUsize::new(0),
             core: Mutex::new(GhosttyPaneCore {
                 #[cfg(test)]
                 dirty_collection_hook: None,
@@ -1805,6 +1809,9 @@ impl GhosttyPaneTerminal {
     }
 
     pub fn scroll_metrics(&self) -> Option<ScrollMetrics> {
+        #[cfg(test)]
+        self.scroll_metrics_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let Ok(core) = self.core.lock() else {
             return None;
         };
@@ -3082,27 +3089,23 @@ fn ghostty_screen_row(
     y: u32,
 ) -> Result<String, crate::ghostty::Error> {
     let mut line = String::new();
-    // Resolve the scrollback page once per row rather than once per column.
-    for crate::ghostty::ScreenTextCell { wide, graphemes } in terminal
-        .screen_text_rows_range(y as usize, y as usize + 1)?
-        .into_iter()
-        .flat_map(|row| row.cells)
-    {
+    // Keep one page lookup per row and reuse grapheme storage across its cells.
+    terminal.for_each_screen_row_cell(y, |wide, graphemes| {
         if wide == crate::ghostty::CellWide::SpacerTail {
-            continue;
+            return;
         }
         if graphemes.is_empty()
             || graphemes.first().copied() == Some(crate::ghostty::KITTY_UNICODE_PLACEHOLDER)
         {
             line.push(' ');
         } else {
-            for codepoint in graphemes {
+            for &codepoint in graphemes {
                 if let Some(ch) = char::from_u32(codepoint) {
                     line.push(ch);
                 }
             }
         }
-    }
+    })?;
     Ok(line.trim_end().to_string())
 }
 
@@ -6121,6 +6124,64 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let row = (0..16).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
         assert_eq!(row, "restored history");
+    }
+
+    #[test]
+    fn new_pane_terminal_defers_render_snapshot_and_keeps_baseline_colors() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(200, 60, 0).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+
+        let mut reference_state = crate::ghostty::RenderState::new().unwrap();
+        reference_state
+            .update(&crate::ghostty::Terminal::new(1, 1, 0).unwrap())
+            .unwrap();
+        let reference = reference_state.colors().unwrap();
+
+        let core = pane.core.lock().unwrap();
+        assert_eq!(core.render_state.rows().unwrap(), 0);
+        assert_eq!(core.render_state.cols().unwrap(), 0);
+        assert_eq!(core.initial_default_foreground, Some(reference.foreground));
+        assert_eq!(core.initial_default_background, Some(reference.background));
+    }
+
+    #[test]
+    fn pane_created_large_renders_correctly_after_shrinking_before_first_draw() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(200, 60, 100).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx).unwrap();
+        pane.seed_history_ansi("restored\r\n");
+        pane.resize(5, 20, 0, 0);
+        {
+            let mut core = pane.core.lock().unwrap();
+            core.terminal
+                .write(b"\x1b]10;#abcdef\x07\x1b]11;#123456\x07hi");
+        }
+
+        let backend = ratatui::backend::TestBackend::new(20, 5);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 5), true))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let row = |y| (0..20).map(|x| buffer[(x, y)].symbol()).collect::<String>();
+        assert_eq!(row(0).trim_end(), "restored");
+        assert_eq!(row(1).trim_end(), "hi");
+        assert_eq!(
+            buffer[(0, 1)].style().fg,
+            Some(Color::Rgb(0xab, 0xcd, 0xef))
+        );
+        assert_eq!(
+            buffer[(0, 1)].style().bg,
+            Some(Color::Rgb(0x12, 0x34, 0x56))
+        );
+        assert_eq!(
+            buffer[(19, 4)].style().bg,
+            Some(Color::Rgb(0x12, 0x34, 0x56))
+        );
+        let cursor = pane.cursor_state().unwrap();
+        assert_eq!((cursor.x, cursor.y), (2, 1));
     }
 
     #[test]

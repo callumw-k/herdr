@@ -584,7 +584,13 @@ impl App {
             .terminal_runtimes
             .get(&terminal_id)
             .map(|runtime| runtime.current_size())
-            .unwrap_or_else(|| self.state.estimate_pane_size());
+            .unwrap_or_else(|| {
+                self.state
+                    .new_pane_size(crate::ui::NewPanePlacement::Existing {
+                        ws_idx,
+                        pane: pane_id,
+                    })
+            });
         let Some(launch_env) = self.pane_launch_env(ws_idx, pane_id, Vec::new()) else {
             return false;
         };

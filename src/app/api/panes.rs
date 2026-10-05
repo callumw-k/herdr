@@ -89,7 +89,18 @@ impl App {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
         };
-        let (rows, cols) = self.state.estimate_pane_size();
+        let direction = match params.direction {
+            crate::api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
+            crate::api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
+        };
+        let (rows, cols) = self
+            .state
+            .new_pane_size(crate::ui::NewPanePlacement::Split {
+                ws_idx,
+                target: target_pane_id,
+                direction,
+                ratio: params.ratio.unwrap_or(0.5),
+            });
         let split_cwd = params.cwd.map(std::path::PathBuf::from).or_else(|| {
             let follow_cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id);
             Some(self.resolve_new_terminal_cwd(follow_cwd))
@@ -104,10 +115,6 @@ impl App {
         let previous_focus = self.state.current_pane_focus_target();
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return encode_error(id, "pane_not_found", "pane not found");
-        };
-        let direction = match params.direction {
-            crate::api::schema::SplitDirection::Right => ratatui::layout::Direction::Horizontal,
-            crate::api::schema::SplitDirection::Down => ratatui::layout::Direction::Vertical,
         };
         let shell_config = crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode);
         let split_result = match params.ratio {

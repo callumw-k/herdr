@@ -66,6 +66,9 @@ const RELEASE_REACQUIRE_SUPPRESSION: std::time::Duration = std::time::Duration::
 const TERMINAL_COMPRESSION_IDLE: std::time::Duration = std::time::Duration::from_millis(250);
 const TERMINAL_COMPRESSION_STEP: std::time::Duration = std::time::Duration::from_millis(1);
 pub(crate) const PANE_TERM: &str = crate::ghostty::TERM;
+/// Smallest terminal grid a pane is resized to.
+pub(crate) const MIN_PANE_ROWS: u16 = 2;
+pub(crate) const MIN_PANE_COLS: u16 = 4;
 const PANE_COLORTERM: &str = "truecolor";
 
 fn terminal_compression_permits() -> Arc<tokio::sync::Semaphore> {
@@ -3289,8 +3292,8 @@ impl PaneRuntime {
 
     /// Resize if the dimensions actually changed.
     pub fn resize(&self, rows: u16, cols: u16, cell_width_px: u32, cell_height_px: u32) {
-        let rows = rows.max(2);
-        let cols = cols.max(4);
+        let rows = rows.max(MIN_PANE_ROWS);
+        let cols = cols.max(MIN_PANE_COLS);
         let size = (rows, cols, cell_width_px, cell_height_px);
         if self.current_size.get() == size {
             return;
@@ -3846,6 +3849,13 @@ impl PaneRuntime {
 
     pub(crate) fn test_with_screen_bytes(cols: u16, rows: u16, bytes: &[u8]) -> Self {
         Self::test_with_scrollback_bytes(cols, rows, 0, bytes)
+    }
+
+    pub(crate) fn test_scroll_metrics_reads(&self) -> usize {
+        self.terminal
+            .ghostty
+            .scroll_metrics_reads
+            .load(Ordering::Relaxed)
     }
 
     pub(crate) fn test_contend_during_dirty_collection(
