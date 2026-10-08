@@ -254,6 +254,7 @@ mod endpoint_requests;
 mod endpoints;
 mod floats;
 mod graphics;
+mod input_conformance;
 #[path = "input.rs"]
 mod input_domain;
 mod keybindings_settings;

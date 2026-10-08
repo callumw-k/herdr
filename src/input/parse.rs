@@ -33,8 +33,28 @@ fn parse_kitty_key_sequence(data: &str) -> Option<TerminalKey> {
         .next()
         .filter(|field| !field.is_empty())
         .and_then(|field| field.parse::<u32>().ok());
+    let base_layout_codepoint = key_fields
+        .next()
+        .filter(|field| !field.is_empty())
+        .and_then(|field| field.parse::<u32>().ok());
 
-    let code = kitty_codepoint_to_keycode(codepoint)?;
+    let mut code = kitty_codepoint_to_keycode(codepoint)?;
+    // Ctrl chords on a non-Latin layout (Ctrl+\u{441} on Russian) are shortcuts
+    // for the physical key the host names in the base-layout field: Ctrl+C.
+    // Kitty sends ^C to a plain shell for them, and the Kitty spec tells apps
+    // to match shortcuts on that key.
+    let mut shifted_codepoint = shifted_codepoint;
+    if let (KeyCode::Char(ch), Some(base)) = (code, base_layout_codepoint.and_then(char::from_u32))
+    {
+        if key_modifiers_from_u8(modifier).contains(KeyModifiers::CONTROL)
+            && !ch.is_ascii()
+            && base.is_ascii_graphic()
+        {
+            code = KeyCode::Char(base);
+            // The shifted alternate belongs to the layout character.
+            shifted_codepoint = None;
+        }
+    }
     let associated_text = match associated_text {
         Some(value) => match parse_kitty_associated_text(value) {
             Some(text) => Some(text),
@@ -54,7 +74,12 @@ fn parse_kitty_key_sequence(data: &str) -> Option<TerminalKey> {
         modifiers |= KeyModifiers::SHIFT;
     }
 
-    let mut key = TerminalKey::new(code, modifiers).with_kind(kind);
+    let base_layout_key = base_layout_codepoint
+        .and_then(char::from_u32)
+        .filter(char::is_ascii_graphic);
+    let mut key = TerminalKey::new(code, modifiers)
+        .with_kind(kind)
+        .with_base_layout_key(base_layout_key);
     if let Some(shifted_codepoint) = shifted_codepoint {
         key = key.with_shifted_codepoint(shifted_codepoint);
     }
@@ -197,10 +222,18 @@ fn parse_legacy_special_sequence(data: &str) -> Option<TerminalKey> {
         "\x1bOj" => Some(TerminalKey::new(KeyCode::Char('*'), KeyModifiers::empty())),
         "\x1bOo" => Some(TerminalKey::new(KeyCode::Char('/'), KeyModifiers::empty())),
         "\x1bOM" => Some(TerminalKey::new(KeyCode::Enter, KeyModifiers::empty())),
-        "\x1bOP" | "\x1b[11~" => Some(TerminalKey::new(KeyCode::F(1), KeyModifiers::empty())),
-        "\x1bOQ" | "\x1b[12~" => Some(TerminalKey::new(KeyCode::F(2), KeyModifiers::empty())),
+        // Kitty keyboard hosts send unmodified F1, F2 and F4 as bare `CSI P/Q/S`
+        // (#4403). F3 stays `CSI 13~` there: a bare `CSI R` is a cursor report.
+        "\x1bOP" | "\x1b[11~" | "\x1b[P" => {
+            Some(TerminalKey::new(KeyCode::F(1), KeyModifiers::empty()))
+        }
+        "\x1bOQ" | "\x1b[12~" | "\x1b[Q" => {
+            Some(TerminalKey::new(KeyCode::F(2), KeyModifiers::empty()))
+        }
         "\x1bOR" | "\x1b[13~" => Some(TerminalKey::new(KeyCode::F(3), KeyModifiers::empty())),
-        "\x1bOS" | "\x1b[14~" => Some(TerminalKey::new(KeyCode::F(4), KeyModifiers::empty())),
+        "\x1bOS" | "\x1b[14~" | "\x1b[S" => {
+            Some(TerminalKey::new(KeyCode::F(4), KeyModifiers::empty()))
+        }
         "\x1b[15~" => Some(TerminalKey::new(KeyCode::F(5), KeyModifiers::empty())),
         "\x1b[17~" => Some(TerminalKey::new(KeyCode::F(6), KeyModifiers::empty())),
         "\x1b[18~" => Some(TerminalKey::new(KeyCode::F(7), KeyModifiers::empty())),
@@ -405,7 +438,6 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers, ModifierKeyCode};
 
     use super::*;
-    use crate::input::{encode_terminal_key, KeyboardProtocol};
 
     fn assert_terminal_key_eq(
         actual: TerminalKey,
@@ -586,7 +618,7 @@ mod tests {
             crossterm::event::KeyEventKind::Press,
             None,
         );
-        assert_eq!(encode_terminal_key(key, KeyboardProtocol::Legacy), b"\x1bA");
+        assert_eq!(crate::pane::test_encode_key_for_app(b"", key), b"\x1bA");
     }
 
     #[test]
@@ -600,10 +632,7 @@ mod tests {
             crossterm::event::KeyEventKind::Press,
             None,
         );
-        assert_eq!(
-            encode_terminal_key(key, KeyboardProtocol::Legacy),
-            b"\x1b\x06"
-        );
+        assert_eq!(crate::pane::test_encode_key_for_app(b"", key), b"\x1b\x06");
     }
 
     #[test]
@@ -747,6 +776,43 @@ mod tests {
         assert_eq!(key.modifiers, KeyModifiers::empty());
         assert_eq!(key.kind, crossterm::event::KeyEventKind::Press);
         assert_eq!(key.generated_text.as_deref(), Some("你好"));
+    }
+
+    #[test]
+    fn parse_ctrl_chords_on_non_latin_layouts_as_their_base_layout_key() {
+        // Lab capture, kitty on a Russian layout: Ctrl+\u{441} is the C key.
+        for (sequence, code, modifiers) in [
+            (
+                "\x1b[1089::99;5u",
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+            ),
+            (
+                "\x1b[1089:1057:99;6u",
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            ),
+            (
+                "\x1b[1089::99;5:3u",
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+            ),
+            // Without Ctrl it is text on that layout; without a base key
+            // nothing is known about the physical key.
+            (
+                "\x1b[1089::99u",
+                KeyCode::Char('\u{441}'),
+                KeyModifiers::empty(),
+            ),
+            (
+                "\x1b[1089;5u",
+                KeyCode::Char('\u{441}'),
+                KeyModifiers::CONTROL,
+            ),
+        ] {
+            let key = parse_terminal_key_sequence(sequence).expect(sequence);
+            assert_eq!((key.code, key.modifiers), (code, modifiers), "{sequence:?}");
+        }
     }
 
     #[test]
@@ -954,7 +1020,7 @@ mod tests {
     #[test]
     fn legacy_lf_roundtrips_as_lf() {
         let key = parse_terminal_key_sequence("\n").unwrap();
-        assert_eq!(encode_terminal_key(key, KeyboardProtocol::Legacy), b"\n");
+        assert_eq!(crate::pane::test_encode_key_for_app(b"", key), b"\n");
     }
 
     #[test]

@@ -703,7 +703,7 @@ impl HeadlessServer {
     ///
     /// Returns true if the event changed visual state (requiring a re-render).
     pub(super) fn handle_internal_event_with_forwarding(&mut self, ev: AppEvent) -> bool {
-        if self.host_shutdown_requested.load(Ordering::Acquire) {
+        if self.host_shutdown_requested() {
             return false;
         }
         let mut candidates: Vec<crate::layout::PaneId> =
@@ -805,7 +805,7 @@ impl HeadlessServer {
         let mut had_event = false;
         let mut changed = false;
         for _ in 0..limit {
-            if self.host_shutdown_requested.load(Ordering::Acquire) {
+            if self.host_shutdown_requested() {
                 break;
             }
             let Ok(ev) = self.app.event_rx.try_recv() else {
