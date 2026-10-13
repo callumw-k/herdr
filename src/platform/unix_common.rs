@@ -1,5 +1,56 @@
 use std::path::{Path, PathBuf};
 
+pub(crate) struct ChildPipe(std::fs::File);
+
+impl ChildPipe {
+    pub(crate) fn new_reader(pipe: impl Into<std::os::fd::OwnedFd>) -> std::io::Result<Self> {
+        use std::os::fd::AsRawFd as _;
+        let file = std::fs::File::from(pipe.into());
+        let fd = file.as_raw_fd();
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self(file))
+    }
+
+    pub(crate) fn new_writer(pipe: impl Into<std::os::fd::OwnedFd>) -> std::io::Result<Self> {
+        Self::new_reader(pipe)
+    }
+
+    pub(crate) fn wait(&self, writing: bool) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd as _;
+        let mut descriptor = libc::pollfd {
+            fd: self.0.as_raw_fd(),
+            events: if writing { libc::POLLOUT } else { libc::POLLIN },
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut descriptor, 1, 50) } < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl std::io::Read for ChildPipe {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        std::io::Read::read(&mut self.0, buffer)
+    }
+}
+
+impl std::io::Write for ChildPipe {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        std::io::Write::write(&mut self.0, buffer)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 pub(crate) fn classify_child_exit(status: &portable_pty::ExitStatus) -> super::ChildExitReason {
     if status.signal().is_some() {
         super::ChildExitReason::Interrupted
@@ -136,7 +187,10 @@ pub(crate) fn write_client_stream(
     Ok(())
 }
 
-pub(crate) fn wait_client_stream_readable(stream: &crate::ipc::LocalStream) -> std::io::Result<()> {
+pub(crate) fn wait_client_stream_readable(
+    stream: &crate::ipc::LocalStream,
+    timeout: std::time::Duration,
+) -> std::io::Result<()> {
     use std::os::fd::{AsFd as _, AsRawFd as _};
     let crate::ipc::LocalStream::UdSocket(stream) = stream;
     let mut descriptor = libc::pollfd {
@@ -145,7 +199,8 @@ pub(crate) fn wait_client_stream_readable(stream: &crate::ipc::LocalStream) -> s
         revents: 0,
     };
     // Bound cancellation latency without polling idle connections hundreds of times per second.
-    let result = unsafe { libc::poll(&mut descriptor, 1, 100) };
+    let wait_ms = timeout.as_millis().clamp(1, 100) as i32;
+    let result = unsafe { libc::poll(&mut descriptor, 1, wait_ms) };
     if result < 0 {
         let error = std::io::Error::last_os_error();
         if error.kind() != std::io::ErrorKind::Interrupted {

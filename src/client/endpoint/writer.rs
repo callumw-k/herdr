@@ -75,6 +75,7 @@ impl NativeEndpointTransport {
                         break;
                     }
                 }
+                drop(stream);
             })?;
         Ok(Self {
             sender,

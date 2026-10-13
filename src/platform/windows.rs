@@ -23,6 +23,79 @@ pub(crate) use notifications::{
 
 static ALLOW_UNELEVATED_CLIENTS: OnceLock<bool> = OnceLock::new();
 
+pub(crate) struct ChildPipe(std::fs::File);
+
+impl ChildPipe {
+    pub(crate) fn new_reader(pipe: impl Into<OwnedHandle>) -> std::io::Result<Self> {
+        // Rust's stdout/stderr handles lack permission to change pipe mode. Peek before
+        // reading instead; each pipe has exactly one reader.
+        Ok(Self(std::fs::File::from(pipe.into())))
+    }
+
+    pub(crate) fn new_writer(pipe: impl Into<OwnedHandle>) -> std::io::Result<Self> {
+        use windows_sys::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_NOWAIT};
+        let file = std::fs::File::from(pipe.into());
+        let mode = PIPE_NOWAIT;
+        if unsafe { SetNamedPipeHandleState(file.as_raw_handle(), &mode, null_mut(), null_mut()) }
+            == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self(file))
+    }
+
+    pub(crate) fn wait(&self, _writing: bool) -> std::io::Result<()> {
+        std::thread::sleep(Duration::from_millis(2));
+        Ok(())
+    }
+}
+
+impl std::io::Read for ChildPipe {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        use windows_sys::Win32::System::Pipes::PeekNamedPipe;
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let mut available = 0;
+        if unsafe {
+            PeekNamedPipe(
+                self.0.as_raw_handle(),
+                null_mut(),
+                0,
+                null_mut(),
+                &mut available,
+                null_mut(),
+            )
+        } == 0
+        {
+            let error = std::io::Error::last_os_error();
+            return if crate::ipc::is_connection_closed_error(&error) {
+                Ok(0)
+            } else {
+                Err(error)
+            };
+        }
+        if available == 0 {
+            return Err(std::io::ErrorKind::WouldBlock.into());
+        }
+        let count = buffer.len().min(available as usize);
+        self.0.read(&mut buffer[..count])
+    }
+}
+
+impl std::io::Write for ChildPipe {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        match self.0.write(buffer) {
+            Ok(0) if !buffer.is_empty() => Err(std::io::ErrorKind::WouldBlock.into()),
+            result => result,
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 pub(crate) fn allow_unelevated_clients() {
     let _ = ALLOW_UNELEVATED_CLIENTS.set(true);
 }
@@ -39,6 +112,20 @@ pub(crate) fn probe_local_server(path: &std::path::Path) -> std::io::Result<()> 
         ConnectWaitMode::Timeout(Duration::from_millis(500)),
     )
     .map(|_| ())
+    .map_err(local_server_connection_error)
+}
+
+pub(crate) fn connect_local_stream_with_timeout(
+    path: &std::path::Path,
+    timeout: Duration,
+) -> std::io::Result<crate::ipc::LocalStream> {
+    use interprocess::os::windows::named_pipe::{pipe_mode::Bytes, DuplexPipeStream};
+    let name = format!(r"\\.\pipe\{}", path.to_string_lossy());
+    DuplexPipeStream::<Bytes>::connect_by_path_with_wait_mode(
+        name.as_str(),
+        interprocess::ConnectWaitMode::Timeout(timeout),
+    )
+    .map(|pipe| crate::ipc::LocalStream::NamedPipe(pipe.into()))
     .map_err(local_server_connection_error)
 }
 
@@ -197,10 +284,11 @@ impl RemoteBridgeWake {
 
 pub(crate) fn wait_client_stream_readable(
     _stream: &crate::ipc::LocalStream,
+    timeout: Duration,
 ) -> std::io::Result<()> {
     // Sync named pipes have no read timeout. The caller peeks before each read and checks its
     // cancellation flag between polls, including when a frame arrives in several fragments.
-    std::thread::sleep(Duration::from_millis(2));
+    std::thread::sleep(timeout.min(Duration::from_millis(2)));
     Ok(())
 }
 
@@ -3342,6 +3430,64 @@ mod tests {
     use windows_sys::Win32::System::Console::{
         AllocConsole, FreeConsole, GetConsoleProcessList, GetConsoleWindow,
     };
+
+    #[test]
+    fn busy_endpoint_connect_obeys_cancellation_and_deadline() {
+        use std::os::windows::io::{FromRawHandle, OwnedHandle};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
+        use windows_sys::Win32::System::Pipes::CreateNamedPipeW;
+        let path = std::path::PathBuf::from(format!("herdr-busy-{}", std::process::id()));
+        let name = super::wide_null(&format!(r"\\.\pipe\{}", path.display()));
+        let handle = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_DUPLEX,
+                0,
+                1,
+                512,
+                512,
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert_ne!(handle, INVALID_HANDLE_VALUE);
+        let _listener = unsafe { OwnedHandle::from_raw_handle(handle) };
+        let _occupant =
+            super::connect_local_stream_with_timeout(&path, Duration::from_millis(500)).unwrap();
+        for cancel in [false, true] {
+            let stopped = Arc::new(AtomicBool::new(false));
+            let worker_stop = Arc::clone(&stopped);
+            let cancel_worker = thread::spawn(move || {
+                if cancel {
+                    thread::sleep(Duration::from_millis(50));
+                    worker_stop.store(true, Ordering::Release);
+                }
+            });
+            let start = Instant::now();
+            let result = crate::ipc::connect_local_stream_cancellable(
+                &path,
+                &stopped,
+                start
+                    + if cancel {
+                        Duration::from_secs(5)
+                    } else {
+                        Duration::from_millis(200)
+                    },
+            );
+            cancel_worker.join().unwrap();
+            assert_eq!(
+                result.unwrap_err().kind(),
+                if cancel {
+                    std::io::ErrorKind::ConnectionAborted
+                } else {
+                    std::io::ErrorKind::TimedOut
+                }
+            );
+            assert!(start.elapsed() < Duration::from_secs(1));
+        }
+    }
 
     #[test]
     fn local_resources_authorize_account_without_admin_rights() {

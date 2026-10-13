@@ -1,5 +1,10 @@
 use std::io;
 use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::time::{Duration, Instant};
 
 use super::attach::{find_installed_remote_herdr, RemoteSsh, SshStdioBridge};
 
@@ -16,10 +21,15 @@ pub(crate) fn connect_saved_ssh(
     profile_id: &str,
     target: &str,
     session: &str,
+    cancelled: Arc<AtomicBool>,
 ) -> io::Result<SavedSshStream> {
-    let ssh = validated_saved_ssh(profile_id, target, session)?;
+    let mut ssh = validated_saved_ssh(profile_id, target, session)?;
+    ssh.cancelled = Arc::clone(&cancelled);
     let remote_herdr = find_installed_remote_herdr(&ssh)?;
     let metadata = remote_herdr.machine_metadata();
+    if cancelled.load(Ordering::Acquire) {
+        return Err(super::process::cancelled());
+    }
     let path = saved_bridge_path(profile_id);
     let bridge = SshStdioBridge::start(
         target.to_owned(),
@@ -28,8 +38,13 @@ pub(crate) fn connect_saved_ssh(
         session.to_owned(),
         ssh.options(),
         true,
+        Arc::clone(&cancelled),
     )?;
-    let stream = crate::ipc::connect_local_stream(&path)?;
+    let stream = crate::ipc::connect_local_stream_cancellable(
+        &path,
+        &cancelled,
+        Instant::now() + Duration::from_secs(5),
+    )?;
     if let Some(metadata) = metadata {
         crate::client::endpoint::SshMetadataCache::new(profile_id, target, session)?
             .store(&metadata);
@@ -82,6 +97,7 @@ impl SavedSshApiBridge {
             path.clone(),
             ssh.options(),
             true,
+            Arc::new(AtomicBool::new(false)),
         )?;
         Ok(Self {
             path,
