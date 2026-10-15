@@ -12,6 +12,9 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(120);
 const MAX_LOCAL_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
+// Allow Wi-Fi to return without restarting the historical failure ladder.
+const WAKE_RECOVERY_PERIOD: Duration = Duration::from_secs(30);
+const WAKE_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointConnectOptions {
@@ -57,6 +60,7 @@ struct ReconnectState {
     completed: Arc<AtomicBool>,
     generation: Option<u64>,
     ready_since: Option<Instant>,
+    retry_after_resume: bool,
 }
 
 impl ReconnectState {
@@ -70,6 +74,7 @@ impl ReconnectState {
             completed: Arc::new(AtomicBool::new(true)),
             generation: None,
             ready_since: None,
+            retry_after_resume: false,
         }
     }
 }
@@ -93,6 +98,8 @@ pub(crate) struct EndpointSupervisors {
     retired: HashMap<ClientEndpointId, Arc<AtomicBool>>,
     next_generation: u64,
     shutdown: Arc<AtomicBool>,
+    power_state: Option<crate::platform::HostPowerEvent>,
+    wake_recovery_until: Option<Instant>,
 }
 
 impl EndpointSupervisors {
@@ -112,6 +119,8 @@ impl EndpointSupervisors {
             retired: HashMap::new(),
             next_generation: 2,
             shutdown: Arc::new(AtomicBool::new(false)),
+            power_state: None,
+            wake_recovery_until: None,
         }
     }
 
@@ -174,9 +183,15 @@ impl EndpointSupervisors {
         options: EndpointConnectOptions,
         event_tx: &tokio::sync::mpsc::Sender<EndpointSupervisorEvent>,
     ) {
+        if self.power_state == Some(crate::platform::HostPowerEvent::Suspend) {
+            return;
+        }
         self.retired
             .retain(|_, completed| !completed.load(Ordering::Acquire));
         for (endpoint_id, state) in &mut self.endpoints {
+            if state.cancelled.load(Ordering::Acquire) && state.completed.load(Ordering::Acquire) {
+                state.in_flight = false;
+            }
             if state.in_flight
                 || !state.completed.load(Ordering::Acquire)
                 || self.retired.contains_key(endpoint_id)
@@ -254,6 +269,7 @@ impl EndpointSupervisors {
             return false;
         }
         state.in_flight = false;
+        let retry_after_resume = std::mem::take(&mut state.retry_after_resume);
         match status {
             ClientEndpointStatus::Online => {
                 if endpoint_id.is_local() {
@@ -280,6 +296,13 @@ impl EndpointSupervisors {
                 }
                 state.attempts = state.attempts.saturating_add(1);
                 let delay = retry_delay(state.attempts);
+                let delay = if retry_after_resume {
+                    Duration::ZERO
+                } else if self.wake_recovery_until.is_some_and(|until| now < until) {
+                    delay.min(WAKE_RETRY_DELAY)
+                } else {
+                    delay
+                };
                 state.next_attempt = Some(
                     now + if endpoint_id.is_local() {
                         delay.min(MAX_LOCAL_RETRY_DELAY)
@@ -290,6 +313,79 @@ impl EndpointSupervisors {
             }
         }
         true
+    }
+
+    /// Returns whether live connections need a fresh probe, without replacing them.
+    pub(crate) fn host_power_event(
+        &mut self,
+        event: crate::platform::HostPowerEvent,
+        now: Instant,
+    ) -> bool {
+        use crate::platform::HostPowerEvent::*;
+        if event == Suspend {
+            if self.power_state == Some(Suspend) {
+                return false;
+            }
+            self.power_state = Some(Suspend);
+            self.wake_recovery_until = None;
+            self.cancel_connecting(now);
+            return false;
+        }
+        if (event == InteractiveResume && self.wake_recovery_until.is_some())
+            || (event != InteractiveResume
+                && self.power_state.is_some_and(|state| state != Suspend))
+        {
+            return false;
+        }
+        if self.power_state.is_none() {
+            // Registration may have missed the preceding suspend notification.
+            self.cancel_connecting(now);
+        }
+        self.power_state = Some(event);
+        if event == InteractiveResume {
+            self.wake_recovery_until = Some(now + WAKE_RECOVERY_PERIOD);
+        }
+        if matches!(event, InteractiveResume | UnclassifiedResume) {
+            for state in self.endpoints.values_mut() {
+                // A live transport may discover its wake failure only after the fresh probe.
+                state.retry_after_resume = event == UnclassifiedResume
+                    && state.next_attempt.is_none()
+                    && state.generation.is_some();
+                if state.next_attempt.is_some() {
+                    state.next_attempt = Some(now);
+                }
+            }
+        }
+        true
+    }
+
+    fn cancel_connecting(&mut self, now: Instant) {
+        for state in self.endpoints.values_mut() {
+            state.ready_since = None;
+            state.retry_after_resume = false;
+            if state.in_flight {
+                state.cancelled.store(true, Ordering::Release);
+                state.generation = None;
+                state.next_attempt = Some(now);
+            }
+        }
+    }
+
+    #[cfg(any(unix, test))]
+    pub(crate) fn user_activity(&mut self, now: Instant) {
+        if self.power_state == Some(crate::platform::HostPowerEvent::UnclassifiedResume) {
+            self.host_power_event(crate::platform::HostPowerEvent::InteractiveResume, now);
+        }
+    }
+
+    pub(crate) fn received(&mut self, endpoint_id: &ClientEndpointId, generation: u64) {
+        if let Some(state) = self
+            .endpoints
+            .get_mut(endpoint_id)
+            .filter(|state| state.generation == Some(generation))
+        {
+            state.retry_after_resume = false;
+        }
     }
 
     pub(crate) fn mark_ready(
@@ -573,6 +669,94 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wake_replacement_waits_for_the_obsolete_attempt_to_close() {
+        use crate::platform::HostPowerEvent::*;
+        use crate::protocol::{self, ClientMessage};
+        use interprocess::local_socket::traits::{Listener as _, Stream as _};
+        for observed_suspend in [true, false] {
+            let path = std::env::temp_dir().join(format!(
+                "hwake-{}-{observed_suspend}.sock",
+                std::process::id()
+            ));
+            let listener = crate::ipc::bind_private_local_listener(&path).unwrap();
+            let now = Instant::now();
+            let mut supervisors = EndpointSupervisors::new(&[], now);
+            supervisors.add_local(path.clone(), None, now);
+            let (events, mut received) = tokio::sync::mpsc::channel(4);
+            supervisors.spawn_due(now, connect_options(), &events);
+            let mut peer = listener.accept().unwrap();
+            let _: ClientMessage =
+                protocol::read_message(&mut peer, protocol::MAX_FRAME_SIZE).unwrap();
+            let completed = supervisors.endpoints[&ClientEndpointId::Local]
+                .completed
+                .clone();
+            supervisors.host_power_event(
+                if observed_suspend {
+                    Suspend
+                } else {
+                    InteractiveResume
+                },
+                now,
+            );
+            assert!(supervisors.endpoints[&ClientEndpointId::Local].in_flight);
+            if observed_suspend {
+                supervisors.spawn_due(now, connect_options(), &events);
+            }
+            assert!(supervisors.endpoints[&ClientEndpointId::Local]
+                .generation
+                .is_none());
+            let status = tokio::time::timeout(Duration::from_secs(2), received.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let EndpointSupervisorEvent::Status {
+                endpoint_id,
+                generation,
+                status,
+                ..
+            } = status
+            else {
+                panic!("cancelled attempt connected");
+            };
+            assert!(completed.load(Ordering::Acquire));
+            assert!(!supervisors.record_status(&endpoint_id, generation, status, now));
+            peer.set_nonblocking(true).unwrap();
+            // Windows interprocess drops flush through its background linger pool.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if matches!(
+                    crate::ipc::poll_local_stream_read_count(&mut peer, &mut [0; 1]).unwrap(),
+                    crate::ipc::LocalStreamReadCount::Closed
+                ) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "cancelled attempt retained its stream"
+                );
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            supervisors.host_power_event(InteractiveResume, now);
+            supervisors.spawn_due(now, connect_options(), &events);
+            let replacement = supervisors.endpoints[&ClientEndpointId::Local].generation;
+            assert_ne!(replacement, Some(generation));
+            assert!(replacement.is_some());
+            for _ in 0..3 {
+                supervisors.host_power_event(InteractiveResume, now);
+                supervisors.spawn_due(now, connect_options(), &events);
+                assert_eq!(
+                    supervisors.endpoints[&ClientEndpointId::Local].generation,
+                    replacement
+                );
+            }
+            let _replacement = listener.accept().unwrap();
+            drop(supervisors);
+            drop(listener);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn retiring_or_shutting_down_a_silent_attempt_closes_its_connection() {
         use crate::protocol::{self, ClientMessage};
         use interprocess::local_socket::traits::{Listener as _, Stream as _};
@@ -801,6 +985,124 @@ mod tests {
         assert!(supervisors.record_status(&id, 2, ClientEndpointStatus::Online, clicked));
         assert!(!supervisors.retry_now(&id, clicked));
         assert!(supervisors.endpoints[&id].next_attempt.is_none());
+    }
+
+    #[test]
+    fn interactive_wake_retries_slow_wifi_without_renewing_the_window_or_failure_history() {
+        use crate::platform::HostPowerEvent::*;
+        let now = Instant::now();
+        let profile = profile();
+        let id = ClientEndpointId::Ssh(profile.id.clone());
+        let mut supervisors = EndpointSupervisors::new(&[profile], now);
+        let state = supervisors.endpoints.get_mut(&id).unwrap();
+        state.generation = Some(2);
+        state.attempts = 9;
+        state.next_attempt = Some(now + Duration::from_secs(120));
+        supervisors.host_power_event(Suspend, now);
+        assert!(supervisors.host_power_event(AutomaticResume, now));
+        assert_eq!(
+            supervisors.endpoints[&id].next_attempt,
+            Some(now + Duration::from_secs(120))
+        );
+        assert!(supervisors.host_power_event(InteractiveResume, now));
+        assert_eq!(supervisors.endpoints[&id].next_attempt, Some(now));
+        assert_eq!(supervisors.endpoints[&id].attempts, 9);
+        // Wi-Fi remains unavailable for twenty seconds after the interactive wake.
+        for seconds in (0..=20).step_by(2) {
+            let failed = now + Duration::from_secs(seconds);
+            assert!(supervisors.disconnected(&id, 2, failed));
+            assert_eq!(
+                supervisors.endpoints[&id].next_attempt,
+                Some(failed + Duration::from_secs(2))
+            );
+        }
+        let failures = supervisors.endpoints[&id].attempts;
+        let late = now + Duration::from_secs(31);
+        for event in [
+            AutomaticResume,
+            InteractiveResume,
+            UnclassifiedResume,
+            InteractiveResume,
+        ] {
+            assert!(!supervisors.host_power_event(event, late));
+        }
+        supervisors.disconnected(&id, 2, late);
+        assert_eq!(supervisors.endpoints[&id].attempts, failures + 1);
+        assert_eq!(
+            supervisors.endpoints[&id].next_attempt,
+            Some(late + Duration::from_secs(120))
+        );
+        supervisors.host_power_event(Suspend, late);
+        assert!(supervisors.host_power_event(InteractiveResume, late));
+        assert_eq!(supervisors.endpoints[&id].next_attempt, Some(late));
+    }
+
+    #[test]
+    fn unclassified_resume_expedites_once_until_user_activity() {
+        use crate::platform::HostPowerEvent::*;
+        let now = Instant::now();
+        let profile = profile();
+        let id = ClientEndpointId::Ssh(profile.id.clone());
+        let mut supervisors = EndpointSupervisors::new(&[profile], now);
+        let state = supervisors.endpoints.get_mut(&id).unwrap();
+        state.generation = Some(2);
+        state.attempts = 9;
+        state.next_attempt = Some(now + Duration::from_secs(120));
+        supervisors.host_power_event(Suspend, now);
+        supervisors.host_power_event(UnclassifiedResume, now);
+        assert_eq!(supervisors.endpoints[&id].next_attempt, Some(now));
+        supervisors.disconnected(&id, 2, now);
+        assert!(!supervisors.host_power_event(UnclassifiedResume, now));
+        assert_eq!(
+            supervisors.endpoints[&id].next_attempt,
+            Some(now + Duration::from_secs(120))
+        );
+        supervisors.user_activity(now);
+        assert_eq!(supervisors.endpoints[&id].next_attempt, Some(now));
+        let deadline = supervisors.wake_recovery_until;
+        supervisors.user_activity(now + Duration::from_secs(20));
+        supervisors.host_power_event(UnclassifiedResume, now + Duration::from_secs(40));
+        supervisors.user_activity(now + Duration::from_secs(40));
+        assert_eq!(supervisors.wake_recovery_until, deadline);
+        assert_eq!(supervisors.endpoints[&id].attempts, 10);
+    }
+
+    #[test]
+    fn unclassified_wake_expedites_a_live_connection_after_its_fresh_probe_fails() {
+        use crate::platform::HostPowerEvent::*;
+        for healthy in [false, true] {
+            let now = Instant::now();
+            let profile = profile();
+            let id = ClientEndpointId::Ssh(profile.id.clone());
+            let mut supervisors = EndpointSupervisors::new(&[profile], now);
+            let state = supervisors.endpoints.get_mut(&id).unwrap();
+            state.generation = Some(2);
+            state.attempts = 9;
+            state.next_attempt = None;
+            supervisors.host_power_event(Suspend, now);
+            supervisors.host_power_event(UnclassifiedResume, now);
+            // Only traffic from the current transport consumes its recovery allowance.
+            supervisors.received(&id, if healthy { 2 } else { 1 });
+            let expired = now + Duration::from_secs(10);
+            supervisors.disconnected(&id, 2, expired);
+            assert_eq!(
+                supervisors.endpoints[&id].next_attempt,
+                Some(
+                    expired
+                        + if healthy {
+                            Duration::from_secs(120)
+                        } else {
+                            Duration::ZERO
+                        }
+                )
+            );
+            supervisors.disconnected(&id, 2, expired);
+            assert_eq!(
+                supervisors.endpoints[&id].next_attempt,
+                Some(expired + Duration::from_secs(120))
+            );
+            assert_eq!(supervisors.endpoints[&id].attempts, 11);
+        }
     }
 
     #[test]

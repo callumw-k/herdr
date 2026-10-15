@@ -17,6 +17,7 @@ pub(super) struct EndpointHealth {
     last_received: Option<Instant>,
     ping_sent_at: Option<Instant>,
     ready: bool,
+    probe_due: bool,
 }
 
 impl EndpointHealth {
@@ -26,6 +27,7 @@ impl EndpointHealth {
             last_received: None,
             ping_sent_at: None,
             ready: false,
+            probe_due: false,
         }
     }
 
@@ -38,6 +40,11 @@ impl EndpointHealth {
         self.ready = true;
     }
 
+    pub(super) fn resume(&mut self) {
+        self.ping_sent_at = None;
+        self.probe_due = true;
+    }
+
     pub(super) fn action(&self, now: Instant) -> HealthAction {
         let initial_snapshot_expired = !self.ready
             && now.saturating_duration_since(self.connected_at) >= INITIAL_SNAPSHOT_TIMEOUT;
@@ -48,9 +55,10 @@ impl EndpointHealth {
                 .is_some_and(|sent_at| now.saturating_duration_since(sent_at) >= HEARTBEAT_TIMEOUT);
         if initial_snapshot_expired || probe_expired {
             HealthAction::Expired
-        } else if self.ping_sent_at.is_none()
-            && now.saturating_duration_since(self.last_received.unwrap_or(self.connected_at))
-                >= HEARTBEAT_INTERVAL
+        } else if self.probe_due
+            || (self.ping_sent_at.is_none()
+                && now.saturating_duration_since(self.last_received.unwrap_or(self.connected_at))
+                    >= HEARTBEAT_INTERVAL)
         {
             HealthAction::Ping
         } else {
@@ -59,6 +67,7 @@ impl EndpointHealth {
     }
 
     pub(super) fn ping_sent(&mut self, now: Instant) {
+        self.probe_due = false;
         self.ping_sent_at = Some(now);
     }
 }
@@ -77,6 +86,25 @@ mod tests {
         health.ping_sent(now + HEARTBEAT_INTERVAL);
         assert_eq!(
             health.action(now + HEARTBEAT_INTERVAL + HEARTBEAT_TIMEOUT),
+            HealthAction::Expired
+        );
+    }
+
+    #[test]
+    fn pause_reprobes_without_extending_initial_readiness_budget() {
+        let now = Instant::now();
+        let mut health = EndpointHealth::new(now);
+        health.received(now);
+        health.ping_sent(now);
+        health.resume();
+        assert_eq!(
+            health.action(now + Duration::from_secs(59)),
+            HealthAction::Ping
+        );
+        health.ping_sent(now + Duration::from_secs(59));
+        health.resume();
+        assert_eq!(
+            health.action(now + Duration::from_secs(60)),
             HealthAction::Expired
         );
     }

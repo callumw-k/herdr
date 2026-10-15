@@ -20,7 +20,7 @@ pub(crate) use super::unix_common::{
     remote_private_temp_base, remote_reattach_argument, remote_reattach_program,
     remote_ssh_config_paths, set_default_plugin_pane_pwd, shutdown_client_stream,
     status_commands_supported, wait_client_stream_readable, write_client_stream,
-    ClientStreamReader, StatusCommandGuard,
+    ClientStreamReader, PinnedSshControlSocket, StatusCommandGuard,
 };
 
 #[cfg(test)]
@@ -28,6 +28,8 @@ mod config_file_tests;
 
 mod shutdown;
 pub(crate) use shutdown::monitor_host_shutdown;
+mod power;
+pub(crate) use power::monitor_host_power;
 
 const WSL_MARKER_ENV_VARS: &[&str] = &["WSL_DISTRO_NAME", "WSL_INTEROP"];
 const PROCESS_DETECTION_ENV_VAR: &str = "HERDR_PROCESS_DETECTION";
