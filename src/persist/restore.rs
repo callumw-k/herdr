@@ -409,6 +409,7 @@ fn restore_workspace(
         tabs.push(tab);
     }
 
+    crate::workspace::retain_valid_tab_parents(&mut tabs);
     if tabs.is_empty() {
         return (None, failed_imports);
     }
@@ -819,6 +820,7 @@ fn restore_tab(
             crate::workspace::Tab {
                 custom_name: snap.custom_name.clone(),
                 number,
+                parent: snap.parent_tab_number,
                 root_pane,
                 layout,
                 panes,
@@ -1774,6 +1776,7 @@ mod tests {
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+                    parent_tab_number: None,
                 }],
                 active_tab: 0,
             }],
@@ -1857,6 +1860,7 @@ mod tests {
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+                    parent_tab_number: None,
                 }],
                 active_tab: 0,
             }],
@@ -1946,6 +1950,7 @@ mod tests {
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+                    parent_tab_number: None,
                 }],
                 active_tab: 0,
             }],
@@ -2037,6 +2042,7 @@ mod tests {
                         floats_hidden: false,
                         float_focused: false,
                         arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+                        parent_tab_number: None,
                     },
                     TabSnapshot {
                         custom_name: None,
@@ -2051,6 +2057,7 @@ mod tests {
                         floats_hidden: false,
                         float_focused: false,
                         arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+                        parent_tab_number: None,
                     },
                     TabSnapshot {
                         custom_name: None,
@@ -2065,6 +2072,7 @@ mod tests {
                         floats_hidden: false,
                         float_focused: false,
                         arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+                        parent_tab_number: None,
                     },
                     TabSnapshot {
                         custom_name: None,
@@ -2079,6 +2087,7 @@ mod tests {
                         floats_hidden: false,
                         float_focused: false,
                         arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+                        parent_tab_number: None,
                     },
                 ],
                 active_tab: 3,
@@ -2118,6 +2127,76 @@ mod tests {
             .all(|detail| detail.pane_id != agent_pane));
     }
 
+    #[tokio::test]
+    async fn cold_restore_keeps_valid_tab_parents_and_drops_dangling_ones() {
+        let cwd = std::env::current_dir().unwrap();
+        let tab = |pane: u32, parent_tab_number: Option<usize>| TabSnapshot {
+            custom_name: None,
+            layout: LayoutSnapshot::Pane(pane),
+            panes: HashMap::from([(
+                pane,
+                super::super::snapshot::PaneSnapshot {
+                    cwd: cwd.clone(),
+                    label: None,
+                    agent_name: None,
+                    managed_agent_kind: None,
+                    agent_session: None,
+                    agent_resume: None,
+                    launch_argv: None,
+                },
+            )]),
+            zoomed: false,
+            focused: Some(pane),
+            root_pane: Some(pane),
+            float_layout: None,
+            float_arrangement: super::super::snapshot::ArrangementSnapshot::Stacked,
+            float_focused_pane: None,
+            floats_hidden: false,
+            float_focused: false,
+            arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+            parent_tab_number,
+        };
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("w1".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                pinned_path: None,
+                worktree_space: None,
+                public_pane_numbers: HashMap::from([(10, 1), (11, 2), (12, 3)]),
+                next_public_pane_number: 4,
+                public_tab_numbers: vec![1, 3, 4],
+                next_public_tab_number: 5,
+                tabs: vec![tab(10, None), tab(11, Some(1)), tab(12, Some(9))],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (workspaces, _terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            false,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let parents: Vec<_> = workspaces[0].tabs.iter().map(|tab| tab.parent).collect();
+        assert_eq!(parents, vec![None, Some(1), None]);
+    }
+
     #[test]
     fn legacy_restore_precomputes_missing_public_pane_numbers() {
         let cwd = std::env::current_dir().unwrap();
@@ -2149,6 +2228,7 @@ mod tests {
                 floats_hidden: false,
                 float_focused: false,
                 arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+                parent_tab_number: None,
             }],
             active_tab: 0,
         };
@@ -2206,6 +2286,7 @@ mod tests {
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+                    parent_tab_number: None,
                 }],
                 active_tab: 0,
             }],
@@ -2553,6 +2634,7 @@ mod tests {
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+                    parent_tab_number: None,
                 }],
                 active_tab: 0,
             }],
@@ -2626,6 +2708,7 @@ mod tests {
             floats_hidden: true,
             float_focused: true,
             arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+            parent_tab_number: None,
         };
 
         let tab = restore_tab_for_test(&snap).expect("tab restores");
@@ -2659,6 +2742,7 @@ mod tests {
             floats_hidden: false,
             float_focused: false,
             arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+            parent_tab_number: None,
         };
 
         let tab = restore_tab_for_test(&snap).expect("tab restores");
@@ -2689,6 +2773,7 @@ mod tests {
             floats_hidden: false,
             float_focused: false,
             arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+            parent_tab_number: None,
         };
 
         let tab = restore_tab_for_test(&snap).expect("tab restores");
@@ -2735,6 +2820,7 @@ mod tests {
             floats_hidden: false,
             float_focused: false,
             arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+            parent_tab_number: None,
         };
 
         let tab = restore_tab_for_test(&snap).expect("tab restores");

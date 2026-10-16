@@ -318,6 +318,8 @@ impl ClientShellState {
                             focus: true,
                             label: None,
                             env: Default::default(),
+                            parent_tab_id: None,
+                            caller_pane_id: None,
                         }),
                         outcome,
                     );

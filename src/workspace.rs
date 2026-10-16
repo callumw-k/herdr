@@ -19,11 +19,13 @@ mod aggregate;
 mod git;
 mod pinned_path;
 mod tab;
+mod tab_family;
 
 use self::git::git_status_cache_key_for_space;
 pub(crate) use self::pinned_path::{
     declared_repo_for, expand_pinned_path, path_claims, toggled_pin, DeclaredRepo,
 };
+pub(crate) use self::tab_family::retain_valid_tab_parents;
 pub(crate) use self::{git::git_status_snapshot_for_cwd_with_demand, tab::MovedPane};
 pub use self::{
     git::{
@@ -585,7 +587,7 @@ impl Workspace {
         if self.tabs.len() <= 1 || idx >= self.tabs.len() {
             return false;
         }
-        let tab = self.tabs.remove(idx);
+        let tab = self.remove_tab_at(idx);
         for pane_id in tab.panes.keys() {
             self.unregister_pane(*pane_id);
         }
@@ -893,7 +895,7 @@ impl Workspace {
                 return true;
             }
             // The tab goes with its last tiled pane, floats included.
-            let tab = self.tabs.remove(tab_idx);
+            let tab = self.remove_tab_at(tab_idx);
             for orphan in tab.panes.keys() {
                 self.unregister_pane(*orphan);
             }
@@ -918,7 +920,7 @@ impl Workspace {
         }
         let pane_count = self.tabs[tab_idx].layout.pane_count();
         if pane_count <= 1 {
-            let mut tab = self.tabs.remove(tab_idx);
+            let mut tab = self.remove_tab_at(tab_idx);
             let moved = tab.take_pane_for_move(pane_id)?;
             for orphan in tab.panes.keys() {
                 self.unregister_pane(*orphan);
@@ -1152,7 +1154,7 @@ impl Workspace {
                 return true;
             }
             // The tab goes with its last tiled pane, floats included.
-            let tab = self.tabs.remove(tab_idx);
+            let tab = self.remove_tab_at(tab_idx);
             for orphan in tab.panes.keys() {
                 self.unregister_pane(*orphan);
             }
@@ -1214,6 +1216,7 @@ impl Workspace {
         let tab = Tab {
             custom_name: None,
             number: 1,
+            parent: None,
             root_pane: root_id,
             layout,
             panes,
@@ -1278,6 +1281,7 @@ impl Workspace {
         let tab = Tab {
             custom_name: name.map(str::to_string),
             number: self.next_public_tab_number,
+            parent: None,
             root_pane: root_id,
             layout,
             panes,
@@ -1441,6 +1445,18 @@ impl Workspace {
                     "workspace {} terminal {} is attached to multiple panes",
                     self.id,
                     pane.attached_terminal_id
+                );
+            }
+        }
+
+        for tab in &self.tabs {
+            if let Some(parent) = tab.parent {
+                assert!(
+                    parent < tab.number && tab_numbers.contains(&parent),
+                    "workspace {} tab {} has invalid parent {}",
+                    self.id,
+                    tab.number,
+                    parent
                 );
             }
         }

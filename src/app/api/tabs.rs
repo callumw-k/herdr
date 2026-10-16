@@ -51,17 +51,55 @@ impl App {
             focus,
             label,
             env,
+            parent_tab_id,
+            caller_pane_id,
         } = params;
-        let ws_idx = if let Some(workspace_id) = workspace_id {
-            let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
-                return workspace_not_found(id, &workspace_id);
+        let requested_ws = match workspace_id.as_deref() {
+            Some(workspace_id) => match self.parse_workspace_id(workspace_id) {
+                Some(ws_idx) => Some(ws_idx),
+                None => return workspace_not_found(id, workspace_id),
+            },
+            None => None,
+        };
+        let parent = if let Some(parent_tab_id) = parent_tab_id.as_deref() {
+            let Some((parent_ws, parent_idx)) = self.parse_tab_id(parent_tab_id) else {
+                return tab_not_found(id, parent_tab_id);
             };
+            if requested_ws.is_some_and(|ws_idx| ws_idx != parent_ws) {
+                return encode_error(
+                    id,
+                    "parent_tab_not_in_workspace",
+                    format!("tab {parent_tab_id} is not in the requested workspace"),
+                );
+            }
+            Some((parent_ws, parent_idx))
+        } else {
+            caller_pane_id
+                .as_deref()
+                .and_then(|pane_id| self.parse_pane_id(pane_id))
+                .and_then(|(ws_idx, pane_id)| {
+                    let tab_idx = self
+                        .state
+                        .workspaces
+                        .get(ws_idx)?
+                        .find_tab_index_for_pane(pane_id)?;
+                    Some((ws_idx, tab_idx))
+                })
+                .filter(|(ws_idx, _)| requested_ws.is_none_or(|requested| requested == *ws_idx))
+        };
+        let ws_idx = if let Some(ws_idx) = requested_ws.or(parent.map(|(ws_idx, _)| ws_idx)) {
             ws_idx
         } else if let Some(active) = self.state.active {
             active
         } else {
             return encode_error(id, "workspace_not_found", "no active workspace");
         };
+        let parent_number = parent.and_then(|(parent_ws, parent_idx)| {
+            self.state
+                .workspaces
+                .get(parent_ws)?
+                .public_tab_number(parent_idx)
+        });
         let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| {
             self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
         });
@@ -92,7 +130,12 @@ impl App {
                 )
             });
         match result {
-            Ok((tab_idx, terminal, runtime)) => {
+            Ok((created_idx, terminal, runtime)) => {
+                let tab_idx = match parent_number {
+                    Some(parent_number) => self.state.workspaces[ws_idx]
+                        .attach_tab_to_parent(created_idx, parent_number),
+                    None => created_idx,
+                };
                 self.terminal_runtimes.insert(terminal.id.clone(), runtime);
                 self.state.terminals.insert(terminal.id.clone(), terminal);
                 self.state.remove_alias_shadowed_by_new_pane(
@@ -119,6 +162,12 @@ impl App {
                 }
                 self.schedule_session_save();
                 self.emit_tab_created_events(ws_idx, tab_idx);
+                if tab_idx != created_idx {
+                    if let Some(tab_id) = self.public_tab_id(ws_idx, tab_idx) {
+                        let tabs = self.tab_list_info(ws_idx);
+                        self.emit_tab_moved_event(ws_idx, tab_id, tab_idx, tabs);
+                    }
+                }
                 encode_success(
                     id,
                     self.tab_created_result(ws_idx, tab_idx)
@@ -189,7 +238,6 @@ impl App {
         let tab_id = self
             .public_tab_id(ws_idx, tab_idx)
             .unwrap_or_else(|| crate::workspace::public_tab_id_for_number(&ws.id, tab_idx + 1));
-        let workspace_id = self.public_workspace_id(ws_idx);
         let insert_index = params.insert_index;
         let moved = self
             .state
@@ -199,18 +247,29 @@ impl App {
         let tabs = self.tab_list_info(ws_idx);
         if moved {
             self.schedule_session_save();
-            self.emit_event(EventEnvelope {
-                event: EventKind::TabMoved,
-                data: EventData::TabMoved {
-                    tab_id,
-                    workspace_id,
-                    insert_index,
-                    tabs: tabs.clone(),
-                },
-            });
+            self.emit_tab_moved_event(ws_idx, tab_id, insert_index, tabs.clone());
         }
 
         encode_success(id, ResponseResult::TabList { tabs })
+    }
+
+    fn emit_tab_moved_event(
+        &mut self,
+        ws_idx: usize,
+        tab_id: String,
+        insert_index: usize,
+        tabs: Vec<crate::api::schema::TabInfo>,
+    ) {
+        let workspace_id = self.public_workspace_id(ws_idx);
+        self.emit_event(EventEnvelope {
+            event: EventKind::TabMoved,
+            data: EventData::TabMoved {
+                tab_id,
+                workspace_id,
+                insert_index,
+                tabs,
+            },
+        });
     }
 
     pub(super) fn handle_tab_close(&mut self, id: String, target: TabTarget) -> String {
@@ -465,6 +524,8 @@ mod tests {
                 focus: false,
                 label: None,
                 env: Default::default(),
+                parent_tab_id: None,
+                caller_pane_id: None,
             },
         );
 
@@ -477,6 +538,206 @@ mod tests {
             crate::worktree::canonical_or_original(created_cwd),
             crate::worktree::canonical_or_original(&cached_cwd)
         );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    fn parent_test_app(
+        workspaces: Vec<Workspace>,
+    ) -> (
+        App,
+        tokio::sync::mpsc::UnboundedSender<crate::api::ApiRequestMessage>,
+    ) {
+        let (api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.default_shell = exiting_test_command().into();
+        app.state.shell_mode = ShellModeConfig::NonLogin;
+        app.state.workspaces = workspaces;
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.ensure_test_terminals();
+        (app, api_tx)
+    }
+
+    fn create_tab_with_parent(
+        app: &mut App,
+        workspace_id: Option<String>,
+        parent_tab_id: Option<String>,
+        caller_pane_id: Option<String>,
+    ) -> String {
+        app.handle_tab_create(
+            "req".into(),
+            TabCreateParams {
+                workspace_id,
+                cwd: None,
+                focus: false,
+                label: None,
+                env: Default::default(),
+                parent_tab_id,
+                caller_pane_id,
+            },
+        )
+    }
+
+    fn created_tab(response: &str) -> crate::api::schema::TabInfo {
+        let success: SuccessResponse = serde_json::from_str(response).unwrap();
+        let ResponseResult::TabCreated { tab, .. } = success.result else {
+            panic!("expected tab_created, got {response}");
+        };
+        tab
+    }
+
+    #[tokio::test]
+    async fn tab_create_parents_to_the_callers_tab_not_the_active_one() {
+        let mut workspace = Workspace::test_new("one");
+        let caller_tab = workspace.test_add_tab(Some("caller"));
+        let caller_pane = workspace.tabs[caller_tab].root_pane;
+        let (mut app, _api_tx) = parent_test_app(vec![workspace]);
+        let caller_pane_id = app.public_pane_id(0, caller_pane).unwrap();
+
+        let tab = created_tab(&create_tab_with_parent(
+            &mut app,
+            None,
+            None,
+            Some(caller_pane_id),
+        ));
+
+        assert_eq!(tab.parent_tab_id, app.public_tab_id(0, caller_tab));
+        assert_eq!(
+            app.state.workspaces[0].tabs[2].parent,
+            Some(app.state.workspaces[0].tabs[1].number)
+        );
+        assert!(!app
+            .event_hub
+            .events_after(0)
+            .iter()
+            .any(|(_, event)| event.event == EventKind::TabMoved));
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn tab_create_announces_a_child_placed_mid_list() {
+        let mut workspace = Workspace::test_new("one");
+        let caller_tab = workspace.test_add_tab(Some("caller"));
+        workspace.test_add_tab(Some("after"));
+        let caller_pane = workspace.tabs[caller_tab].root_pane;
+        let (mut app, _api_tx) = parent_test_app(vec![workspace]);
+        let caller_pane_id = app.public_pane_id(0, caller_pane).unwrap();
+
+        let tab = created_tab(&create_tab_with_parent(
+            &mut app,
+            None,
+            None,
+            Some(caller_pane_id),
+        ));
+
+        let events = app.event_hub.events_after(0);
+        let kinds = events
+            .iter()
+            .map(|(_, event)| event.event)
+            .collect::<Vec<_>>();
+        let created = kinds
+            .iter()
+            .position(|kind| *kind == EventKind::TabCreated)
+            .expect("tab.created event");
+        let moved = kinds
+            .iter()
+            .position(|kind| *kind == EventKind::TabMoved)
+            .expect("tab.moved event");
+        assert!(created < moved, "{kinds:?}");
+        assert!(matches!(
+            &events[moved].1.data,
+            EventData::TabMoved {
+                tab_id,
+                workspace_id,
+                insert_index: 2,
+                tabs,
+            } if tab_id == &tab.tab_id
+                && workspace_id == &app.public_workspace_id(0)
+                && tabs[2].tab_id == tab.tab_id
+        ));
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn tab_create_without_workspace_lands_in_the_callers_workspace() {
+        let first = Workspace::test_new("first");
+        let second = Workspace::test_new("second");
+        let caller_pane = second.tabs[0].root_pane;
+        let (mut app, _api_tx) = parent_test_app(vec![first, second]);
+        let caller_pane_id = app.public_pane_id(1, caller_pane).unwrap();
+
+        let tab = created_tab(&create_tab_with_parent(
+            &mut app,
+            None,
+            None,
+            Some(caller_pane_id),
+        ));
+
+        assert_eq!(tab.workspace_id, app.public_workspace_id(1));
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        assert_eq!(app.state.workspaces[1].tabs.len(), 2);
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn tab_create_rejects_a_missing_or_foreign_parent() {
+        let (mut app, _api_tx) = parent_test_app(vec![
+            Workspace::test_new("first"),
+            Workspace::test_new("second"),
+        ]);
+        let first_workspace = app.public_workspace_id(0);
+        let foreign_parent = app.public_tab_id(1, 0).unwrap();
+
+        let foreign =
+            create_tab_with_parent(&mut app, Some(first_workspace), Some(foreign_parent), None);
+        let missing = create_tab_with_parent(&mut app, None, Some("w_missing:t9".into()), None);
+
+        assert!(foreign.contains("parent_tab_not_in_workspace"), "{foreign}");
+        assert!(missing.contains("tab_not_found"), "{missing}");
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        assert_eq!(app.state.workspaces[1].tabs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn tab_create_in_another_workspace_ignores_the_caller() {
+        let first = Workspace::test_new("first");
+        let second = Workspace::test_new("second");
+        let caller_pane = second.tabs[0].root_pane;
+        let (mut app, _api_tx) = parent_test_app(vec![first, second]);
+        let caller_pane_id = app.public_pane_id(1, caller_pane).unwrap();
+        let first_workspace = app.public_workspace_id(0);
+
+        let tab = created_tab(&create_tab_with_parent(
+            &mut app,
+            Some(first_workspace.clone()),
+            None,
+            Some(caller_pane_id),
+        ));
+
+        assert_eq!(tab.workspace_id, first_workspace);
+        assert_eq!(tab.parent_tab_id, None);
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn tab_create_ignores_an_unknown_caller_pane() {
+        let (mut app, _api_tx) = parent_test_app(vec![Workspace::test_new("one")]);
+
+        let tab = created_tab(&create_tab_with_parent(
+            &mut app,
+            None,
+            None,
+            Some("w_missing:p9".into()),
+        ));
+
+        assert_eq!(tab.parent_tab_id, None);
+        assert_eq!(tab.workspace_id, app.public_workspace_id(0));
         shutdown_test_runtimes(&mut app);
     }
 }

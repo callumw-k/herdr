@@ -81,21 +81,25 @@ pub(super) fn aggregate_agent_rows<'a>(
     });
 
     if let Some(Ok(view)) = active_view {
+        let tree_order = view.is_none() && sort == crate::config::AgentPanelSortConfig::Spaces;
         let mut rows = cached_endpoint_snapshots(endpoints)
             .flat_map(|endpoint| {
-                endpoint
-                    .snapshot
-                    .agents
-                    .iter()
-                    .map(move |agent| AggregateAgentRow {
-                        recency: endpoint
-                            .agent_recency
-                            .get(&agent.pane_id)
-                            .copied()
-                            .unwrap_or_default(),
-                        endpoint,
-                        agent,
-                    })
+                let mut agents = endpoint.snapshot.agents.iter().collect::<Vec<_>>();
+                if tree_order {
+                    super::agent_sidebar::sort_agents_by_tab_tree(
+                        &mut agents,
+                        &endpoint.snapshot.tabs,
+                    );
+                }
+                agents.into_iter().map(move |agent| AggregateAgentRow {
+                    recency: endpoint
+                        .agent_recency
+                        .get(&agent.pane_id)
+                        .copied()
+                        .unwrap_or_default(),
+                    endpoint,
+                    agent,
+                })
             })
             .collect::<Vec<_>>();
         if let Some(view) = view {

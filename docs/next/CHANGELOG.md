@@ -10,6 +10,7 @@
 - The navigator opens in search, and a query lists matching panes flat with a breadcrumb, ranking a pane's own match above a workspace or tab match.
 - Keybind help lists the arrangement, float and pin bindings.
 - A single pane keeps a one-row title strip in `ui.pane_borders = "auto"`.
+- A tab created with `herdr tab create` from inside a pane becomes a child of that pane's tab. It opens in the parent's workspace next to its siblings, reads `parent › child` in the tab bar, the agents sidebar `tab` token and the window title, and its agents nest under the parent's agents in the grouped agents sidebar. `--parent <tab_id>` picks the parent and `--no-parent` opts out. Closing a parent hands its children to the grandparent.
 
 ### Fixed
 - Opening a floating pane no longer slows down the whole session. Only panes a float actually covers fall back to a full redraw; the float itself and panes outside its region keep the fast path.

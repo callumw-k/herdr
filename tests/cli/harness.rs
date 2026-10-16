@@ -326,6 +326,7 @@ pub(super) fn run_cli(socket_path: &Path, args: &[&str]) -> std::process::Output
     let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
     command.args(args);
     command.env("HERDR_SOCKET_PATH", socket_path);
+    command.env_remove("HERDR_PANE_ID");
     command.output().unwrap()
 }
 
@@ -338,6 +339,7 @@ pub(super) fn run_cli_in_dir(
     command.args(args);
     command.current_dir(current_dir);
     command.env("HERDR_SOCKET_PATH", socket_path);
+    command.env_remove("HERDR_PANE_ID");
     command.output().unwrap()
 }
 

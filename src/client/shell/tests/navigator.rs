@@ -24,6 +24,7 @@ fn two_workspace_snapshot() -> ClientShellSnapshot {
         zoomed: false,
         focused: false,
         agent_status: AgentStatus::Idle,
+        parent_tab_id: None,
     });
     snapshot.panes[0].label = Some("alpha-runner".into());
     snapshot.panes.push(ClientShellPane {

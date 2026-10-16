@@ -2686,6 +2686,8 @@ async fn public_background_tab_create_preserves_client_locations() {
                 focus: false,
                 label: Some("background".into()),
                 env: std::collections::HashMap::new(),
+                parent_tab_id: None,
+                caller_pane_id: None,
             }),
         },
         respond_to,

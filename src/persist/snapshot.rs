@@ -111,6 +111,8 @@ pub struct TabSnapshot {
     pub float_focused: bool,
     #[serde(default)]
     pub arrangement: ArrangementSnapshot,
+    #[serde(default)]
+    pub parent_tab_number: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -233,6 +235,7 @@ impl From<LegacyWorkspaceSnapshot> for WorkspaceSnapshot {
             floats_hidden: false,
             float_focused: false,
             arrangement: ArrangementSnapshot::default(),
+            parent_tab_number: None,
         };
 
         Self {
@@ -484,6 +487,7 @@ fn capture_tab(
         floats_hidden: tab.floats_hidden,
         float_focused: tab.float_focused,
         arrangement: tab.arrangement.into(),
+        parent_tab_number: tab.parent,
     }
 }
 
@@ -722,6 +726,23 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_captures_tab_parent() {
+        let mut state = state_with_workspaces(&["family"]);
+        let child = state.workspaces[0].test_add_tab(Some("child"));
+        state.workspaces[0].attach_tab_to_parent(child, 1);
+        state.ensure_test_terminals();
+
+        let snapshot = capture_from_state(&state);
+
+        let parents: Vec<_> = snapshot.workspaces[0]
+            .tabs
+            .iter()
+            .map(|tab| tab.parent_tab_number)
+            .collect();
+        assert_eq!(parents, vec![None, Some(1)]);
+    }
+
+    #[test]
     fn layout_fingerprint_survives_json_round_trip() {
         let mut snapshot = parse_snapshot(include_str!(
             "../../tests/fixtures/session/current-herdr-session.json"
@@ -841,6 +862,7 @@ mod tests {
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: ArrangementSnapshot::default(),
+                    parent_tab_number: None,
                 }],
                 active_tab: 0,
             }],
@@ -1554,6 +1576,7 @@ mod tests {
                     floats_hidden: false,
                     float_focused: false,
                     arrangement: ArrangementSnapshot::default(),
+                    parent_tab_number: None,
                 }],
                 active_tab: 0,
             }],

@@ -60,6 +60,8 @@ Create a tab:
 herdr tab create --label logs
 ```
 
+`tab.create` accepts `parent_tab_id` to make the new tab a child of an existing tab, or `caller_pane_id` to make it a child of whichever tab that pane is in at request time. A child is created in its parent's workspace when `workspace_id` is omitted, and is placed after the parent's existing children. `parent_tab_id` from a different workspace than `workspace_id` fails with `parent_tab_not_in_workspace`. A `caller_pane_id` that no longer exists, or that sits in a different workspace than `workspace_id`, creates a top-level tab. `TabInfo` reports the link as `parent_tab_id`, and closing a parent re-parents its children to the grandparent.
+
 Split a pane and run a command:
 
 ```bash

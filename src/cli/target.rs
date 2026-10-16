@@ -204,13 +204,25 @@ pub(super) fn remote_path_is_absolute(path: &str) -> bool {
             && matches!(bytes[2], b'/' | b'\\'))
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_CALLER_PANE_ID: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn set_test_caller_pane_id(pane_id: Option<&str>) {
+    TEST_CALLER_PANE_ID.with(|caller| *caller.borrow_mut() = pane_id.map(str::to_owned));
+}
+
 pub(super) fn caller_pane_id() -> Option<String> {
     if is_remote() {
         return None;
     }
-    std::env::var("HERDR_PANE_ID")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
+    #[cfg(test)]
+    let value = TEST_CALLER_PANE_ID.with(|caller| caller.borrow().clone());
+    #[cfg(not(test))]
+    let value = std::env::var("HERDR_PANE_ID").ok();
+    value.filter(|value| !value.trim().is_empty())
 }
 
 fn parse_machine_prefix(args: &[String]) -> Result<Option<(String, Vec<String>)>, String> {

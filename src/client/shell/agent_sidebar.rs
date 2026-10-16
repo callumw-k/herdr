@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::{
     buffer::Buffer,
@@ -18,6 +18,10 @@ pub(super) struct AgentRow {
     pub(super) group: Option<String>,
     /// Blank line above the group header; every group after the first gets one.
     pub(super) group_gap: bool,
+    pub(super) depth: usize,
+    /// One entry per tree column: whether a later row at that column's depth
+    /// follows within the same branch and workspace group.
+    pub(super) continues: Vec<bool>,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
 }
 
@@ -45,18 +49,127 @@ pub(super) fn ordered_agent_pane_ids(
             .collect();
     }
     let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
-    if sort == crate::config::AgentPanelSortConfig::Priority {
-        agents.sort_by_key(|agent| {
-            (
-                std::cmp::Reverse(status_priority(agent.agent_status)),
-                std::cmp::Reverse(agent.state_change_seq),
-            )
-        });
+    match sort {
+        crate::config::AgentPanelSortConfig::Priority => {
+            agents.sort_by_key(|agent| {
+                (
+                    std::cmp::Reverse(status_priority(agent.agent_status)),
+                    std::cmp::Reverse(agent.state_change_seq),
+                )
+            });
+        }
+        crate::config::AgentPanelSortConfig::Spaces => {
+            sort_agents_by_tab_tree(&mut agents, &snapshot.tabs);
+        }
     }
     agents
         .into_iter()
         .map(|agent| agent.pane_id.clone())
         .collect()
+}
+
+pub(super) fn sort_agents_by_tab_tree(
+    agents: &mut [&crate::protocol::ClientShellAgent],
+    tabs: &[ClientShellTab],
+) {
+    let rank = tab_tree_rank(tabs);
+    agents.sort_by_key(|agent| {
+        rank.get(agent.tab_id.as_str())
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+}
+
+fn same_workspace_parent<'a>(
+    tab: &ClientShellTab,
+    by_id: &HashMap<&str, &'a ClientShellTab>,
+) -> Option<&'a ClientShellTab> {
+    tab.parent_tab_id
+        .as_deref()
+        .and_then(|parent_id| by_id.get(parent_id).copied())
+        .filter(|parent| parent.workspace_id == tab.workspace_id)
+}
+
+fn tab_tree_rank(tabs: &[ClientShellTab]) -> HashMap<&str, usize> {
+    let by_id: HashMap<&str, &ClientShellTab> =
+        tabs.iter().map(|tab| (tab.tab_id.as_str(), tab)).collect();
+    let mut roots = Vec::new();
+    let mut children: HashMap<&str, Vec<&ClientShellTab>> = HashMap::new();
+    for tab in tabs {
+        match same_workspace_parent(tab, &by_id) {
+            Some(parent) => children
+                .entry(parent.tab_id.as_str())
+                .or_default()
+                .push(tab),
+            None => roots.push(tab),
+        }
+    }
+    let mut rank = HashMap::with_capacity(tabs.len());
+    for root in roots {
+        let mut stack = vec![root];
+        while let Some(tab) = stack.pop() {
+            if rank.contains_key(tab.tab_id.as_str()) {
+                continue;
+            }
+            rank.insert(tab.tab_id.as_str(), rank.len());
+            if let Some(tab_children) = children.get(tab.tab_id.as_str()) {
+                stack.extend(tab_children.iter().rev());
+            }
+        }
+    }
+    for tab in tabs {
+        let next = rank.len();
+        rank.entry(tab.tab_id.as_str()).or_insert(next);
+    }
+    rank
+}
+
+fn agent_tab_depths(snapshot: &ClientShellSnapshot) -> HashMap<&str, usize> {
+    let by_id: HashMap<&str, &ClientShellTab> = snapshot
+        .tabs
+        .iter()
+        .map(|tab| (tab.tab_id.as_str(), tab))
+        .collect();
+    let with_agents: HashSet<&str> = snapshot
+        .agents
+        .iter()
+        .map(|agent| agent.tab_id.as_str())
+        .collect();
+    snapshot
+        .tabs
+        .iter()
+        .map(|tab| {
+            let mut depth = 0;
+            let mut current = tab;
+            for _ in 0..snapshot.tabs.len() {
+                let Some(parent) = same_workspace_parent(current, &by_id) else {
+                    break;
+                };
+                if with_agents.contains(parent.tab_id.as_str()) {
+                    depth += 1;
+                }
+                current = parent;
+            }
+            (tab.tab_id.as_str(), depth)
+        })
+        .collect()
+}
+
+pub(super) fn tree_prefix(continues: &[bool], first_line: bool) -> String {
+    let Some((own, ancestors)) = continues.split_last() else {
+        return "  ".into();
+    };
+    let mut prefix = String::from("  ");
+    for continuing in ancestors {
+        prefix.push_str(if *continuing { "│  " } else { "   " });
+    }
+    prefix.push_str(match (first_line, own) {
+        (true, true) => "├─ ",
+        (true, false) => "└─ ",
+        (false, true) => "│  ",
+        (false, false) => "   ",
+    });
+    prefix
 }
 
 pub(super) fn render_agent_panel(
@@ -254,28 +367,43 @@ pub(super) fn agent_rows(
     // sort would scatter them.
     let grouped = config.agent_panel_sort == crate::config::AgentPanelSortConfig::Spaces
         && snapshot.agent_view_label.is_none();
+    let depths = if grouped {
+        agent_tab_depths(snapshot)
+    } else {
+        HashMap::new()
+    };
     let mut previous_workspace: Option<&str> = None;
-    ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    let mut rows: Vec<AgentRow> = ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
         .into_iter()
         .filter_map(|pane_id| {
             let mut row = agent_row(snapshot, &pane_id, config, machine)?;
-            let workspace = snapshot
+            let agent = snapshot
                 .agents
                 .iter()
-                .find(|agent| agent.pane_id == pane_id)
-                .and_then(|agent| {
-                    snapshot
-                        .workspaces
-                        .iter()
-                        .find(|workspace| workspace.workspace_id == agent.workspace_id)
-                })?;
+                .find(|agent| agent.pane_id == pane_id)?;
+            let workspace = snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == agent.workspace_id)?;
             row.group = (grouped && previous_workspace != Some(workspace.workspace_id.as_str()))
                 .then(|| workspace.label.clone());
             row.group_gap = row.group.is_some() && previous_workspace.is_some();
+            row.depth = depths.get(agent.tab_id.as_str()).copied().unwrap_or(0);
             previous_workspace = Some(workspace.workspace_id.as_str());
             Some(row)
         })
-        .collect()
+        .collect();
+    for index in 0..rows.len() {
+        rows[index].continues = (1..=rows[index].depth)
+            .map(|level| {
+                rows[index + 1..]
+                    .iter()
+                    .take_while(|row| row.depth >= level && row.group.is_none())
+                    .any(|row| row.depth == level)
+            })
+            .collect();
+    }
+    rows
 }
 
 pub(super) fn agent_row(
@@ -304,7 +432,7 @@ pub(super) fn agent_row(
         .count();
     let tab_label = tab
         .filter(|tab| tab_count > 1 || tab.custom_label)
-        .map(|tab| tab.label.as_str());
+        .map(|tab| super::render::tab_display_label(tab, &snapshot.tabs));
     let agent_label = agent
         .display_agent
         .as_deref()
@@ -330,7 +458,7 @@ pub(super) fn agent_row(
         crate::ui::AgentTokenContext {
             machine,
             workspace: &workspace.label,
-            tab: tab_label,
+            tab: tab_label.as_deref(),
             pane: agent
                 .title
                 .as_deref()
@@ -349,6 +477,8 @@ pub(super) fn agent_row(
         focused: agent.focused,
         group: None,
         group_gap: false,
+        depth: 0,
+        continues: Vec::new(),
         rows,
     })
 }
@@ -408,12 +538,17 @@ pub(super) fn render_agent_row(
         rect.y = rect.y.saturating_add(1);
         rect.height = rect.height.saturating_sub(1);
     }
-    // Column 0 belongs to the focus marker. Every row keeps the same indent so
-    // labels stay in one column instead of stepping right on continuation rows.
+    // Column 0 belongs to the focus marker. Every row of one entry keeps the
+    // same indent so labels stay in one column instead of stepping right on
+    // continuation rows; nested entries shift by their tree prefix.
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
-        let indent = 2;
+        let prefix = tree_prefix(&row.continues, index == 0);
+        let indent = display_width(&prefix);
         let context = if index == 0 { leading } else { secondary };
-        let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
+        let mut spans = vec![ratatui::text::Span::styled(
+            prefix,
+            Style::default().fg(palette.overlay0),
+        )];
         spans.extend(crate::ui::resolved_token_spans(
             tokens,
             icon,

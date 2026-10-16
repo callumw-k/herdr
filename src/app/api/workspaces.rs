@@ -639,6 +639,8 @@ mod tests {
                 focus: true,
                 label: None,
                 env: Default::default(),
+                parent_tab_id: None,
+                caller_pane_id: None,
             },
         );
         let _: SuccessResponse = serde_json::from_str(&response).unwrap();

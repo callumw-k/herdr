@@ -26,8 +26,25 @@ const LEAVES: [Leaf; 7] = [
         name: "create",
         about: "Create a tab",
         id: "cli:tab:create",
-        arguments: TabCreateProjection::arguments,
-        method: |matches| TabCreateProjection::from_matches(matches).map(Method::TabCreate),
+        arguments: || {
+            let mut arguments = TabCreateProjection::arguments();
+            arguments.push(
+                clap::Arg::new("no-parent")
+                    .long("no-parent")
+                    .action(clap::ArgAction::SetTrue)
+                    .conflicts_with("parent")
+                    .display_order(7),
+            );
+            arguments
+        },
+        method: |matches| {
+            let mut params = TabCreateProjection::from_matches(matches)?;
+            if params.parent_tab_id.is_none() && !matches.get_flag("no-parent") {
+                params.caller_pane_id = crate::cli::target::caller_pane_id()
+                    .map(|pane_id| crate::cli::normalize_pane_id(&pane_id));
+            }
+            Ok(Method::TabCreate(params))
+        },
     },
     Leaf {
         name: "get",
@@ -85,6 +102,28 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Request, ParseError> {
         request(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn tab_create_records_the_calling_pane_unless_told_otherwise() {
+        crate::cli::target::set_test_caller_pane_id(Some("w1:p3"));
+        let params = |args: &[&str]| match parse(args).unwrap().method {
+            Method::TabCreate(params) => params,
+            other => panic!("expected tab.create, got {other:?}"),
+        };
+
+        let automatic = params(&["create"]);
+        let opted_out = params(&["create", "--no-parent"]);
+        let explicit = params(&["create", "--parent", "w1:t2"]);
+        let conflicting = parse(&["create", "--parent", "w1:t2", "--no-parent"]);
+        crate::cli::target::set_test_caller_pane_id(None);
+
+        assert_eq!(automatic.caller_pane_id.as_deref(), Some("w1:p3"));
+        assert_eq!(automatic.parent_tab_id, None);
+        assert_eq!(opted_out.caller_pane_id, None);
+        assert_eq!(explicit.parent_tab_id.as_deref(), Some("w1:t2"));
+        assert_eq!(explicit.caller_pane_id, None);
+        assert!(conflicting.is_err());
     }
 
     #[test]

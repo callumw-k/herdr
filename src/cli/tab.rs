@@ -56,6 +56,8 @@ mod tests {
                 focus: false,
                 label: None,
                 env: HashMap::new(),
+                parent_tab_id: None,
+                caller_pane_id: None,
             }
         );
         assert_eq!(

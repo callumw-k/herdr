@@ -50,6 +50,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
             zoomed: false,
             focused: true,
             agent_status: AgentStatus::Idle,
+            parent_tab_id: None,
         }],
         panes: vec![ClientShellPane {
             pane_id: "pane_1".into(),
@@ -266,6 +267,7 @@ mod navigator;
 mod popup_focus_projection;
 mod startup_overlays;
 mod status_dot_style;
+mod subtabs;
 mod workspace_dialog;
 
 pub(super) fn workspace_info(workspace_id: &str) -> crate::api::schema::WorkspaceInfo {
@@ -293,6 +295,7 @@ pub(super) fn tab_info(workspace_id: &str, tab_id: &str) -> crate::api::schema::
         focused: true,
         pane_count: 1,
         agent_status: AgentStatus::Unknown,
+        parent_tab_id: None,
     }
 }
 

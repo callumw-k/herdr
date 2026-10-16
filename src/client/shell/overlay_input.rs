@@ -1260,6 +1260,8 @@ impl ClientShellState {
                     label: (!trimmed.is_empty() && trimmed != default_name)
                         .then(|| trimmed.to_owned()),
                     env: Default::default(),
+                    parent_tab_id: None,
+                    caller_pane_id: None,
                 },
             )),
             ClientRenameTarget::Tab {

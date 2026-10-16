@@ -95,7 +95,7 @@ impl App {
                         self.state
                             .workspaces
                             .get(workspace_index)?
-                            .tab_display_name(tab_index)
+                            .tab_display_name_with_parent(tab_index)
                     }) {
                         title.push_str(&name);
                     }
@@ -152,6 +152,19 @@ mod tests {
 
         app.state.workspaces[0].tabs[0].custom_name = Some("build".into());
         assert_eq!(app.window_title().as_deref(), Some("herd/build"));
+    }
+
+    #[test]
+    fn tab_token_includes_the_parent_tab() {
+        let mut app = test_app();
+        app.configure_window_title("{workspace}/{tab}");
+        app.state.workspaces[0].tabs[0].custom_name = Some("web".into());
+        let child = app.state.workspaces[0].test_add_tab(Some("api"));
+        let child = app.state.workspaces[0].attach_tab_to_parent(child, 1);
+        app.state.workspaces[0].switch_tab(child);
+        app.state.ensure_test_terminals();
+
+        assert_eq!(app.window_title().as_deref(), Some("herd/web › api"));
     }
 
     #[test]

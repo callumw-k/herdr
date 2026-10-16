@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "protocol": 22,
+  "protocol": 23,
   "schema_version": 1,
   "schemas": {
     "error_response": {
@@ -1058,6 +1058,12 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "parent_tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "tab_id": {
               "type": "string"
@@ -4411,6 +4417,12 @@
         },
         "TabCreateParams": {
           "properties": {
+            "caller_pane_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "type": [
                 "string",
@@ -4428,6 +4440,12 @@
               "type": "boolean"
             },
             "label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "parent_tab_id": {
               "type": [
                 "string",
                 "null"
@@ -11001,6 +11019,12 @@
               "format": "uint",
               "minimum": 0,
               "type": "integer"
+            },
+            "parent_tab_id": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "tab_id": {
               "type": "string"

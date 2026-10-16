@@ -36,6 +36,16 @@ cli_params! {
         pub label: Option<String> => Field::new(None).input(bindings::optional_text("label", "TEXT").order(2)),
         #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         pub env: HashMap<String, String> => Field::new(HashMap::new()).input(bindings::environment().order(3)),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub parent_tab_id: Option<String> => Field::new(None).input(
+            Input::value("parent", "TAB_ID", |slot, value| {
+                *slot = Some(crate::cli::normalize_tab_id(value));
+                Ok(())
+            })
+            .order(6),
+        ),
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub caller_pane_id: Option<String> => Field::new(None::<String>),
     }
 }
 
@@ -70,4 +80,6 @@ pub struct TabInfo {
     pub focused: bool,
     pub pane_count: usize,
     pub agent_status: AgentStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tab_id: Option<String>,
 }

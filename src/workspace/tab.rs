@@ -38,6 +38,7 @@ enum SplitCommand<'a> {
 pub struct Tab {
     pub custom_name: Option<String>,
     pub number: usize,
+    pub parent: Option<usize>,
     /// Identity source for this tab's pane tree.
     pub root_pane: PaneId,
     pub layout: TileLayout,
@@ -203,6 +204,7 @@ impl Tab {
             Self {
                 custom_name: None,
                 number,
+                parent: None,
                 root_pane: root_id,
                 layout,
                 panes,
@@ -611,6 +613,7 @@ impl Tab {
         Self {
             custom_name,
             number,
+            parent: None,
             root_pane: pane_id,
             layout: TileLayout::from_saved(Node::Pane(pane_id), pane_id),
             panes,
