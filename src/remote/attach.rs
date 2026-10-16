@@ -1058,6 +1058,14 @@ impl RemoteSsh {
     }
 
     fn framed_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
+        self.user_shell_output(remote_command, !self.noninteractive)
+    }
+
+    fn captured_user_shell_output(&self, remote_command: &str) -> io::Result<Output> {
+        self.user_shell_output(remote_command, false)
+    }
+
+    fn user_shell_output(&self, remote_command: &str, forward_stderr: bool) -> io::Result<Output> {
         if self.cancelled.load(Ordering::Acquire) {
             return Err(super::process::cancelled());
         }
@@ -1076,8 +1084,10 @@ impl RemoteSsh {
                 NONINTERACTIVE_SSH_COMMAND_TIMEOUT,
                 Arc::clone(&self.cancelled),
             )
-        } else {
+        } else if forward_stderr {
             output_with_forwarded_stderr(command.spawn()?, None)
+        } else {
+            command.spawn()?.wait_with_output()
         }?;
         normalize_remote_output(output)
     }
@@ -1776,13 +1786,14 @@ fn detect_windows_remote_platform(
     ssh: &RemoteSsh,
     native_shell_only: bool,
 ) -> io::Result<Option<DetectedRemotePlatform>> {
-    // Capture a Unix login shell's expected "command not found" in stdout;
-    // an ordinary failed probe is discarded without printing that diagnostic.
+    // A Unix login shell's expected "command not found" must stay off the
+    // terminal. Fish prints it outside the command's redirection, so stderr is
+    // captured rather than forwarded even during interactive setup.
     let command = format!("{} 2>&1", windows_platform_probe_command(native_shell_only));
     // Propagate cancellation, spawn failures, and SSH transport failures (exit
     // 255) rather than retrying them against the POSIX probe, which would repeat
     // an authentication failure. An ordinary command failure means "not Windows".
-    let output = ssh.framed_user_shell_output(&command)?;
+    let output = ssh.captured_user_shell_output(&command)?;
     if output.status.code() == Some(255) {
         return Err(command_failed("remote platform detection failed", &output));
     }
