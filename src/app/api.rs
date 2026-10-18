@@ -495,21 +495,17 @@ impl App {
 
     fn sync_full_lifecycle_authority_detection_pauses(&self) {
         for workspace in &self.state.workspaces {
-            for tab in &workspace.tabs {
-                for pane in tab.panes.values() {
-                    let Some(terminal) = self.state.terminals.get(&pane.attached_terminal_id)
-                    else {
-                        continue;
-                    };
-                    let Some(runtime) = self.terminal_runtimes.get(&pane.attached_terminal_id)
-                    else {
-                        continue;
-                    };
-                    runtime.set_full_lifecycle_authority_active(
-                        terminal.full_lifecycle_hook_authority_active(),
-                    );
-                    runtime.set_self_reported_agent_active(terminal.self_reported_agent_active());
-                }
+            for (_, pane) in workspace.pane_states() {
+                let Some(terminal) = self.state.terminals.get(&pane.attached_terminal_id) else {
+                    continue;
+                };
+                let Some(runtime) = self.terminal_runtimes.get(&pane.attached_terminal_id) else {
+                    continue;
+                };
+                runtime.set_full_lifecycle_authority_active(
+                    terminal.full_lifecycle_hook_authority_active(),
+                );
+                runtime.set_self_reported_agent_active(terminal.self_reported_agent_active());
             }
         }
     }

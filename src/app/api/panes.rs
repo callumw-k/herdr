@@ -62,11 +62,8 @@ impl App {
             crate::api::schema::SplitDirection::Right => crate::layout::Arrangement::Vertical,
             crate::api::schema::SplitDirection::Down => crate::layout::Arrangement::Horizontal,
         };
-        let target_tab_idx = self.state.workspaces[ws_idx].find_tab_index_for_pane(target_pane_id);
-        let target_is_float = target_tab_idx.is_some_and(|tab_idx| {
-            self.state.workspaces[ws_idx].tabs[tab_idx].is_float(target_pane_id)
-        });
-        if target_is_float {
+        let target_tab_idx = self.state.workspaces[ws_idx].presenting_tab_index(target_pane_id);
+        if self.state.workspaces[ws_idx].is_float(target_pane_id) {
             // The tiled tree cannot split a float; creation follows focus, so a
             // split aimed at the float layer adds a float to it instead.
             let response = self.handle_pane_float(
@@ -280,9 +277,7 @@ impl App {
             .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.active_tab())
-            .map(|tab| tab.floats_hidden)
-            .unwrap_or(false);
+            .is_some_and(|ws| ws.floats.hidden);
         let hidden = match params.mode {
             PaneZoomMode::Toggle => !current,
             PaneZoomMode::On => false,
@@ -309,9 +304,7 @@ impl App {
             .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.active_tab())
-            .map(|tab| tab.floats().is_empty())
-            .unwrap_or(true);
+            .is_none_or(|ws| ws.floats.pane_ids().is_empty());
         if floats_empty {
             if let Err(err) = self.open_float_pane(ws_idx, None) {
                 return encode_error(id, "pane_float_failed", err.to_string());
@@ -760,7 +753,7 @@ impl App {
         let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
-        let Some(_tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(_tab_idx) = self.state.workspaces[ws_idx].presenting_tab_index(pane_id) else {
             return pane_not_found(id, &target.pane_id);
         };
 
@@ -778,7 +771,7 @@ impl App {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = self.state.workspaces[ws_idx].presenting_tab_index(pane_id) else {
             return pane_not_found(
                 id,
                 &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
@@ -847,7 +840,7 @@ impl App {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = self.state.workspaces[ws_idx].presenting_tab_index(pane_id) else {
             return pane_not_found(
                 id,
                 &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
@@ -880,7 +873,7 @@ impl App {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = self.state.workspaces[ws_idx].tiled_tab_index(pane_id) else {
             return pane_not_found(
                 id,
                 &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
@@ -937,7 +930,7 @@ impl App {
         else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(source_pane_id)
+        let Some(tab_idx) = self.state.workspaces[ws_idx].presenting_tab_index(source_pane_id)
         else {
             return pane_not_found(
                 id,
@@ -964,8 +957,7 @@ impl App {
             .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.tabs.get(tab_idx))
-            .map(|tab| tab.focused_pane())
+            .and_then(|ws| ws.focused_pane_in_tab(tab_idx))
             .and_then(|pane_id| self.public_pane_id(ws_idx, pane_id));
         let Some(layout) = self.pane_layout_snapshot(ws_idx, tab_idx) else {
             return encode_error(id, "pane_layout_unavailable", "pane layout unavailable");
@@ -989,7 +981,7 @@ impl App {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = self.state.workspaces[ws_idx].presenting_tab_index(pane_id) else {
             return pane_not_found(
                 id,
                 &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
@@ -1058,8 +1050,7 @@ impl App {
             else {
                 return encode_error(id, "pane_not_found", "source pane not found");
             };
-            let Some(tab_idx) =
-                self.state.workspaces[ws_idx].find_tab_index_for_pane(source_pane_id)
+            let Some(tab_idx) = self.state.workspaces[ws_idx].presenting_tab_index(source_pane_id)
             else {
                 return pane_not_found(
                     id,
@@ -1091,13 +1082,13 @@ impl App {
             let source = self
                 .parse_pane_id(source_raw)
                 .and_then(|(ws_idx, pane_id)| {
-                    let tab_idx = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id)?;
+                    let tab_idx = self.state.workspaces[ws_idx].presenting_tab_index(pane_id)?;
                     Some((ws_idx, tab_idx, pane_id))
                 });
             let target = self
                 .parse_pane_id(target_raw)
                 .and_then(|(ws_idx, pane_id)| {
-                    let tab_idx = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id)?;
+                    let tab_idx = self.state.workspaces[ws_idx].presenting_tab_index(pane_id)?;
                     Some((ws_idx, tab_idx, pane_id))
                 });
             let response_context = source
@@ -1149,8 +1140,8 @@ impl App {
                     .and_then(|ws| ws.tabs.get_mut(tab_idx))
                 {
                     changed = tab.layout.swap_panes(source_pane_id, target_pane_id);
-                    tab.layout.focus_pane(source_pane_id);
                     if changed {
+                        tab.layout.focus_pane(source_pane_id);
                         self.state.switch_workspace_tab(ws_idx, tab_idx);
                         self.state
                             .record_pane_focus_change(previous_focus, ws_idx, source_pane_id);
@@ -1168,7 +1159,7 @@ impl App {
                     self.state
                         .workspaces
                         .get(idx)?
-                        .find_tab_index_for_pane(pane_id)?;
+                        .presenting_tab_index(pane_id)?;
                     self.public_pane_id(idx, pane_id)
                 })
                 .unwrap_or(raw),
@@ -1183,7 +1174,7 @@ impl App {
                     self.state
                         .workspaces
                         .get(idx)?
-                        .find_tab_index_for_pane(pane_id)?;
+                        .presenting_tab_index(pane_id)?;
                     self.public_pane_id(idx, pane_id)
                 })
                 .or(Some(raw)),
@@ -1229,7 +1220,7 @@ impl App {
             return encode_error(id, "pane_not_found", "source pane not found");
         };
         let Some(source_tab_idx) =
-            self.state.workspaces[source_ws_idx].find_tab_index_for_pane(source_pane_id)
+            self.state.workspaces[source_ws_idx].presenting_tab_index(source_pane_id)
         else {
             return encode_error(id, "pane_not_found", "source pane not found");
         };
@@ -1244,8 +1235,7 @@ impl App {
             .state
             .workspaces
             .get(source_ws_idx)
-            .and_then(|ws| ws.tabs.get(source_tab_idx))
-            .and_then(|tab| tab.terminal_id(source_pane_id))
+            .and_then(|ws| ws.terminal_id(source_pane_id))
             .cloned()
         else {
             return encode_error(id, "pane_not_found", "source pane not found");
@@ -1356,7 +1346,7 @@ impl App {
                             );
                         };
                         let pane_tab_idx =
-                            self.state.workspaces[pane_ws_idx].find_tab_index_for_pane(pane_id);
+                            self.state.workspaces[pane_ws_idx].tiled_tab_index(pane_id);
                         if pane_ws_idx != target_ws_idx || pane_tab_idx != Some(target_tab_idx) {
                             return encode_error(
                                 id,
@@ -1441,7 +1431,14 @@ impl App {
 
         let mut closed_workspace_id = None;
         if source_workspace_empty && cross_workspace {
+            let floats = self.state.workspaces[source_ws_idx].take_floats();
             self.state.workspaces.remove(source_ws_idx);
+            self.state
+                .remove_plugin_pane_records(floats.iter().map(|(pane_id, _)| *pane_id));
+            self.state.remove_unattached_terminal_ids(
+                floats.into_iter().map(|(_, terminal_id)| terminal_id),
+            );
+            self.shutdown_detached_terminal_runtimes();
             closed_workspace_id = Some(previous_workspace_id.clone());
             if self.state.workspaces.is_empty() {
                 self.state.active = None;
@@ -1648,10 +1645,6 @@ impl App {
         }
         self.emit_layout_updated_snapshot((*move_result.target_layout).clone());
 
-        // A source tab removed with the moved pane takes its floats with it.
-        self.state
-            .remove_unattached_terminal_ids(source_terminal_ids);
-        self.shutdown_detached_terminal_runtimes();
         encode_success(id, ResponseResult::PaneMove { move_result })
     }
 
@@ -1699,7 +1692,7 @@ impl App {
         let Some((ws_idx, pane_id)) = self.resolve_optional_pane(params.pane_id.as_deref()) else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
-        let Some(tab_idx) = self.state.workspaces[ws_idx].find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = self.state.workspaces[ws_idx].presenting_tab_index(pane_id) else {
             return pane_not_found(
                 id,
                 &self.public_pane_id(ws_idx, pane_id).unwrap_or_default(),
@@ -1812,7 +1805,7 @@ impl App {
             .state
             .workspaces
             .get(ws_idx)
-            .and_then(|ws| ws.find_tab_index_for_pane(pane_id))
+            .and_then(|ws| ws.presenting_tab_index(pane_id))
         else {
             return pane_not_found(id, &params.pane_id);
         };
@@ -2278,11 +2271,11 @@ impl App {
         let workspace_snapshot = self.workspace_info(ws_idx);
         let workspace_terminal_ids = self.state.terminal_ids_for_workspace(ws_idx);
         let tab_pane_ids: Vec<PaneId> = self.state.workspaces[ws_idx]
-            .find_tab_index_for_pane(pane_id)
+            .tiled_tab_index(pane_id)
             .map(|tab_idx| {
                 self.state.workspaces[ws_idx].tabs[tab_idx]
-                    .all_pane_ids()
-                    .collect()
+                    .layout
+                    .pane_ids()
             })
             .unwrap_or_default();
         let should_close_workspace = {
@@ -2421,17 +2414,18 @@ impl App {
         source_pane_id: PaneId,
         direction: PaneDirection,
     ) -> Option<PaneId> {
-        let tab = self.state.workspaces.get(ws_idx)?.tabs.get(tab_idx)?;
+        let ws = self.state.workspaces.get(ws_idx)?;
+        let tab = ws.tabs.get(tab_idx)?;
         let area = self.state.view.terminal_area;
         // why: focusing a tiled pane hides the float layer, so a float only has float neighbours
-        let panes = if tab.is_float(source_pane_id) {
+        let panes = if ws.is_float(source_pane_id) {
             let region = crate::popup_size::resolve_popup_geometry(
                 self.state.floating_pane_width,
                 self.state.floating_pane_height,
                 area,
             )?
             .outer;
-            tab.float_layout.as_ref()?.panes(region)
+            ws.floats.layout.as_ref()?.panes(region)
         } else {
             tab.layout.panes(area)
         };
@@ -2516,7 +2510,7 @@ impl App {
             .state
             .workspaces
             .get(ws_idx)?
-            .find_tab_index_for_pane(pane_id)?;
+            .tiled_tab_index(pane_id)?;
         let pane_count = self
             .state
             .workspaces
@@ -3369,18 +3363,16 @@ mod tests {
 
     fn seed_terminal_states(app: &mut App) {
         for ws in &app.state.workspaces {
-            for tab in &ws.tabs {
-                for pane in tab.panes.values() {
-                    app.state
-                        .terminals
-                        .entry(pane.attached_terminal_id.clone())
-                        .or_insert_with(|| {
-                            crate::terminal::TerminalState::new(
-                                pane.attached_terminal_id.clone(),
-                                std::path::PathBuf::from("/herdr-test"),
-                            )
-                        });
-                }
+            for (_, pane) in ws.pane_states() {
+                app.state
+                    .terminals
+                    .entry(pane.attached_terminal_id.clone())
+                    .or_insert_with(|| {
+                        crate::terminal::TerminalState::new(
+                            pane.attached_terminal_id.clone(),
+                            std::path::PathBuf::from("/herdr-test"),
+                        )
+                    });
             }
         }
     }
@@ -4617,9 +4609,9 @@ mod tests {
             &crate::terminal::TerminalRuntimeRegistry::new(),
             ratatui::layout::Rect::new(0, 0, 100, 40),
         );
-        let tab = &app.state.workspaces[0].tabs[0];
-        assert_eq!(tab.float_arrangement, crate::layout::Arrangement::Stacked);
-        assert_eq!(tab.focused_pane(), second);
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.floats.arrangement, crate::layout::Arrangement::Stacked);
+        assert_eq!(ws.focused_pane_id(), Some(second));
         let first_public = app.public_pane_id(0, first).unwrap();
 
         let response = app.handle_pane_focus_direction(
@@ -4636,10 +4628,10 @@ mod tests {
         };
         assert!(focus.changed, "{focus:?}");
         assert_eq!(focus.focused_pane_id, Some(first_public));
-        let tab = &app.state.workspaces[0].tabs[0];
-        assert_eq!(tab.focused_pane(), first);
-        assert!(tab.float_focused, "navigation stays inside the float layer");
-        assert!(!tab.floats_hidden);
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.focused_pane_id(), Some(first));
+        assert!(ws.floats.focused, "navigation stays inside the float layer");
+        assert!(!ws.floats.hidden);
     }
 
     #[test]
@@ -5767,10 +5759,14 @@ mod tests {
             panic!("expected pane info, got {response}");
         };
         assert!(pane.floating);
-        let tab = &app.state.workspaces[0].tabs[0];
-        assert_eq!(tab.floats().len(), 2);
-        assert_eq!(tab.layout.pane_count(), 1, "the tiled layer is untouched");
-        assert_eq!(tab.float_arrangement, crate::layout::Arrangement::Vertical);
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.floats.pane_ids().len(), 2);
+        assert_eq!(
+            ws.tabs[0].layout.pane_count(),
+            1,
+            "the tiled layer is untouched"
+        );
+        assert_eq!(ws.floats.arrangement, crate::layout::Arrangement::Vertical);
     }
 
     #[tokio::test]
@@ -5852,7 +5848,7 @@ mod tests {
             },
         );
         let area = ratatui::layout::Rect::new(0, 0, 100, 40);
-        app.state.workspaces[0].tabs[0].reflow(area, None);
+        app.state.workspaces[0].tabs[0].reflow(area);
 
         let infos = app.state.workspaces[0].tabs[0].layout.panes(area);
         assert_eq!(infos.len(), 2);
@@ -5860,5 +5856,346 @@ mod tests {
             infos.iter().all(|info| info.rect.height == area.height),
             "a Vertical tab reflows the moved pane into an even column"
         );
+    }
+
+    #[tokio::test]
+    async fn pane_info_for_a_float_reports_the_active_tab() {
+        let (mut app, _) = app_with_test_workspace();
+        app.state.active = Some(0);
+        let second_tab = app.state.workspaces[0].test_add_tab(Some("second"));
+        app.state.ensure_test_terminals();
+        let response = app.handle_pane_float(
+            "req".into(),
+            PaneFloatParams {
+                workspace_id: None,
+                cwd: Some("/tmp".into()),
+                focus: true,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneInfo { pane: float } = success.result else {
+            panic!("expected pane info, got {response}");
+        };
+        let tab2_id = app.public_tab_id(0, second_tab).unwrap();
+        app.handle_tab_focus(
+            "req".into(),
+            crate::api::schema::TabTarget {
+                tab_id: tab2_id.clone(),
+            },
+        );
+
+        let response = app.handle_pane_get(
+            "req".into(),
+            PaneTarget {
+                pane_id: float.pane_id.clone(),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneInfo { pane } = success.result else {
+            panic!("expected pane info, got {response}");
+        };
+        assert_eq!(pane.tab_id, tab2_id);
+        assert!(pane.floating);
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn closing_the_last_tiled_pane_of_a_tab_keeps_float_plugin_records() {
+        let (mut app, _) = app_with_test_workspace();
+        app.state.active = Some(0);
+        let second_tab = app.state.workspaces[0].test_add_tab(Some("second"));
+        app.state.ensure_test_terminals();
+        let float = app
+            .open_float_pane(0, Some("/tmp".into()))
+            .expect("a float");
+        let float_terminal = app.state.workspaces[0]
+            .terminal_id(float)
+            .cloned()
+            .expect("float terminal");
+        app.state.plugin_panes.insert(
+            float,
+            crate::app::state::PluginPaneRecord {
+                plugin_id: "example.pane".into(),
+                entrypoint: "board".into(),
+            },
+        );
+        let tab1_root = app.state.workspaces[0].tabs[0].root_pane;
+        let tab1_root_public = app.public_pane_id(0, tab1_root).unwrap();
+
+        let response = app.handle_pane_close(
+            "req".into(),
+            PaneTarget {
+                pane_id: tab1_root_public,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::Ok {}));
+        assert_eq!(app.state.workspaces[0].tabs.len(), 1);
+        assert_eq!(app.state.workspaces[0].tabs[0].number, second_tab + 1);
+        assert!(app.state.plugin_panes.contains_key(&float));
+        assert!(app.state.terminals.contains_key(&float_terminal));
+        assert!(app.terminal_runtimes.get(&float_terminal).is_some());
+        assert_eq!(app.state.workspaces[0].floats.pane_ids(), vec![float]);
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[test]
+    fn workspace_aggregate_state_counts_a_blocked_float() {
+        let (mut app, _) = app_with_test_workspace();
+        let float = PaneId::alloc();
+        let ws = &mut app.state.workspaces[0];
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.floats.push(
+            float,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        app.state.ensure_test_terminals();
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        for (pane_id, agent_state) in [(root, AgentState::Idle), (float, AgentState::Blocked)] {
+            let terminal_id = app.state.workspaces[0]
+                .terminal_id(pane_id)
+                .cloned()
+                .unwrap();
+            app.state.terminals.get_mut(&terminal_id).unwrap().state = agent_state;
+        }
+
+        let (state, _) = app.state.workspaces[0].aggregate_state(&app.state.terminals);
+
+        assert_eq!(state, AgentState::Blocked);
+        let tab = app.tab_info(0, 0).expect("tab info");
+        assert_ne!(tab.agent_status, crate::api::schema::AgentStatus::Blocked);
+        assert_eq!(tab.pane_count, 1);
+    }
+
+    fn push_float_for_move_test(app: &mut App, ws_idx: usize) -> PaneId {
+        let float = PaneId::alloc();
+        let ws = &mut app.state.workspaces[ws_idx];
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.floats.push(
+            float,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        seed_terminal_states(app);
+        float
+    }
+
+    #[test]
+    fn moving_a_float_is_refused_as_a_failed_move() {
+        let (mut app, _) = app_with_test_workspace();
+        let second_tab = app.state.workspaces[0].test_add_tab(Some("second"));
+        let float = push_float_for_move_test(&mut app, 0);
+        let float_public = app.public_pane_id(0, float).unwrap();
+        let second_tab_id = app.public_tab_id(0, second_tab).unwrap();
+
+        let response = app.handle_pane_move(
+            "req".into(),
+            PaneMoveParams {
+                pane_id: float_public,
+                destination: PaneMoveDestination::Tab {
+                    tab_id: second_tab_id,
+                    target_pane_id: None,
+                    split: SplitDirection::Down,
+                    ratio: None,
+                },
+                focus: false,
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "pane_move_failed");
+        assert_eq!(app.state.workspaces[0].floats.pane_ids(), vec![float]);
+    }
+
+    #[test]
+    fn moving_the_last_tiled_pane_out_of_a_workspace_shuts_down_its_floats() {
+        let (mut app, _) = app_with_test_workspace();
+        app.state.workspaces.push(Workspace::test_new("target"));
+        let float = push_float_for_move_test(&mut app, 0);
+        let float_terminal = app.state.workspaces[0].terminal_id(float).cloned().unwrap();
+        let source = app.state.workspaces[0].tabs[0].root_pane;
+        let source_public = app.public_pane_id(0, source).unwrap();
+        let target_tab_id = app.public_tab_id(1, 0).unwrap();
+
+        let response = app.handle_pane_move(
+            "req".into(),
+            PaneMoveParams {
+                pane_id: source_public,
+                destination: PaneMoveDestination::Tab {
+                    tab_id: target_tab_id,
+                    target_pane_id: None,
+                    split: SplitDirection::Down,
+                    ratio: None,
+                },
+                focus: false,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneMove { move_result } = success.result else {
+            panic!("expected pane move response, got {response}");
+        };
+        assert!(move_result.closed_workspace_id.is_some());
+        assert_eq!(app.state.workspaces.len(), 1);
+        assert!(!app.state.terminals.contains_key(&float_terminal));
+        app.state.assert_invariants_for_test();
+    }
+
+    fn app_with_two_focused_floats() -> (App, PaneId, PaneId) {
+        let (mut app, _) = app_with_test_workspace();
+        app.state.active = Some(0);
+        let first = push_float_for_move_test(&mut app, 0);
+        let second = push_float_for_move_test(&mut app, 0);
+        crate::ui::compute_view_with_runtime_registry(
+            &mut app.state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            ratatui::layout::Rect::new(0, 0, 100, 40),
+        );
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(second));
+        (app, first, second)
+    }
+
+    #[test]
+    fn resizing_a_focused_float_is_an_unchanged_no_op() {
+        let (mut app, _, _) = app_with_two_focused_floats();
+
+        let response = app.handle_pane_resize(
+            "req".into(),
+            crate::api::schema::PaneResizeParams {
+                pane_id: None,
+                direction: PaneDirection::Right,
+                amount: Some(0.1),
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response)
+            .unwrap_or_else(|err| panic!("expected success, got {response}: {err}"));
+        let ResponseResult::PaneResize { resize } = success.result else {
+            panic!("expected pane resize response, got {response}");
+        };
+        assert!(!resize.changed);
+        assert_eq!(resize.reason, Some(PaneResizeReason::Unchanged));
+    }
+
+    #[test]
+    fn directionally_swapping_a_focused_float_is_an_unchanged_no_op() {
+        let (mut app, _, _) = app_with_two_focused_floats();
+
+        let response = app.handle_pane_swap(
+            "req".into(),
+            PaneSwapParams {
+                pane_id: None,
+                direction: Some(PaneDirection::Up),
+                ..PaneSwapParams::default()
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response)
+            .unwrap_or_else(|err| panic!("expected success, got {response}: {err}"));
+        let ResponseResult::PaneSwap { swap } = success.result else {
+            panic!("expected pane swap response, got {response}");
+        };
+        assert!(!swap.changed);
+    }
+
+    #[test]
+    fn explicitly_swapping_two_floats_is_an_unchanged_no_op() {
+        let (mut app, first, second) = app_with_two_focused_floats();
+        let first_public = app.public_pane_id(0, first).unwrap();
+        let second_public = app.public_pane_id(0, second).unwrap();
+
+        let response = app.handle_pane_swap(
+            "req".into(),
+            PaneSwapParams {
+                source_pane_id: Some(second_public),
+                target_pane_id: Some(first_public),
+                ..PaneSwapParams::default()
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response)
+            .unwrap_or_else(|err| panic!("expected success, got {response}: {err}"));
+        let ResponseResult::PaneSwap { swap } = success.result else {
+            panic!("expected pane swap response, got {response}");
+        };
+        assert!(!swap.changed);
+        assert_eq!(swap.reason, None);
+        assert_eq!(
+            app.state.workspaces[0].floats.pane_ids(),
+            vec![first, second]
+        );
+    }
+
+    #[test]
+    fn explicitly_swapping_a_float_with_a_tiled_pane_is_an_unchanged_no_op() {
+        let (mut app, _) = app_with_test_workspace();
+        app.state.active = Some(0);
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let right = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.workspaces[0].tabs[0].layout.focus_pane(root);
+        let float = push_float_for_move_test(&mut app, 0);
+        let float_public = app.public_pane_id(0, float).unwrap();
+        let right_public = app.public_pane_id(0, right).unwrap();
+        let tiled_before = format!("{:?}", app.state.workspaces[0].tabs[0].layout.root());
+
+        for (source, target) in [
+            (float_public.clone(), right_public.clone()),
+            (right_public, float_public),
+        ] {
+            let response = app.handle_pane_swap(
+                "req".into(),
+                PaneSwapParams {
+                    source_pane_id: Some(source),
+                    target_pane_id: Some(target),
+                    ..PaneSwapParams::default()
+                },
+            );
+
+            let success: SuccessResponse = serde_json::from_str(&response)
+                .unwrap_or_else(|err| panic!("expected success, got {response}: {err}"));
+            let ResponseResult::PaneSwap { swap } = success.result else {
+                panic!("expected pane swap response, got {response}");
+            };
+            assert!(!swap.changed);
+            let tab = &app.state.workspaces[0].tabs[0];
+            assert_eq!(format!("{:?}", tab.layout.root()), tiled_before);
+            assert_eq!(tab.layout.focused(), root);
+            assert_eq!(app.state.workspaces[0].floats.pane_ids(), vec![float]);
+        }
+    }
+
+    #[test]
+    fn moving_a_pane_next_to_a_float_is_rejected_before_any_teardown() {
+        let (mut app, _) = app_with_test_workspace();
+        app.state.active = Some(0);
+        let second_tab = app.state.workspaces[0].test_add_tab(Some("second"));
+        let float = push_float_for_move_test(&mut app, 0);
+        let source = app.state.workspaces[0].tabs[second_tab].root_pane;
+        let source_public = app.public_pane_id(0, source).unwrap();
+        let float_public = app.public_pane_id(0, float).unwrap();
+        let first_tab_id = app.public_tab_id(0, 0).unwrap();
+
+        let response = app.handle_pane_move(
+            "req".into(),
+            PaneMoveParams {
+                pane_id: source_public,
+                destination: PaneMoveDestination::Tab {
+                    tab_id: first_tab_id,
+                    target_pane_id: Some(float_public),
+                    split: SplitDirection::Down,
+                    ratio: None,
+                },
+                focus: false,
+            },
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "target_pane_not_found");
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.tabs.len(), 2);
+        assert_eq!(ws.tiled_tab_index(source), Some(second_tab));
+        assert_eq!(ws.floats.pane_ids(), vec![float]);
+        app.state.assert_invariants_for_test();
     }
 }

@@ -636,7 +636,7 @@ async fn a_float_keeps_the_fast_path_for_its_own_pane() {
     let float = crate::layout::PaneId::alloc();
     let number = workspace.next_public_pane_number;
     workspace.register_new_pane_with_number(float, number);
-    workspace.tabs[0].push_float(
+    workspace.floats.push(
         float,
         crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
     );
@@ -677,7 +677,7 @@ async fn a_visible_float_declines_the_retained_pane_surface_patch() {
     let float = crate::layout::PaneId::alloc();
     let number = workspace.next_public_pane_number;
     workspace.register_new_pane_with_number(float, number);
-    workspace.tabs[0].push_float(
+    workspace.floats.push(
         float,
         crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
     );

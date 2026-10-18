@@ -3008,16 +3008,14 @@ impl HeadlessServer {
                 .iter()
                 .enumerate()
                 .flat_map(|(ws_idx, ws)| {
-                    ws.tabs.iter().flat_map(move |tab| {
-                        tab.panes.iter().filter_map(move |(&pane_id, pane)| {
-                            terminals.get(&pane.attached_terminal_id).map(|terminal| {
-                                (
-                                    ws_idx,
-                                    pane_id,
-                                    terminal.state,
-                                    terminal.effective_agent_label().map(str::to_string),
-                                )
-                            })
+                    ws.pane_states().filter_map(move |(&pane_id, pane)| {
+                        terminals.get(&pane.attached_terminal_id).map(|terminal| {
+                            (
+                                ws_idx,
+                                pane_id,
+                                terminal.state,
+                                terminal.effective_agent_label().map(str::to_string),
+                            )
                         })
                     })
                 })
@@ -3158,7 +3156,7 @@ impl HeadlessServer {
                 .state
                 .workspaces
                 .get(*ws_idx)
-                .and_then(|ws| ws.tabs.iter().find_map(|tab| tab.panes.get(pane_id)));
+                .and_then(|ws| ws.pane_state(*pane_id));
 
             let Some(pane_after) = pane_after else {
                 continue;

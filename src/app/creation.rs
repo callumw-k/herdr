@@ -73,11 +73,8 @@ impl App {
         pane_id: crate::layout::PaneId,
     ) -> Option<PathBuf> {
         let workspace = self.state.workspaces.get(ws_idx)?;
-        let tab = workspace
-            .tabs
-            .get(workspace.find_tab_index_for_pane(pane_id)?)?;
         launch_cwd_for_terminal(
-            tab.terminal_id(pane_id)?,
+            workspace.terminal_id(pane_id)?,
             &self.state.terminals,
             &self.terminal_runtimes,
         )
@@ -195,9 +192,8 @@ impl App {
         let tab_idx = ws.active_tab_index();
         let cwd = cwd
             .or_else(|| {
-                let tab = ws.active_tab()?;
-                let focused = tab.focused_pane();
-                tab.cwd_for_pane(focused, &self.state.terminals, &self.terminal_runtimes)
+                let focused = ws.focused_pane_id()?;
+                ws.cwd_for_pane(focused, &self.state.terminals, &self.terminal_runtimes)
             })
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
 
@@ -240,7 +236,8 @@ impl App {
 
         let ws = &mut self.state.workspaces[ws_idx];
         ws.register_new_pane_with_number(pane_id, pane_number);
-        ws.tabs[tab_idx].push_float(pane_id, crate::pane::PaneState::new(terminal_id));
+        ws.floats
+            .push(pane_id, crate::pane::PaneState::new(terminal_id));
 
         self.schedule_session_save();
         Ok(pane_id)
@@ -266,7 +263,8 @@ impl App {
             Ok(ws
                 .tabs
                 .iter()
-                .flat_map(|tab| tab.all_pane_ids())
+                .flat_map(|tab| tab.layout.pane_ids())
+                .chain(ws.floats.pane_ids())
                 .filter_map(|pane_id| self.pane_info(ws_idx, pane_id))
                 .collect())
         } else {
@@ -278,7 +276,8 @@ impl App {
                 .flat_map(|(ws_idx, ws)| {
                     ws.tabs
                         .iter()
-                        .flat_map(|tab| tab.all_pane_ids())
+                        .flat_map(|tab| tab.layout.pane_ids())
+                        .chain(ws.floats.pane_ids())
                         .filter_map(move |pane_id| self.pane_info(ws_idx, pane_id))
                 })
                 .collect())
@@ -419,7 +418,7 @@ impl App {
         let ws = self.state.workspaces.get(ws_idx)?;
         let pane = ws.pane_state(pane_id)?;
         let terminal = self.state.terminals.get(&pane.attached_terminal_id)?;
-        let tab_idx = ws.find_tab_index_for_pane(pane_id)?;
+        let tab_idx = ws.presenting_tab_index(pane_id)?;
         let focused = self.state.active == Some(ws_idx)
             && ws.active_tab == tab_idx
             && ws
@@ -432,11 +431,11 @@ impl App {
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             focused,
-            floating: ws.tabs[tab_idx].is_float(pane_id),
-            cwd: ws.tabs[tab_idx]
+            floating: ws.is_float(pane_id),
+            cwd: ws
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
-            foreground_cwd: ws.tabs[tab_idx]
+            foreground_cwd: ws
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
             restore_error: terminal.restore_error.clone(),
@@ -628,10 +627,9 @@ impl App {
         };
         // Floats never move between workspaces, and take_pane_for_move refuses
         // them, so asking would only log a failure.
-        let ws = &self.state.workspaces[ws_idx];
-        if ws
-            .find_tab_index_for_pane(pane_id)
-            .is_some_and(|tab_idx| ws.tabs[tab_idx].is_float(pane_id))
+        if self.state.workspaces[ws_idx]
+            .tiled_tab_index(pane_id)
+            .is_none()
         {
             return;
         }

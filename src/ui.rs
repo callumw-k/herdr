@@ -119,18 +119,21 @@ fn compute_view_internal(
     };
 }
 
-/// Rebuild a dirty tab's tree (and float layer) for `area` before anything
-/// reads or resizes against it; the tree is only regenerated lazily.
+/// Rebuild a dirty tab's tree for `area` before anything reads or resizes
+/// against it, and the workspace float layer when the tab is the workspace's
+/// active tab; the trees are only regenerated lazily.
 pub(crate) fn reflow_tab_for_area(app: &mut AppState, target: TabSurfaceTarget, area: Rect) {
     let float_region =
         resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
             .map(|geometry| geometry.outer);
-    if let Some(tab) = app
-        .workspaces
-        .get_mut(target.workspace_index)
-        .and_then(|workspace| workspace.tabs.get_mut(target.tab_index))
-    {
-        tab.reflow(area, float_region);
+    let Some(workspace) = app.workspaces.get_mut(target.workspace_index) else {
+        return;
+    };
+    if let Some(tab) = workspace.tabs.get_mut(target.tab_index) {
+        tab.reflow(area);
+        if target.tab_index == workspace.active_tab_index() {
+            workspace.floats.reflow(float_region);
+        }
     }
 }
 

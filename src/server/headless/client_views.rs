@@ -185,6 +185,17 @@ impl HeadlessServer {
         self.send_shell_focus_transitions(&lost, &gained);
     }
 
+    fn client_tab_id_in_workspace(&self, client_id: u64, workspace_index: usize) -> Option<String> {
+        let workspace_id = self.app.public_workspace_id(workspace_index);
+        let location = self.clients.get(&client_id)?.shell_location.as_ref()?;
+        if location.focused_workspace_id.as_deref() != Some(workspace_id.as_str()) {
+            return None;
+        }
+        let tab_id = location.active_tab_ids.get(&workspace_id)?;
+        let (tab_workspace_index, _) = self.app.parse_tab_id(tab_id)?;
+        (tab_workspace_index == workspace_index).then(|| tab_id.clone())
+    }
+
     pub(super) fn focus_shell_client_on_tab(&mut self, client_id: u64, tab_id: &str) -> bool {
         let Some((workspace_index, _)) = self.app.parse_tab_id(tab_id) else {
             return false;
@@ -367,8 +378,15 @@ impl HeadlessServer {
                 .app
                 .parse_pane_id(&target.pane_id)
                 .and_then(|(workspace_index, pane_id)| {
-                    let tab_index = self.app.state.workspaces[workspace_index]
-                        .find_tab_index_for_pane(pane_id)?;
+                    let workspace = &self.app.state.workspaces[workspace_index];
+                    if workspace.is_float(pane_id) {
+                        if let Some(tab_id) =
+                            self.client_tab_id_in_workspace(client_id, workspace_index)
+                        {
+                            return Some(tab_id);
+                        }
+                    }
+                    let tab_index = workspace.presenting_tab_index(pane_id)?;
                     self.app.public_tab_id(workspace_index, tab_index)
                 })
                 .is_some_and(|tab_id| self.focus_shell_client_on_tab(client_id, &tab_id)),
@@ -516,16 +534,15 @@ impl HeadlessServer {
         if target.workspace_index != workspace_index {
             return false;
         }
-        let Some(tab) = self
-            .app
+        self.app
             .state
             .workspaces
             .get(workspace_index)
-            .and_then(|workspace| workspace.tabs.get(target.tab_index))
-        else {
-            return false;
-        };
-        tab.visible_pane_ids().contains(&pane_id)
+            .is_some_and(|workspace| {
+                workspace
+                    .visible_pane_ids_in_tab(target.tab_index)
+                    .contains(&pane_id)
+            })
     }
 
     fn finish_shell_tab_geometry_change(&mut self, start_pending_agent_resumes: bool) {
@@ -797,19 +814,14 @@ impl HeadlessServer {
         } else {
             self.app.state.workspaces.iter().enumerate().find_map(
                 |(workspace_index, workspace)| {
-                    workspace
-                        .tabs
-                        .iter()
-                        .enumerate()
-                        .find_map(|(tab_index, tab)| {
-                            tab.panes
-                                .values()
-                                .any(|pane| pane.attached_terminal_id.as_str() == terminal_id)
-                                .then_some(crate::ui::TabSurfaceTarget {
-                                    workspace_index,
-                                    tab_index,
-                                })
-                        })
+                    let (&pane_id, _) = workspace
+                        .pane_states()
+                        .find(|(_, pane)| pane.attached_terminal_id.as_str() == terminal_id)?;
+                    let tab_index = workspace.presenting_tab_index(pane_id)?;
+                    Some(crate::ui::TabSurfaceTarget {
+                        workspace_index,
+                        tab_index,
+                    })
                 },
             )?
         };
@@ -862,7 +874,7 @@ impl HeadlessServer {
                     let workspace = self.app.state.workspaces.get(workspace_index)?;
                     Some(crate::ui::TabSurfaceTarget {
                         workspace_index,
-                        tab_index: workspace.find_tab_index_for_pane(pane_id)?,
+                        tab_index: workspace.presenting_tab_index(pane_id)?,
                     })
                 }),
             _ => None,

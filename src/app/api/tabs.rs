@@ -82,7 +82,7 @@ impl App {
                         .state
                         .workspaces
                         .get(ws_idx)?
-                        .find_tab_index_for_pane(pane_id)?;
+                        .presenting_tab_index(pane_id)?;
                     Some((ws_idx, tab_idx))
                 })
                 .filter(|(ws_idx, _)| requested_ws.is_none_or(|requested| requested == *ws_idx))

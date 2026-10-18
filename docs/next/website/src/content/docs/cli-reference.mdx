@@ -213,7 +213,7 @@ With `ui.confirm_close` enabled, the TUI asks for confirmation before closing a 
 
 Workspace and tab creation, and pane splitting, leave focus unchanged by default. `--focus` selects the new layout; `--no-focus` states the default explicitly. Without `--cwd`, new terminals follow the configured `terminal.new_cwd` policy, which follows the source pane or workspace by default. Each `--env KEY=VALUE` adds or replaces that variable in the new root shell.
 
-`tab floats-toggle` shows or hides the active tab's floating pane layer without closing any float; `--toggle` is the default mode.
+`tab floats-toggle` shows or hides the workspace's floating pane layer without closing any float; `--toggle` is the default mode.
 
 ## Panes
 
@@ -254,7 +254,7 @@ Right-clicking the pane frame still opens Herdr's menu. `pane split
 
 After `pane move`, use `.result.move_result.pane.pane_id` for later commands. A cross-workspace move changes the workspace-qualified pane ID; the prior value remains at `.result.move_result.previous_pane_id`. The running process keeps its launch-time `HERDR_PANE_ID`, `HERDR_TAB_ID`, and `HERDR_WORKSPACE_ID`; Herdr retains the old pane ID as an alias for that terminal, so pane commands using `--current` still resolve it. A live agent name follows the terminal and continues to resolve after the move.
 
-`pane float` opens a new floating pane on the active tab of the target (or active) workspace; without `--workspace` it fails if no workspace is active. A tab's floats share one region and are laid out inside it under the floating layer's own arrangement, so more than one can be visible at once. `pane split` aimed at a float adds another float. Use `pane focus` to move between floats, the same way you would between tiled panes.
+`pane float` opens a new floating pane in the float layer of the target (or active) workspace; without `--workspace` it fails if no workspace is active. A workspace's floats share one region and are laid out inside it under the floating layer's own arrangement, so more than one can be visible at once. `pane split` aimed at a float adds another float. Use `pane focus` to move between floats, the same way you would between tiled panes.
 
 Under a tab arrangement (see [Concepts](/docs/concepts/)), `--split` and `--ratio` on `pane move` and `--ratio` on `pane split` only decide where the pane lands in pane order. The tab is reflowed under its arrangement on the next frame, so the ratio is not kept. Use `layout apply` when you need an exact tree.
 

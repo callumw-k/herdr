@@ -48,9 +48,7 @@ pub(super) fn snapshot_with_completions(
                 .state
                 .workspaces
                 .get(workspace_index)?
-                .tabs
-                .get(tab_index)?
-                .focused_pane();
+                .focused_pane_in_tab(tab_index)?;
             app.public_pane_id(workspace_index, pane_id)
         })
         .or_else(|| snapshot.focused_pane_id.clone());
@@ -834,7 +832,7 @@ mod tests {
         let float_id = crate::layout::PaneId::alloc();
         let number = ws.next_public_pane_number;
         ws.register_new_pane_with_number(float_id, number);
-        ws.tabs[0].push_float(
+        ws.floats.push(
             float_id,
             crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
         );

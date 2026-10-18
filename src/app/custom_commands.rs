@@ -140,8 +140,7 @@ impl App {
             let Some((workspace_index, pane)) = self.parse_pane_id(pane_id) else {
                 return Err(("pane_not_found", format!("pane not found: {pane_id}")));
             };
-            let Some(tab_index) =
-                self.state.workspaces[workspace_index].find_tab_index_for_pane(pane)
+            let Some(tab_index) = self.state.workspaces[workspace_index].presenting_tab_index(pane)
             else {
                 return Err(("pane_not_found", format!("pane not found: {pane_id}")));
             };
@@ -268,9 +267,11 @@ impl App {
                     if let Some(public_pane_id) = self.public_pane_id(ws_idx, pane_id) {
                         env.push(("HERDR_ACTIVE_PANE_ID".to_string(), public_pane_id));
                     }
-                    if let Some(pane_cwd) = workspace.active_tab().and_then(|tab| {
-                        tab.cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
-                    }) {
+                    if let Some(pane_cwd) = workspace.cwd_for_pane(
+                        pane_id,
+                        &self.state.terminals,
+                        &self.terminal_runtimes,
+                    ) {
                         env.push((
                             "HERDR_ACTIVE_PANE_CWD".to_string(),
                             pane_cwd.display().to_string(),
@@ -384,13 +385,11 @@ impl App {
             .focused_pane_id()
             .ok_or_else(|| std::io::Error::other("no focused pane"))?;
         let previous_zoomed = ws.active_tab().map(|tab| tab.zoomed).unwrap_or(false);
-        let cwd = ws.active_tab().and_then(|tab| {
-            tab.cwd_for_pane(
-                previous_focus,
-                &self.state.terminals,
-                &self.terminal_runtimes,
-            )
-        });
+        let cwd = ws.cwd_for_pane(
+            previous_focus,
+            &self.state.terminals,
+            &self.terminal_runtimes,
+        );
         let new_pane = ws.split_focused_command(
             Direction::Horizontal,
             rows,
@@ -461,13 +460,11 @@ impl App {
             .focused_pane_id()
             .ok_or_else(|| std::io::Error::other("no focused pane"))?;
         let cwd = cwd.or_else(|| {
-            ws.active_tab().and_then(|tab| {
-                tab.cwd_for_pane(
-                    previous_focus,
-                    &self.state.terminals,
-                    &self.terminal_runtimes,
-                )
-            })
+            ws.cwd_for_pane(
+                previous_focus,
+                &self.state.terminals,
+                &self.terminal_runtimes,
+            )
         });
 
         let (tab_idx, new_pane, workspace_id) = {

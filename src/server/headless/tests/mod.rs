@@ -2242,6 +2242,70 @@ async fn client_local_navigation_emits_pane_focused_only_when_that_client_moves(
 }
 
 #[tokio::test]
+async fn focusing_a_float_keeps_each_client_on_its_own_tab() {
+    use api::schema::{Method, PaneTarget};
+
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("float-focus-clients");
+    let second_tab = workspace.test_add_tab(Some("second"));
+    workspace.active_tab = 0;
+    let float = crate::layout::PaneId::alloc();
+    workspace.register_new_pane_with_number(float, workspace.next_public_pane_number);
+    workspace.floats.push(
+        float,
+        crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+    );
+    workspace.floats.set_hidden(true);
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let first_tab_id = server.app.public_tab_id(0, 0).unwrap();
+    let second_tab_id = server.app.public_tab_id(0, second_tab).unwrap();
+    let float_id = server.app.public_pane_id(0, float).unwrap();
+
+    let (first_control, _) = connect_matching_test_shell(&mut server, 61);
+    let (second_control, _) = connect_matching_test_shell(&mut server, 62);
+    let _ = first_control.recv().expect("first snapshot");
+    let _ = second_control.recv().expect("second snapshot");
+    assert!(server.focus_shell_client_on_tab(62, &second_tab_id));
+    assert_eq!(
+        server.shell_tab_id_for_client(61).as_deref(),
+        Some(first_tab_id.as_str())
+    );
+
+    let (respond_to, response_rx) = std::sync::mpsc::channel();
+    server.handle_client_shell_api_request(
+        62,
+        api::ApiRequestMessage {
+            request: api::schema::Request {
+                id: "focus-float".into(),
+                method: Method::PaneFocus(PaneTarget { pane_id: float_id }),
+            },
+            respond_to,
+            response_write_complete: None,
+        },
+    );
+    let response = response_rx.recv().expect("focus response");
+    assert!(
+        serde_json::from_str::<api::schema::SuccessResponse>(&response).is_ok(),
+        "{response}"
+    );
+
+    assert_eq!(
+        server.shell_tab_id_for_client(62).as_deref(),
+        Some(second_tab_id.as_str())
+    );
+    assert_eq!(
+        server.shell_tab_id_for_client(61).as_deref(),
+        Some(first_tab_id.as_str())
+    );
+    assert!(server.app.state.workspaces[0].floats.has_focus());
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn public_focus_moves_shell_focus_between_tabs() {
     let mut server = test_headless_server();
     let mut workspace = crate::workspace::Workspace::test_new("public-focus-events");
@@ -4602,7 +4666,7 @@ async fn pty_source_visibility_recognises_a_focused_float_on_a_zoomed_tab() {
     let tiled = workspace.tabs[0].root_pane;
     let float = crate::layout::PaneId::alloc();
     workspace.register_new_pane_with_number(float, workspace.next_public_pane_number);
-    workspace.tabs[0].push_float(
+    workspace.floats.push(
         float,
         crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
     );
@@ -8495,7 +8559,7 @@ async fn client_shell_input_reaches_a_focused_float() {
     );
     let float = crate::layout::PaneId::alloc();
     workspace.register_new_pane_with_number(float, workspace.next_public_pane_number);
-    workspace.tabs[0].push_float(
+    workspace.floats.push(
         float,
         crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
     );
@@ -8521,6 +8585,86 @@ async fn client_shell_input_reaches_a_focused_float() {
 
     server.handle_server_event(ServerEvent::ClientShellPaneInput {
         client_id: 31,
+        pane_id: float_id,
+        events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+            "typed".into(),
+        )],
+    });
+    assert_eq!(
+        float_input.try_recv().expect("float receives input"),
+        Bytes::from_static(b"typed")
+    );
+}
+
+#[tokio::test]
+async fn typing_after_a_tab_switch_reaches_the_focused_float() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("floats-across-tabs");
+    let tiled = workspace.tabs[0].root_pane;
+    workspace.insert_test_runtime(
+        tiled,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"TILED"),
+    );
+    let float = crate::layout::PaneId::alloc();
+    workspace.register_new_pane_with_number(float, workspace.next_public_pane_number);
+    workspace.floats.push(
+        float,
+        crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+    );
+    let (float_runtime, mut float_input) =
+        crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+            60, 12, 0, b"FLOAT", 4,
+        );
+    workspace.insert_test_runtime(float, float_runtime);
+    let second_tab = workspace.test_add_tab(Some("second"));
+    let second_root = workspace.tabs[second_tab].root_pane;
+    workspace.insert_test_runtime(
+        second_root,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 24, b"SECOND"),
+    );
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    server.app.state.ensure_test_terminals();
+    let float_id = server.app.public_pane_id(0, float).unwrap();
+    let second_tab_id = server.app.public_tab_id(0, second_tab).unwrap();
+
+    let (control, _render) = connect_test_shell(&mut server, 32, 100, 30);
+    let _ = client_shell_snapshot(&control);
+    assert!(
+        server.handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            client_id: 32,
+            boot_id: server.client_shell_boot_id.clone(),
+            request: Box::new(api::schema::Request {
+                id: "focus-second".into(),
+                method: api::schema::Method::TabFocus(api::schema::TabTarget {
+                    tab_id: second_tab_id.clone(),
+                }),
+            }),
+        })
+    );
+    let response_ready = server
+        .server_event_rx
+        .recv()
+        .await
+        .expect("focus response ready");
+    assert!(!server.handle_server_event(response_ready));
+    let _ = control.recv().expect("focus response");
+    server.render_and_stream();
+    let snapshot = client_shell_snapshot(&control);
+    assert_eq!(
+        snapshot.focused_tab_id.as_deref(),
+        Some(second_tab_id.as_str())
+    );
+    assert_eq!(
+        snapshot.focused_pane_id.as_deref(),
+        Some(float_id.as_str()),
+        "the float keeps focus over the new tab"
+    );
+
+    server.handle_server_event(ServerEvent::ClientShellPaneInput {
+        client_id: 32,
         pane_id: float_id,
         events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
             "typed".into(),
@@ -8698,7 +8842,7 @@ fn tab_holding_pane(
 ) -> crate::ui::TabSurfaceTarget {
     let (workspace_index, _) = server.app.find_pane(pane_id).expect("moved pane exists");
     let tab_index = server.app.state.workspaces[workspace_index]
-        .find_tab_index_for_pane(pane_id)
+        .tiled_tab_index(pane_id)
         .expect("moved pane has a tab");
     crate::ui::TabSurfaceTarget {
         workspace_index,

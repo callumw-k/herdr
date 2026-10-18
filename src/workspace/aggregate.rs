@@ -62,10 +62,8 @@ impl Workspace {
         &self,
         terminals: &HashMap<TerminalId, TerminalState>,
     ) -> (AgentState, bool) {
-        self.tabs
-            .iter()
-            .flat_map(|tab| tab.panes.values())
-            .filter_map(|pane| {
+        self.pane_states()
+            .filter_map(|(_, pane)| {
                 terminals
                     .get(&pane.attached_terminal_id)
                     .map(|terminal| (terminal.state, pane.seen))

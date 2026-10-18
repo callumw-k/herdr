@@ -47,10 +47,8 @@ impl HeadlessServer {
 
         let mut pane_by_terminal = HashMap::new();
         for ws in &self.app.state.workspaces {
-            for tab in &ws.tabs {
-                for (pane_id, pane) in &tab.panes {
-                    pane_by_terminal.insert(pane.attached_terminal_id.clone(), pane_id.raw());
-                }
+            for (pane_id, pane) in ws.pane_states() {
+                pane_by_terminal.insert(pane.attached_terminal_id.clone(), pane_id.raw());
             }
         }
 

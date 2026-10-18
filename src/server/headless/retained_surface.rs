@@ -231,18 +231,16 @@ impl HeadlessServer {
             let Some(target) = self.shell_target_for_client(recipient.client_id) else {
                 continue;
             };
-            let Some(tab) = self
+            let Some(workspace) = self
                 .app
                 .state
                 .workspaces
                 .get(target.workspace_index)
-                .and_then(|workspace| workspace.tabs.get(target.tab_index))
+                .filter(|workspace| target.tab_index < workspace.tabs.len())
             else {
                 continue;
             };
-            if tab.float_layout.is_some() && !tab.floats_hidden {
-                floats.extend(tab.floats());
-            }
+            floats.extend(workspace.floats.visible_pane_ids());
         }
         if floats.is_empty() {
             return None;

@@ -80,7 +80,7 @@ Each tab lays its panes out under one arrangement: even columns, even rows, a gr
 
 Rebuilding a tab discards manual sizing. A border you drag, or resize with `prefix+r`, holds until the next pane is created or closed, and then the arrangement's even sizing takes over.
 
-The floating layer keeps its own arrangement, separate from the tab's tiled layout. `prefix+]`, `prefix+[`, `prefix+v`, `prefix+minus`, and `prefix+enter` all act on whichever layer currently holds focus, the floating layer when a float is focused, the tiled panes otherwise. See [Floating panes](#floating-panes).
+The floating layer keeps its own arrangement, separate from the tiled layout of any tab. `prefix+]`, `prefix+[`, `prefix+v`, `prefix+minus`, and `prefix+enter` all act on whichever layer currently holds focus, the floating layer when a float is focused, the tiled panes otherwise. See [Floating panes](#floating-panes).
 
 Press Esc or Ctrl+[ to leave workspace navigation. In the Go To picker, `/` also opens search on layouts that require Shift to type it.
 
@@ -112,9 +112,11 @@ Press `prefix+u` to enter copy mode for the focused pane. Use `h/j/k/l`, tmux-st
 
 ## Floating panes
 
-The floating layer sits above the tab's normal split layout in a centred region, instead of taking slots in the grid. Press `prefix+f` to open a float. A tab's floats share that one region and are laid out inside it under the floating layer's own arrangement, so more than one can be visible at once. The layer starts stacked, which fills the region with the focused float and collapses the others to single rows, and `prefix+]` and `prefix+[` cycle it through the same four arrangements the tiled panes use while the layer holds focus.
+The floating layer belongs to the workspace, not to a tab. It sits above the active tab's normal split layout in a centred region, instead of taking slots in the grid, and stays in place when you switch tabs, zoomed tabs included. Press `prefix+f` to open a float. A workspace's floats share that one region and are laid out inside it under the floating layer's own arrangement, so more than one can be visible at once. The layer starts stacked, which fills the region with the focused float and collapses the others to single rows, and `prefix+]` and `prefix+[` cycle it through the same four arrangements the tiled panes use while the layer holds focus.
 
-`prefix+ctrl+f` combines opening, focusing and hiding into one key: it opens a float when the tab has none, moves focus into the layer when the layer is not focused, and hides the layer when it already holds focus. Nothing is ever closed by this action. `prefix+shift+f` hides or shows the whole floating layer without closing anything.
+`prefix+ctrl+f` combines opening, focusing and hiding into one key: it opens a float when the workspace has none, moves focus into the layer when the layer is not focused, and hides the layer when it already holds focus. Nothing is ever closed by this action. `prefix+shift+f` hides or shows the whole floating layer without closing anything.
+
+Focus and hidden state are per workspace: switching tabs while a float is focused keeps focus in the float, and focusing a tiled pane hides the layer. Closing a tab never closes a float; closing the workspace closes its floats. A float's agent state shows on the workspace's sidebar entry, not on a tab.
 
 Once the layer holds focus, walk it with the same keys as tiled panes: `prefix+h/j/k/l` and `prefix+tab`. Directional movement never crosses between the layers, so use the float keys for that. `prefix+enter` needs the floating layer focused, not merely visible, before it adds another float; with a tiled pane focused it adds a tiled pane instead.
 

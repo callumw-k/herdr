@@ -12,7 +12,7 @@ use crate::layout::{Node, PaneId, TileLayout};
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalState};
-use crate::workspace::Workspace;
+use crate::workspace::{FloatLayer, Workspace};
 
 use super::snapshot::{
     PaneAgentResumeSnapshot, PaneAgentSessionSnapshot, PaneHistorySnapshot, TabHistorySnapshot,
@@ -59,6 +59,7 @@ type RestoredTab = (
     Vec<TerminalState>,
     HashMap<TerminalId, TerminalRuntime>,
     HashMap<PaneId, u32>,
+    FloatLayer,
 );
 type RestoreFailures<T> = (T, usize);
 
@@ -363,6 +364,10 @@ fn restore_workspace(
         .unwrap_or(1)
         .max(snap.next_public_tab_number);
     let mut failed_imports = 0;
+    let mut floats = FloatLayer::default();
+    // The layer whose arrangement, hidden flag and focus the merged layer keeps:
+    // the active tab's when it had floats, else the first tab's that did.
+    let mut lead_floats: Option<(bool, crate::layout::Arrangement, bool, PaneId)> = None;
 
     for (idx, tab_snap) in snap.tabs.iter().enumerate() {
         let tab_number = snap.public_tab_numbers.get(idx).copied().unwrap_or(idx + 1);
@@ -379,7 +384,8 @@ fn restore_workspace(
             &public_pane_ids_by_old_raw,
         );
         failed_imports += tab_failed_imports;
-        let Some((mut tab, restored_terminals, restored_runtimes, reverse_id_map)) = restored_tab
+        let Some((mut tab, restored_terminals, restored_runtimes, reverse_id_map, tab_floats)) =
+            restored_tab
         else {
             continue;
         };
@@ -387,7 +393,19 @@ fn restore_workspace(
             tab.number = public_tab_number;
         }
         next_public_tab_number = next_public_tab_number.max(tab.number + 1);
-        for pane_id in tab.all_pane_ids() {
+        let float_ids = tab_floats.pane_ids();
+        if let Some(layout) = tab_floats.layout.as_ref() {
+            let is_active_tab = idx == snap.active_tab;
+            if lead_floats.is_none_or(|(lead_is_active, ..)| is_active_tab && !lead_is_active) {
+                lead_floats = Some((
+                    is_active_tab,
+                    tab_floats.arrangement,
+                    tab_floats.hidden,
+                    layout.focused(),
+                ));
+            }
+        }
+        for pane_id in tab.layout.pane_ids().into_iter().chain(float_ids) {
             let public_number = public_pane_numbers_by_old_raw
                 .get(
                     &reverse_id_map
@@ -407,11 +425,19 @@ fn restore_workspace(
         terminals.extend(restored_terminals);
         terminal_runtimes.extend(restored_runtimes);
         tabs.push(tab);
+        floats.absorb(tab_floats);
     }
 
     crate::workspace::retain_valid_tab_parents(&mut tabs);
     if tabs.is_empty() {
         return (None, failed_imports);
+    }
+    if let Some((_, arrangement, hidden, focus)) = lead_floats {
+        floats.arrangement = arrangement;
+        floats.hidden = hidden;
+        if let Some(layout) = floats.layout.as_mut() {
+            layout.focus_pane(focus);
+        }
     }
 
     (
@@ -436,6 +462,7 @@ fn restore_workspace(
             next_public_tab_number,
             active_tab: snap.active_tab.min(tabs.len().saturating_sub(1)),
             tabs,
+            floats,
             #[cfg(test)]
             test_runtimes: HashMap::new(),
         })
@@ -814,6 +841,14 @@ fn restore_tab(
         return (None, failed_imports);
     };
     let layout = TileLayout::from_saved(node, focus);
+    let mut float_panes = HashMap::new();
+    if let Some(float_layout) = restored_float_layout.as_ref() {
+        for id in float_layout.pane_ids() {
+            if let Some(pane_state) = panes.remove(&id) {
+                float_panes.insert(id, pane_state);
+            }
+        }
+    }
 
     (
         Some((
@@ -827,13 +862,8 @@ fn restore_tab(
                 #[cfg(test)]
                 runtimes: HashMap::new(),
                 zoomed: snap.zoomed,
-                float_layout: restored_float_layout,
-                float_arrangement: snap.float_arrangement.into(),
-                floats_hidden: snap.floats_hidden,
-                float_focused: false,
                 arrangement: snap.arrangement.into(),
                 needs_reflow: false,
-                float_needs_reflow: false,
                 events: runtime_context.events.clone(),
                 render_notify: runtime_context.render_notify.clone(),
                 render_dirty: runtime_context.render_dirty.clone(),
@@ -841,6 +871,16 @@ fn restore_tab(
             terminals,
             terminal_runtimes,
             reverse_id_map,
+            FloatLayer {
+                layout: restored_float_layout,
+                arrangement: snap.float_arrangement.into(),
+                hidden: snap.floats_hidden,
+                focused: false,
+                needs_reflow: false,
+                panes: float_panes,
+                #[cfg(test)]
+                runtimes: HashMap::new(),
+            },
         )),
         failed_imports,
     )
@@ -2660,7 +2700,9 @@ mod tests {
         }
     }
 
-    fn restore_tab_for_test(snap: &TabSnapshot) -> Option<crate::workspace::Tab> {
+    fn restore_tab_for_test(
+        snap: &TabSnapshot,
+    ) -> Option<(crate::workspace::Tab, crate::workspace::FloatLayer)> {
         let (events, _events_rx) = mpsc::channel(8);
         let runtime_context = RestoreRuntimeContext {
             scrollback_limit_bytes: 0,
@@ -2687,7 +2729,147 @@ mod tests {
             &mut imported_panes,
             &HashMap::new(),
         );
-        restored.map(|(tab, _terminals, _terminal_runtimes, _reverse_id_map)| tab)
+        restored.map(|(tab, _terminals, _terminal_runtimes, _reverse_id_map, floats)| (tab, floats))
+    }
+
+    fn restore_workspace_for_test(snap: &WorkspaceSnapshot) -> Option<Workspace> {
+        let (events, _events_rx) = mpsc::channel(8);
+        let runtime_context = RestoreRuntimeContext {
+            scrollback_limit_bytes: 0,
+            shell_config: crate::pane::PaneShellConfig::new(
+                test_restore_shell(),
+                crate::config::ShellModeConfig::NonLogin,
+            ),
+            resume_agents_on_restore: false,
+            events,
+            render_notify: Arc::new(Notify::new()),
+            render_dirty: Arc::new(RenderSignal::new()),
+        };
+        let mut resumed_agent_sessions = HashSet::new();
+        let mut imported_panes = HashMap::new();
+        let (restored, _failed_imports) = restore_workspace(
+            snap,
+            None,
+            24,
+            80,
+            &runtime_context,
+            &mut resumed_agent_sessions,
+            &mut imported_panes,
+        );
+        restored.map(|(workspace, _terminals, _terminal_runtimes)| workspace)
+    }
+
+    fn tab_snapshot_with_one_float(
+        tiled: u32,
+        float: u32,
+        float_arrangement: super::super::snapshot::ArrangementSnapshot,
+        floats_hidden: bool,
+    ) -> TabSnapshot {
+        TabSnapshot {
+            custom_name: None,
+            layout: LayoutSnapshot::Pane(tiled),
+            panes: HashMap::from([
+                (tiled, pane_snapshot_for_test("/")),
+                (float, pane_snapshot_for_test("/")),
+            ]),
+            zoomed: false,
+            focused: Some(tiled),
+            root_pane: Some(tiled),
+            float_layout: Some(LayoutSnapshot::Pane(float)),
+            float_arrangement,
+            float_focused_pane: Some(float),
+            floats_hidden,
+            float_focused: true,
+            arrangement: super::super::snapshot::ArrangementSnapshot::default(),
+            parent_tab_number: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn an_old_snapshot_merges_floats_from_two_tabs_into_the_workspace_layer() {
+        let snap = WorkspaceSnapshot {
+            id: Some("wM".into()),
+            custom_name: None,
+            identity_cwd: PathBuf::from("/"),
+            pinned_path: None,
+            worktree_space: None,
+            public_pane_numbers: HashMap::from([(1, 1), (2, 2), (3, 3), (4, 4)]),
+            next_public_pane_number: 5,
+            public_tab_numbers: vec![1, 2],
+            next_public_tab_number: 3,
+            tabs: vec![
+                tab_snapshot_with_one_float(
+                    1,
+                    2,
+                    super::super::snapshot::ArrangementSnapshot::Stacked,
+                    false,
+                ),
+                tab_snapshot_with_one_float(
+                    3,
+                    4,
+                    super::super::snapshot::ArrangementSnapshot::Grid,
+                    true,
+                ),
+            ],
+            active_tab: 1,
+        };
+
+        let ws = restore_workspace_for_test(&snap).expect("workspace restores");
+
+        assert_eq!(ws.floats.pane_ids().len(), 2);
+        let tab0_float = ws
+            .floats
+            .pane_ids()
+            .into_iter()
+            .find(|id| ws.public_pane_number(*id) == Some(2))
+            .expect("tab 0's float keeps its public number");
+        assert_eq!(ws.floats.pane_ids()[0], tab0_float);
+        assert_eq!(ws.floats.arrangement, crate::layout::Arrangement::Grid);
+        assert!(ws.floats.hidden && !ws.floats.focused);
+        assert!(ws
+            .tabs
+            .iter()
+            .all(|tab| tab.panes.keys().all(|id| !ws.floats.contains(*id))));
+        ws.assert_invariants_for_test();
+    }
+
+    #[tokio::test]
+    async fn floats_round_trip_when_saved_from_a_different_tab_than_they_opened_on() {
+        let mut ws = Workspace::test_new("float-round-trip");
+        let float = PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.floats.push(float, PaneState::new(TerminalId::alloc()));
+        let second = ws.test_add_tab(Some("second"));
+        ws.switch_tab(second);
+        let terminals: HashMap<TerminalId, TerminalState> = ws
+            .pane_states()
+            .map(|(_, pane)| {
+                (
+                    pane.attached_terminal_id.clone(),
+                    TerminalState::new(pane.attached_terminal_id.clone(), PathBuf::from("/")),
+                )
+            })
+            .collect();
+
+        let snapshot = super::super::snapshot::capture(
+            &[ws],
+            &terminals,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            Some(0),
+            0,
+        );
+
+        let tabs = &snapshot.workspaces[0].tabs;
+        assert!(tabs[0].float_layout.is_none());
+        assert!(tabs[1].float_layout.is_some());
+        let restored =
+            restore_workspace_for_test(&snapshot.workspaces[0]).expect("workspace restores");
+        assert_eq!(restored.floats.pane_ids().len(), 1);
+        assert_eq!(
+            restored.public_pane_number(restored.floats.pane_ids()[0]),
+            Some(2)
+        );
+        restored.assert_invariants_for_test();
     }
 
     #[tokio::test]
@@ -2711,17 +2893,18 @@ mod tests {
             parent_tab_number: None,
         };
 
-        let tab = restore_tab_for_test(&snap).expect("tab restores");
+        let (tab, floats) = restore_tab_for_test(&snap).expect("tab restores");
 
-        assert_eq!(tab.floats().len(), 1, "the float survives restore");
+        assert_eq!(floats.pane_ids().len(), 1, "the float survives restore");
         assert_eq!(
             tab.layout.pane_count(),
             1,
             "the float stays out of the tree"
         );
-        assert!(tab.panes.contains_key(&tab.floats()[0]));
-        assert!(tab.floats_hidden);
-        assert!(!tab.float_focused, "float focus is not restored");
+        assert!(floats.panes.contains_key(&floats.pane_ids()[0]));
+        assert!(!tab.panes.contains_key(&floats.pane_ids()[0]));
+        assert!(floats.hidden);
+        assert!(!floats.focused, "float focus is not restored");
     }
 
     #[tokio::test]
@@ -2745,9 +2928,9 @@ mod tests {
             parent_tab_number: None,
         };
 
-        let tab = restore_tab_for_test(&snap).expect("tab restores");
+        let (_tab, floats) = restore_tab_for_test(&snap).expect("tab restores");
 
-        assert_eq!(tab.float_arrangement, crate::layout::Arrangement::Vertical);
+        assert_eq!(floats.arrangement, crate::layout::Arrangement::Vertical);
     }
 
     #[tokio::test]
@@ -2776,8 +2959,8 @@ mod tests {
             parent_tab_number: None,
         };
 
-        let tab = restore_tab_for_test(&snap).expect("tab restores");
-        let float_layout = tab.float_layout.as_ref().expect("float layer restores");
+        let (_tab, floats) = restore_tab_for_test(&snap).expect("tab restores");
+        let float_layout = floats.layout.as_ref().expect("float layer restores");
 
         let restored_active = match float_layout.root() {
             Node::Stack { panes, active } => {
@@ -2823,8 +3006,8 @@ mod tests {
             parent_tab_number: None,
         };
 
-        let tab = restore_tab_for_test(&snap).expect("tab restores");
-        let float_layout = tab.float_layout.as_ref().expect("float layer restores");
+        let (_tab, floats) = restore_tab_for_test(&snap).expect("tab restores");
+        let float_layout = floats.layout.as_ref().expect("float layer restores");
         let restored_second = float_layout
             .pane_ids()
             .into_iter()

@@ -329,7 +329,7 @@ impl App {
         let ws = &self.state.workspaces[ws_idx];
         let workspace = self.workspace_info(ws_idx);
         let tab_idx = ws
-            .find_tab_index_for_pane(pane_id)
+            .presenting_tab_index(pane_id)
             .unwrap_or_else(|| ws.active_tab_index());
         let tab_id = self.public_tab_id(ws_idx, tab_idx);
         let tab_label = ws.tab_display_name(tab_idx);

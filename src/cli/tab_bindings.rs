@@ -76,7 +76,7 @@ const LEAVES: [Leaf; 7] = [
     },
     Leaf {
         name: "floats-toggle",
-        about: "Toggle or set a tab's float layer",
+        about: "Toggle or set a workspace's float layer",
         id: "cli:tab:floats_toggle",
         arguments: TabFloatsToggleProjection::arguments,
         method: |matches| {

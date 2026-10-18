@@ -302,16 +302,10 @@ impl HeadlessServer {
                 let Some(target) = self.shell_target_for_client(client_id) else {
                     continue;
                 };
-                let Some(tab) = self
-                    .app
-                    .state
-                    .workspaces
-                    .get(target.workspace_index)
-                    .and_then(|workspace| workspace.tabs.get(target.tab_index))
-                else {
+                let Some(workspace) = self.app.state.workspaces.get(target.workspace_index) else {
                     continue;
                 };
-                pane_ids.extend(tab.visible_pane_ids());
+                pane_ids.extend(workspace.visible_pane_ids_in_tab(target.tab_index));
                 if self.popup_owner_tab_id == self.shell_tab_id_for_client(client_id) {
                     if let Some(popup) = &self.app.state.popup_pane {
                         pane_ids.insert(popup.pane_id);
@@ -321,13 +315,11 @@ impl HeadlessServer {
         }
         if !direct_terminal_targets.is_empty() {
             for workspace in &self.app.state.workspaces {
-                for tab in &workspace.tabs {
-                    pane_ids.extend(tab.panes.iter().filter_map(|(&pane_id, pane)| {
-                        direct_terminal_targets
-                            .contains(pane.attached_terminal_id.as_str())
-                            .then_some(pane_id)
-                    }));
-                }
+                pane_ids.extend(workspace.pane_states().filter_map(|(&pane_id, pane)| {
+                    direct_terminal_targets
+                        .contains(pane.attached_terminal_id.as_str())
+                        .then_some(pane_id)
+                }));
             }
             if let Some(popup) = &self.app.state.popup_pane {
                 if direct_terminal_targets.contains(popup.terminal_id.as_str()) {
@@ -425,16 +417,15 @@ impl HeadlessServer {
             let Some(target) = self.shell_target_for_client(client_id) else {
                 return false;
             };
-            let Some(tab) = self
-                .app
+            self.app
                 .state
                 .workspaces
                 .get(target.workspace_index)
-                .and_then(|workspace| workspace.tabs.get(target.tab_index))
-            else {
-                return false;
-            };
-            tab.visible_pane_ids().contains(&pane_id)
+                .is_some_and(|workspace| {
+                    workspace
+                        .visible_pane_ids_in_tab(target.tab_index)
+                        .contains(&pane_id)
+                })
         })
     }
 

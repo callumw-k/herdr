@@ -2439,7 +2439,7 @@ mod tests {
         app.state.active = Some(0);
         app.state.selected = 0;
         let survivor_idx = app.state.workspaces[0]
-            .find_tab_index_for_pane(survivor_pane)
+            .tiled_tab_index(survivor_pane)
             .unwrap();
 
         let tab = app.tab_info(0, survivor_idx).unwrap();
@@ -2463,10 +2463,10 @@ mod tests {
         app.state.workspaces = vec![workspace];
 
         let public_four_idx = app.state.workspaces[0]
-            .find_tab_index_for_pane(public_four_pane)
+            .tiled_tab_index(public_four_pane)
             .unwrap();
         let fourth_position_idx = app.state.workspaces[0]
-            .find_tab_index_for_pane(fourth_position_pane)
+            .tiled_tab_index(fourth_position_pane)
             .unwrap();
 
         assert_eq!(app.state.workspaces[0].tabs[public_four_idx].number, 4);

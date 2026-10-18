@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::layout::{Arrangement, Node};
 use crate::terminal::TerminalRuntimeRegistry;
-use crate::workspace::Workspace;
+use crate::workspace::{FloatLayer, Workspace};
 
 /// Current snapshot format version.
 pub(super) const SNAPSHOT_VERSION: u32 = 3;
@@ -371,7 +371,11 @@ fn capture_workspace(
     let tabs: Vec<_> = ws
         .tabs
         .iter()
-        .map(|tab| capture_tab(tab, terminals, terminal_runtimes))
+        .enumerate()
+        .map(|(tab_idx, tab)| {
+            let floats = (tab_idx == ws.active_tab).then_some(&ws.floats);
+            capture_tab(tab, floats, terminals, terminal_runtimes)
+        })
         .collect();
     let identity_cwd = tabs
         .first()
@@ -397,20 +401,25 @@ fn capture_workspace(
     }
 }
 
+/// `floats` is the workspace's float layer, written into the active tab's
+/// snapshot only; every other tab captures an empty layer.
 fn capture_tab(
     tab: &crate::workspace::Tab,
+    floats: Option<&FloatLayer>,
     terminals: &std::collections::HashMap<
         crate::terminal::TerminalId,
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> TabSnapshot {
+    let empty = FloatLayer::default();
+    let floats = floats.unwrap_or(&empty);
     let mut panes = HashMap::new();
-    for id in tab.panes.keys() {
-        let terminal_id = tab.terminal_id(*id);
-        let terminal = terminal_id.and_then(|id| terminals.get(id));
-        let cwd = terminal_id
-            .and_then(|id| terminal_runtimes.get(id))
+    for (id, pane) in tab.panes.iter().chain(floats.panes.iter()) {
+        let terminal_id = &pane.attached_terminal_id;
+        let terminal = terminals.get(terminal_id);
+        let cwd = terminal_runtimes
+            .get(terminal_id)
             .and_then(|runtime| runtime.cwd_for_persistence())
             .or_else(|| terminal.map(|terminal| terminal.cwd.clone()))
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
@@ -475,17 +484,14 @@ fn capture_tab(
         zoomed: tab.zoomed,
         focused: Some(tab.layout.focused().raw()),
         root_pane: Some(tab.root_pane.raw()),
-        float_layout: tab
-            .float_layout
+        float_layout: floats
+            .layout
             .as_ref()
             .map(|layout| capture_node(layout.root())),
-        float_arrangement: tab.float_arrangement.into(),
-        float_focused_pane: tab
-            .float_layout
-            .as_ref()
-            .map(|layout| layout.focused().raw()),
-        floats_hidden: tab.floats_hidden,
-        float_focused: tab.float_focused,
+        float_arrangement: floats.arrangement.into(),
+        float_focused_pane: floats.layout.as_ref().map(|layout| layout.focused().raw()),
+        floats_hidden: floats.hidden,
+        float_focused: floats.focused,
         arrangement: tab.arrangement.into(),
         parent_tab_number: tab.parent,
     }
@@ -518,8 +524,13 @@ pub fn capture_history(
                 tabs: workspace
                     .tabs
                     .iter()
-                    .map(|tab| TabHistorySnapshot {
-                        panes: capture_tab_history(tab, terminal_runtimes),
+                    .enumerate()
+                    .map(|(tab_idx, tab)| TabHistorySnapshot {
+                        panes: capture_tab_history(
+                            tab,
+                            (tab_idx == workspace.active_tab).then_some(&workspace.floats),
+                            terminal_runtimes,
+                        ),
                     })
                     .collect(),
             })
@@ -529,10 +540,12 @@ pub fn capture_history(
 
 fn capture_tab_history(
     tab: &crate::workspace::Tab,
+    floats: Option<&FloatLayer>,
     terminal_runtimes: &TerminalRuntimeRegistry,
 ) -> HashMap<u32, PaneHistorySnapshot> {
     let mut panes = HashMap::new();
-    for (id, pane) in &tab.panes {
+    let float_panes = floats.into_iter().flat_map(|floats| floats.panes.iter());
+    for (id, pane) in tab.panes.iter().chain(float_panes) {
         if let Some(history) = capture_pane_history(Some(pane), terminal_runtimes) {
             panes.insert(id.raw(), history);
         }
@@ -1601,14 +1614,19 @@ mod tests {
         let mut ws = Workspace::test_new("float-capture");
         let float = crate::layout::PaneId::alloc();
         ws.register_new_pane_with_number(float, ws.next_public_pane_number);
-        ws.tabs[0].push_float(
+        ws.floats.push(
             float,
             crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
         );
-        ws.tabs[0].float_focused = false;
+        ws.floats.focused = false;
 
         let terminal_runtimes = TerminalRuntimeRegistry::new();
-        let snap = capture_tab(&ws.tabs[0], &HashMap::new(), &terminal_runtimes);
+        let snap = capture_tab(
+            &ws.tabs[0],
+            Some(&ws.floats),
+            &HashMap::new(),
+            &terminal_runtimes,
+        );
 
         match &snap.float_layout {
             Some(LayoutSnapshot::Pane(id)) => assert_eq!(*id, float.raw()),
@@ -1621,6 +1639,26 @@ mod tests {
             snap.panes.contains_key(&float.raw()),
             "float pane state must be captured alongside tiled panes"
         );
+    }
+
+    #[test]
+    fn capture_writes_the_float_layer_into_the_active_tab_only() {
+        let mut ws = Workspace::test_new("float-capture-active");
+        let float = crate::layout::PaneId::alloc();
+        ws.register_new_pane_with_number(float, ws.next_public_pane_number);
+        ws.floats.push(
+            float,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        let second = ws.test_add_tab(Some("second"));
+        ws.switch_tab(second);
+
+        let snap = capture_workspace(&ws, &HashMap::new(), &TerminalRuntimeRegistry::new());
+
+        assert!(snap.tabs[0].float_layout.is_none());
+        assert!(!snap.tabs[0].panes.contains_key(&float.raw()));
+        assert!(snap.tabs[second].float_layout.is_some());
+        assert!(snap.tabs[second].panes.contains_key(&float.raw()));
     }
 
     #[test]

@@ -128,7 +128,7 @@ pub(crate) fn new_pane_terminal_size(
     };
     let tab_for = |ws_idx: usize, pane: PaneId| {
         let ws = app.workspaces.get(ws_idx)?;
-        ws.tabs.get(ws.find_tab_index_for_pane(pane)?)
+        ws.tabs.get(ws.tiled_tab_index(pane)?)
     };
     let pane_inner = match placement {
         NewPanePlacement::Alone => alone(),
@@ -300,23 +300,27 @@ pub(crate) fn apply_pane_chrome(
         .collect()
 }
 
+/// `terminal_id` comes from the layer holding the pane, a tab's tiled panes
+/// or the workspace's floats, so the lookup stays one map probe.
 fn runtime_for_tab_pane<'a>(
     _app: &'a AppState,
     terminal_runtimes: &'a TerminalRuntimeRegistry,
     _workspace_index: usize,
-    tab: &'a crate::workspace::Tab,
-    pane_id: crate::layout::PaneId,
+    terminal_id: Option<&'a crate::terminal::TerminalId>,
+    _pane_id: crate::layout::PaneId,
 ) -> Option<(&'a crate::terminal::TerminalId, &'a TerminalRuntime)> {
-    let terminal_id = tab.terminal_id(pane_id)?;
+    let terminal_id = terminal_id?;
     #[cfg(test)]
-    if let Some(runtime) = _app
-        .workspaces
-        .get(_workspace_index)?
-        .test_runtimes
-        .get(&pane_id)
-        .or_else(|| tab.runtimes.get(&pane_id))
     {
-        return Some((terminal_id, runtime));
+        let ws = _app.workspaces.get(_workspace_index)?;
+        if let Some(runtime) = ws
+            .test_runtimes
+            .get(&_pane_id)
+            .or_else(|| ws.tabs.iter().find_map(|tab| tab.runtimes.get(&_pane_id)))
+            .or_else(|| ws.floats.runtimes.get(&_pane_id))
+        {
+            return Some((terminal_id, runtime));
+        }
     }
     terminal_runtimes
         .get(terminal_id)
@@ -351,17 +355,27 @@ pub(super) fn resize_tab_panes(
     app: &AppState,
     terminal_runtimes: &TerminalRuntimeRegistry,
     workspace_index: usize,
-    tab: &crate::workspace::Tab,
+    tab_index: usize,
     area: Rect,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) {
+    let Some(workspace) = app.workspaces.get(workspace_index) else {
+        return;
+    };
+    let Some(tab) = workspace.tabs.get(tab_index) else {
+        return;
+    };
     let multi_pane = tab.layout.pane_count() > 1;
 
     if tab.zoomed {
         let focused_id = tab.layout.focused();
-        if let Some((terminal_id, rt)) =
-            runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, focused_id)
-        {
+        if let Some((terminal_id, rt)) = runtime_for_tab_pane(
+            app,
+            terminal_runtimes,
+            workspace_index,
+            tab.terminal_id(focused_id),
+            focused_id,
+        ) {
             let pane_inner = pane_inner_rect(area, zoomed_pane_borders(app, multi_pane));
             let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
             if !app.direct_attach_resize_locks.contains(terminal_id) {
@@ -382,9 +396,13 @@ pub(super) fn resize_tab_panes(
         ) {
             let pane_inner = pane_inner_rect(info.rect, info.borders);
 
-            if let Some((terminal_id, rt)) =
-                runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, info.id)
-            {
+            if let Some((terminal_id, rt)) = runtime_for_tab_pane(
+                app,
+                terminal_runtimes,
+                workspace_index,
+                tab.terminal_id(info.id),
+                info.id,
+            ) {
                 let inner_rect = terminal_inner_rect(rt, pane_inner, app.pane_scrollbars);
                 if info.rect.height > 1 && !app.direct_attach_resize_locks.contains(terminal_id) {
                     rt.resize(
@@ -398,10 +416,13 @@ pub(super) fn resize_tab_panes(
         }
     }
 
-    // A background tab's floats otherwise keep a stale size until the tab is
-    // activated. Same box rule as compute_pane_infos_for_tab: no scrollbar
-    // lane, and collapsed members are not reflowed.
-    if let Some(layout) = tab.float_layout.as_ref().filter(|_| !tab.floats_hidden) {
+    // Same box rule for the workspace's floats as compute_pane_infos_for_tab:
+    // no scrollbar lane, and collapsed members are not reflowed.
+    if tab_index != workspace.active_tab_index() {
+        return;
+    }
+    let floats = &workspace.floats;
+    if let Some(layout) = floats.layout.as_ref().filter(|_| !floats.hidden) {
         if let Some(geometry) =
             resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
         {
@@ -410,9 +431,13 @@ pub(super) fn resize_tab_panes(
                     continue;
                 }
                 let inner_rect = pane_inner_rect(info.rect, Borders::ALL);
-                if let Some((terminal_id, rt)) =
-                    runtime_for_tab_pane(app, terminal_runtimes, workspace_index, tab, info.id)
-                {
+                if let Some((terminal_id, rt)) = runtime_for_tab_pane(
+                    app,
+                    terminal_runtimes,
+                    workspace_index,
+                    floats.terminal_id(info.id),
+                    info.id,
+                ) {
                     if !app.direct_attach_resize_locks.contains(terminal_id) {
                         rt.resize(
                             inner_rect.height,
@@ -437,13 +462,13 @@ pub(super) fn compute_pane_infos_for_tab(
     resize_panes: bool,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) -> Vec<PaneInfo> {
-    let Some(tab) = app
-        .workspaces
-        .get(ws_idx)
-        .and_then(|workspace| workspace.tabs.get(tab_idx))
-    else {
+    let Some(ws) = app.workspaces.get(ws_idx) else {
         return Vec::new();
     };
+    let Some(tab) = ws.tabs.get(tab_idx) else {
+        return Vec::new();
+    };
+    let floats = &ws.floats;
 
     let multi_pane = tab.layout.pane_count() > 1;
 
@@ -475,7 +500,7 @@ pub(super) fn compute_pane_infos_for_tab(
             inner_rect,
             scrollbar_rect,
             borders,
-            is_focused: !tab.float_focused,
+            is_focused: !floats.focused,
         }]
     } else {
         let mut pane_infos = apply_pane_chrome(
@@ -512,31 +537,32 @@ pub(super) fn compute_pane_infos_for_tab(
 
             info.inner_rect = inner_rect;
             info.scrollbar_rect = scrollbar_rect;
-            info.is_focused = !tab.float_focused && info.is_focused;
+            info.is_focused = !floats.focused && info.is_focused;
         }
         pane_infos
     };
 
     // A hidden layer emits nothing at all. Drawing, PTY resizing, mouse
     // hit-testing, hyperlink scanning and graphics all key off this list, so
-    // this one gate is what `floats_hidden` means everywhere downstream.
-    if let Some(layout) = tab.float_layout.as_ref().filter(|_| !tab.floats_hidden) {
+    // this one gate is what `floats.hidden` means everywhere downstream.
+    if let Some(layout) = floats.layout.as_ref().filter(|_| !floats.hidden) {
         if let Some(geometry) =
             resolve_popup_geometry(app.floating_pane_width, app.floating_pane_height, area)
         {
-            let focused_float = tab.focused_float();
+            let focused_float = floats.focused_float();
             for mut info in layout.panes(geometry.outer) {
                 info.borders = Borders::ALL;
                 // Floats get no scrollbar lane, matching the old popup pane;
                 // `layout.panes` already leaves `scrollbar_rect: None`.
                 info.inner_rect = pane_inner_rect(info.rect, info.borders);
-                info.is_focused = tab.float_focused && Some(info.id) == focused_float;
+                info.is_focused = floats.focused && Some(info.id) == focused_float;
                 // Only the expanded member has content to display; resizing a
                 // collapsed or folded float's PTY to its near-zero box would
                 // reflow it for nothing.
                 if resize_panes
+                    && tab_idx == ws.active_tab_index()
                     && info.rect.height > 1
-                    && tab.terminal_id(info.id).is_some_and(|terminal_id| {
+                    && floats.terminal_id(info.id).is_some_and(|terminal_id| {
                         !app.direct_attach_resize_locks.contains(terminal_id)
                     })
                 {
@@ -604,14 +630,13 @@ pub(super) fn render_panes(
         return;
     };
 
-    // The lookup is skipped entirely for a tab with no floating layer, which is
-    // the common case in this pane-scaled path.
-    let floats = ws
-        .tabs
-        .get(target.tab_index)
-        .filter(|tab| tab.float_layout.is_some())
-        .map(|tab| tab.floats())
-        .unwrap_or_default();
+    // The lookup is skipped entirely for a workspace with no floating layer,
+    // which is the common case in this pane-scaled path.
+    let floats = if ws.floats.layout.is_some() {
+        ws.floats.pane_ids()
+    } else {
+        Vec::new()
+    };
 
     // Floats are appended after the tiled panes, so one boundary index splits
     // the list without a per-pane membership scan.
@@ -632,6 +657,7 @@ pub(super) fn render_panes(
             .tabs
             .get(target.tab_index)
             .and_then(|tab| tab.terminal_id(info.id))
+            .or_else(|| ws.floats.terminal_id(info.id))
             .and_then(|id| app.terminals.get(id))
             .and_then(|terminal| terminal.restore_error.as_deref())
         {
@@ -1761,7 +1787,7 @@ mod tests {
         tab.layout.focus_pane(ids[active_index]);
         tab.arrangement = crate::layout::Arrangement::Stacked;
         tab.needs_reflow = true;
-        tab.reflow(area, None);
+        tab.reflow(area);
         tab.layout.panes(area)
     }
 
@@ -1798,7 +1824,7 @@ mod tests {
         let float_id = crate::layout::PaneId::alloc();
         let number = ws.next_public_pane_number;
         ws.register_new_pane_with_number(float_id, number);
-        ws.tabs[0].push_float(
+        ws.floats.push(
             float_id,
             crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
         );
@@ -1862,7 +1888,7 @@ mod tests {
         let float_id = crate::layout::PaneId::alloc();
         let number = ws.next_public_pane_number;
         ws.register_new_pane_with_number(float_id, number);
-        ws.tabs[0].push_float(
+        ws.floats.push(
             float_id,
             crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
         );
@@ -1895,6 +1921,87 @@ mod tests {
             (float.inner_rect.height, float.inner_rect.width),
             "the float PTY follows its box even while the tab is zoomed"
         );
+    }
+
+    fn two_tab_app_with_a_float() -> (AppState, crate::layout::PaneId) {
+        let mut app = AppState::test_new();
+        let mut ws = Workspace::test_new("floats");
+        ws.test_add_tab(None);
+        let float_id = crate::layout::PaneId::alloc();
+        let number = ws.next_public_pane_number;
+        ws.register_new_pane_with_number(float_id, number);
+        ws.floats.push(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        ws.floats.runtimes.insert(
+            float_id,
+            TerminalRuntime::test_with_scrollback_bytes(10, 3, 1024, b"floating\n"),
+        );
+        ws.active_tab = 0;
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        (app, float_id)
+    }
+
+    #[tokio::test]
+    async fn a_non_active_tab_pass_never_resizes_float_ptys() {
+        let (mut app, float_id) = two_tab_app_with_a_float();
+        let registry = TerminalRuntimeRegistry::new();
+        let cell = crate::kitty_graphics::HostCellSize::default();
+        let target = |tab_index| crate::ui::TabSurfaceTarget {
+            workspace_index: 0,
+            tab_index,
+        };
+
+        crate::ui::reflow_tab_for_area(&mut app, target(0), Rect::new(0, 0, 100, 30));
+        crate::ui::resize_tab_surface(&app, &registry, 0, 0, Rect::new(0, 0, 100, 30), cell);
+        let after_active = app.workspaces[0].floats.runtimes[&float_id].current_size();
+
+        crate::ui::resize_tab_surface(&app, &registry, 0, 1, Rect::new(0, 0, 200, 60), cell);
+        assert_eq!(
+            app.workspaces[0].floats.runtimes[&float_id].current_size(),
+            after_active
+        );
+
+        compute_pane_infos_for_tab(&app, &registry, 0, 1, Rect::new(0, 0, 200, 60), true, cell);
+        assert_eq!(
+            app.workspaces[0].floats.runtimes[&float_id].current_size(),
+            after_active
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_active_tab_reflow_leaves_the_float_layer_dirty() {
+        let (mut app, _) = two_tab_app_with_a_float();
+        let area = Rect::new(0, 0, 100, 30);
+        let target = |tab_index| crate::ui::TabSurfaceTarget {
+            workspace_index: 0,
+            tab_index,
+        };
+
+        app.workspaces[0].floats.needs_reflow = true;
+        crate::ui::reflow_tab_for_area(&mut app, target(1), area);
+        assert!(app.workspaces[0].floats.needs_reflow);
+
+        crate::ui::reflow_tab_for_area(&mut app, target(0), area);
+        assert!(!app.workspaces[0].floats.needs_reflow);
+    }
+
+    #[tokio::test]
+    async fn a_non_active_tab_still_draws_the_shown_float_layer() {
+        let (app, float_id) = two_tab_app_with_a_float();
+
+        let pane_infos = compute_pane_infos_for_tab(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            0,
+            1,
+            Rect::new(0, 0, 100, 30),
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        assert!(pane_infos.iter().any(|info| info.id == float_id));
     }
 
     #[test]
@@ -2008,7 +2115,7 @@ mod tests {
         );
         workspace.tabs[0].arrangement = crate::layout::Arrangement::Stacked;
         workspace.tabs[0].needs_reflow = true;
-        workspace.tabs[0].reflow(area, None);
+        workspace.tabs[0].reflow(area);
         workspace.tabs[0].runtimes.insert(
             collapsed_id,
             TerminalRuntime::test_with_scrollback_bytes(40, 10, 1024, b"vim\n"),
@@ -2379,11 +2486,11 @@ mod tests {
         let _right = ws.test_split(ratatui::layout::Direction::Horizontal);
         ws.tabs[0].arrangement = crate::layout::Arrangement::Vertical;
         ws.tabs[0].needs_reflow = true;
-        ws.tabs[0].reflow(area, None);
+        ws.tabs[0].reflow(area);
         let float_id = crate::layout::PaneId::alloc();
         let number = ws.next_public_pane_number;
         ws.register_new_pane_with_number(float_id, number);
-        ws.tabs[0].push_float(
+        ws.floats.push(
             float_id,
             crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
         );
@@ -2451,7 +2558,7 @@ mod tests {
         let float_id = crate::layout::PaneId::alloc();
         let number = ws.next_public_pane_number;
         ws.register_new_pane_with_number(float_id, number);
-        ws.tabs[0].push_float(
+        ws.floats.push(
             float_id,
             crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
         );

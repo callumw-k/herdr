@@ -99,18 +99,11 @@ pub(crate) fn resize_tab_surface(
     area: Rect,
     cell_size: crate::kitty_graphics::HostCellSize,
 ) {
-    let Some(tab) = app
-        .workspaces
-        .get(workspace_index)
-        .and_then(|workspace| workspace.tabs.get(tab_index))
-    else {
-        return;
-    };
     resize_tab_panes(
         app,
         terminal_runtimes,
         workspace_index,
-        tab,
+        tab_index,
         area,
         cell_size,
     );

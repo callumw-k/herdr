@@ -7,14 +7,12 @@ impl HeadlessServer {
             .workspaces
             .iter()
             .find_map(|ws| {
-                ws.tabs.iter().find_map(|tab| {
-                    let pane = tab.panes.get(&pane_id)?;
-                    self.app
-                        .state
-                        .terminals
-                        .get(&pane.attached_terminal_id)
-                        .map(|terminal| terminal.state)
-                })
+                let pane = ws.pane_state(pane_id)?;
+                self.app
+                    .state
+                    .terminals
+                    .get(&pane.attached_terminal_id)
+                    .map(|terminal| terminal.state)
             })
             .unwrap_or(crate::detect::AgentState::Unknown)
     }
@@ -55,7 +53,7 @@ impl HeadlessServer {
         let Some(workspace) = self.app.state.workspaces.get(ws_idx) else {
             return false;
         };
-        let Some(tab_idx) = workspace.find_tab_index_for_pane(pane_id) else {
+        let Some(tab_idx) = workspace.presenting_tab_index(pane_id) else {
             return false;
         };
         let Some(tab_number) = workspace.public_tab_number(tab_idx) else {
@@ -356,10 +354,7 @@ impl HeadlessServer {
                     .state
                     .active
                     .and_then(|ws_idx| self.app.state.workspaces.get(ws_idx))
-                    .is_some_and(|ws| {
-                        ws.find_tab_index_for_pane(pane_id_val)
-                            .is_some_and(|tab_idx| ws.active_tab_index() == tab_idx)
-                    });
+                    .is_some_and(|ws| ws.pane_shown_on_active_tab(pane_id_val));
 
                 let suppress_active_tab_notifications =
                     self.active_tab_suppresses_notifications(is_active_tab);
@@ -450,10 +445,7 @@ impl HeadlessServer {
                     .state
                     .active
                     .and_then(|ws_idx| self.app.state.workspaces.get(ws_idx))
-                    .is_some_and(|ws| {
-                        ws.find_tab_index_for_pane(pane_id_val)
-                            .is_some_and(|tab_idx| ws.active_tab_index() == tab_idx)
-                    });
+                    .is_some_and(|ws| ws.pane_shown_on_active_tab(pane_id_val));
 
                 let suppress_active_tab_notifications =
                     self.active_tab_suppresses_notifications(is_active_tab);
@@ -640,11 +632,8 @@ impl HeadlessServer {
                 let focused_tabs_before = self.focused_shell_tabs();
                 let pane_id_val = *pane_id;
                 let terminal_id = self.app.state.workspaces.iter().find_map(|ws| {
-                    ws.tabs.iter().find_map(|tab| {
-                        tab.panes
-                            .get(pane_id)
-                            .map(|pane| pane.attached_terminal_id.to_string())
-                    })
+                    ws.pane_state(*pane_id)
+                        .map(|pane| pane.attached_terminal_id.to_string())
                 });
                 if matches!(&ev, AppEvent::PaneDied { .. })
                     && !self
@@ -756,8 +745,7 @@ impl HeadlessServer {
 
     fn tab_id_holding_pane(&self, pane_id: crate::layout::PaneId) -> Option<String> {
         let (workspace_index, _) = self.app.find_pane(pane_id)?;
-        let tab_index =
-            self.app.state.workspaces[workspace_index].find_tab_index_for_pane(pane_id)?;
+        let tab_index = self.app.state.workspaces[workspace_index].presenting_tab_index(pane_id)?;
         self.app.public_tab_id(workspace_index, tab_index)
     }
 

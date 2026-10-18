@@ -165,9 +165,9 @@ macOS では、`pane.send_input`（`pane run` が使用）と `agent.start` は�
 
 レスポンスには `workspace_id`、`tab_id`、`zoomed`、`focused_pane_id`、`arrangement`、`root` が含まれます。`arrangement` はタブのペインアレンジメントで、`vertical`、`horizontal`、`grid`、`stacked` のいずれかです。`root` は `pane`、`split`、`stack` ノードの BSP ツリーです。ペインノードは `pane_id`、`label`、`cwd`、argv の `command` を含められます。分割ノードは `direction` (`right` または `down`)、`ratio`、`first`、`second` を使います。スタックノードは、ペインノードのフラットなリストである `panes` と、展開されているメンバーのインデックスである `active` を使います。スタックは入れ子にできず、分割を含められません。`arrangement` はタブの再レイアウト方法を示します。`layout.apply` が `Split` ルートで呼ばれた場合、次のペインの作成または削除までタブは既存のアレンジメント値を保ちます。
 
-レスポンスには、タブのフローティングレイヤー用の `float_arrangement` と `float_root` も含まれます。フローティングレイヤーは同じ `pane`/`split`/`stack` 形式を持つ、独立した2つ目のツリーです。`float_arrangement` は `grid` ではなく `stacked` がデフォルトで、タブにフロートがない場合 `float_root` は省略されます。
+レスポンスには、ワークスペースのフローティングレイヤー用の `float_arrangement` と `float_root` も含まれます。フローティングレイヤーは同じ `pane`/`split`/`stack` 形式を持つ、独立した2つ目のツリーで、そのワークスペースのどのタブでも同じ内容が報告されます。`float_arrangement` は `grid` ではなく `stacked` がデフォルトで、ワークスペースにフロートがない場合 `float_root` は省略されます。
 
-`layout.apply` は宣言的なツリーから新しいタブを作成します。`tab_id` が与えられた場合、Herdr は先に置き換え用のタブを作成してから古いタブを閉じます。これは構造、ラベル、cwd、env、任意の argv コマンドを復元しますが、ライブの PTY、スクロールバック、実行中プロセスは保存しません。`root` と並べて `float_root` を指定すると、同様の方法でタブのフローティングレイヤーをインストールできます。`Stack` の float ルートは、`root` と同じ規則で `float_arrangement` を `stacked` に設定します。
+`layout.apply` は宣言的なツリーから新しいタブを作成します。`tab_id` が与えられた場合、Herdr は先に置き換え用のタブを作成してから古いタブを閉じます。これは構造、ラベル、cwd、env、任意の argv コマンドを復元しますが、ライブの PTY、スクロールバック、実行中プロセスは保存しません。`root` と並べて `float_root` を指定すると、ワークスペースのフローティングレイヤーにフロートを追加します。`tab_id` がない場合、空のレイヤーはツリーをそのまま受け取り、ルートが `Stack` でない限り配置を維持します。`Stack` の場合は、`root` と同じ規則で `float_arrangement` を `stacked` に設定します。すでにフロートがあるレイヤーには追記され、配置は維持されます。`tab_id` と `float_root` を併用すると、`float_root` がワークスペースのフローティングレイヤーを置き換えます。`tab_id` があり `float_root` がない場合、既存のフロートはそのまま残ります。
 
 ```json
 {

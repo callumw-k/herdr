@@ -866,3 +866,57 @@ async fn two_headless_servers_drive_atomic_endpoint_handoff() {
     shutdown_test_runtimes(&mut source_server);
     shutdown_test_runtimes(&mut target_server);
 }
+
+#[tokio::test]
+async fn a_client_on_another_tab_at_another_size_does_not_resize_floats() {
+    let mut server = test_headless_server();
+    let mut workspace = crate::workspace::Workspace::test_new("float-geometry");
+    let first_pane = workspace.tabs[0].root_pane;
+    let second_tab = workspace.test_add_tab(Some("second"));
+    let second_pane = workspace.tabs[second_tab].root_pane;
+    workspace.insert_test_runtime(
+        first_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
+    );
+    workspace.insert_test_runtime(
+        second_pane,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
+    );
+    let float_id = crate::layout::PaneId::alloc();
+    let number = workspace.next_public_pane_number;
+    workspace.register_new_pane_with_number(float_id, number);
+    workspace.floats.push(
+        float_id,
+        crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+    );
+    workspace.floats.runtimes.insert(
+        float_id,
+        crate::terminal::TerminalRuntime::test_with_screen_bytes(80, 23, b"FLOAT"),
+    );
+    workspace.active_tab = 0;
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.active = Some(0);
+    server.app.state.selected = 0;
+    server.app.state.mode = crate::app::Mode::Terminal;
+    let second_tab_id = server.app.public_tab_id(0, second_tab).unwrap();
+
+    let (a_control, a_render) = connect_test_shell(&mut server, 7, 100, 30);
+    let (b_control, b_render) = connect_test_shell(&mut server, 8, 200, 60);
+    let _ = a_control.recv().expect("client A snapshot");
+    let _ = b_control.recv().expect("client B snapshot");
+    assert!(server.focus_shell_client_on_tab(8, &second_tab_id));
+
+    server.claim_shell_tab_geometry(7, false);
+    let a_size = server.app.state.workspaces[0].floats.runtimes[&float_id].current_size();
+    server.claim_shell_tab_geometry(8, false);
+    server.render_and_stream();
+    let _ = a_render.try_recv();
+    let _ = b_render.try_recv();
+
+    assert_eq!(
+        server.app.state.workspaces[0].floats.runtimes[&float_id].current_size(),
+        a_size,
+        "the float follows the workspace's active tab, not the last pass"
+    );
+    shutdown_test_runtimes(&mut server);
+}

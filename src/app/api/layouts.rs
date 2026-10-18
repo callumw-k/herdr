@@ -9,7 +9,7 @@ use crate::api::schema::{
 };
 use crate::app::{App, Mode};
 use crate::layout::{Arrangement, Node, PaneId, TileLayout};
-use crate::workspace::NewPane;
+use crate::workspace::{FloatLayer, NewPane};
 
 use super::responses::{encode_error, encode_success};
 
@@ -162,14 +162,34 @@ impl App {
             return encode_error(id, "layout_apply_failed", message);
         }
 
+        let mut staged_floats = None;
         if let Some(float_root) = params.float_root.as_ref() {
             let float_leaf = first_layout_leaf(float_root);
             let float_cwd = self.layout_root_cwd(ws_idx, replace_target, float_leaf);
-            if let Err(message) =
-                self.apply_float_layout_root(ws_idx, new_tab_idx, float_root, float_cwd)
-            {
-                self.rollback_layout_tab(ws_idx, new_root_pane);
-                return encode_error(id, "layout_apply_failed", message);
+            let identity_tab_idx = if params.focus || replace_was_active {
+                new_tab_idx
+            } else {
+                self.state.workspaces[ws_idx].active_tab_index()
+            };
+            match self.build_float_layer(ws_idx, identity_tab_idx, float_root, float_cwd) {
+                Ok(staged) => staged_floats = Some(staged),
+                Err(message) => {
+                    self.rollback_layout_tab(ws_idx, new_root_pane);
+                    return encode_error(id, "layout_apply_failed", message);
+                }
+            }
+        }
+        if replace_target.is_none() {
+            if let Some(mut staged) = staged_floats.take() {
+                if let Some(ws) = self.state.workspaces.get_mut(ws_idx) {
+                    if ws.floats.layout.is_none()
+                        && !matches!(params.float_root, Some(LayoutNode::Stack { .. }))
+                    {
+                        staged.arrangement = ws.floats.arrangement;
+                    }
+                    ws.floats.absorb(staged);
+                    ws.floats.hidden = false;
+                }
             }
         }
         // Building the trees above goes through the same split and float
@@ -185,16 +205,12 @@ impl App {
             .and_then(|ws| ws.tabs.get_mut(new_tab_idx))
         {
             tab.needs_reflow = false;
-            tab.float_needs_reflow = false;
             // An applied stack root is the tab's arrangement, not a one-off
             // shape. Leaving `arrangement` alone made `layout.export` report a
             // grid for a stacked tree, and the next pane create or close would
             // re-flow that stack away.
             if matches!(params.root, LayoutNode::Stack { .. }) {
                 tab.arrangement = Arrangement::Stacked;
-            }
-            if matches!(params.float_root, Some(LayoutNode::Stack { .. })) {
-                tab.float_arrangement = Arrangement::Stacked;
             }
         }
 
@@ -212,9 +228,21 @@ impl App {
                 .terminal_ids_for_tab(target_ws_idx, target_tab_idx);
             let plugin_pane_ids = self.state.pane_ids_for_tab(target_ws_idx, target_tab_idx);
             let Some(ws) = self.state.workspaces.get_mut(target_ws_idx) else {
+                if let Some(staged) = staged_floats.take() {
+                    self.discard_float_layer(target_ws_idx, staged);
+                }
                 return encode_error(id, "tab_not_found", "tab not found");
             };
-            if ws.close_tab(target_tab_idx) {
+            let closed = ws.close_tab(target_tab_idx);
+            if let Some(staged) = staged_floats.take() {
+                if closed {
+                    let old = std::mem::replace(&mut ws.floats, staged);
+                    self.discard_float_layer(target_ws_idx, old);
+                } else {
+                    self.discard_float_layer(target_ws_idx, staged);
+                }
+            }
+            if closed {
                 self.state.remove_plugin_pane_records(plugin_pane_ids);
                 self.state.remove_unattached_terminal_ids(terminal_ids);
                 self.shutdown_detached_terminal_runtimes();
@@ -309,7 +337,7 @@ impl App {
                     .state
                     .workspaces
                     .get(ws_idx)?
-                    .find_tab_index_for_pane(pane_id)?;
+                    .presenting_tab_index(pane_id)?;
                 Some((ws_idx, tab_idx))
             }
             (None, None) => {
@@ -323,7 +351,7 @@ impl App {
     fn layout_description(&self, ws_idx: usize, tab_idx: usize) -> Option<LayoutDescription> {
         let ws = self.state.workspaces.get(ws_idx)?;
         let tab = ws.tabs.get(tab_idx)?;
-        let float_root = match tab.float_layout.as_ref() {
+        let float_root = match ws.floats.layout.as_ref() {
             Some(layout) => Some(self.layout_node_description(ws_idx, tab_idx, layout.root())?),
             None => None,
         };
@@ -331,9 +359,9 @@ impl App {
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             zoomed: tab.zoomed,
-            focused_pane_id: self.public_pane_id(ws_idx, tab.focused_pane())?,
+            focused_pane_id: self.public_pane_id(ws_idx, ws.focused_pane_in_tab(tab_idx)?)?,
             arrangement: arrangement_schema(tab.arrangement),
-            float_arrangement: arrangement_schema(tab.float_arrangement),
+            float_arrangement: arrangement_schema(ws.floats.arrangement),
             float_root,
             root: self.layout_node_description(ws_idx, tab_idx, tab.layout.root())?,
         })
@@ -383,13 +411,13 @@ impl App {
         pane_id: PaneId,
     ) -> Option<LayoutPane> {
         let ws = self.state.workspaces.get(ws_idx)?;
-        let tab = ws.tabs.get(tab_idx)?;
-        let terminal_id = tab.terminal_id(pane_id)?;
+        ws.tabs.get(tab_idx)?;
+        let terminal_id = ws.terminal_id(pane_id)?;
         let terminal = self.state.terminals.get(terminal_id);
         Some(LayoutPane {
             pane_id: Some(self.public_pane_id(ws_idx, pane_id)?),
             label: terminal.and_then(|terminal| terminal.manual_label.clone()),
-            cwd: tab
+            cwd: ws
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
             command: terminal.and_then(|terminal| terminal.launch_argv.clone()),
@@ -511,7 +539,7 @@ impl App {
         let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
             return;
         };
-        let Some(tab_idx) = ws.find_tab_index_for_pane(focus_member) else {
+        let Some(tab_idx) = ws.tiled_tab_index(focus_member) else {
             return;
         };
         let tab = &mut ws.tabs[tab_idx];
@@ -597,12 +625,7 @@ impl App {
     }
 
     fn apply_layout_pane_label(&mut self, ws_idx: usize, pane_id: PaneId, pane: &LayoutPane) {
-        let Some(label) = pane
-            .label
-            .as_ref()
-            .map(|label| label.trim())
-            .filter(|label| !label.is_empty())
-        else {
+        let Some(label) = layout_pane_label(pane) else {
             return;
         };
         let Some(terminal_id) = self
@@ -621,26 +644,45 @@ impl App {
 
     /// Builds the float layer for a layout.apply request. Unlike the tiled
     /// root, which grows through incremental splits so it can attach to an
-    /// already-running tab, the float layer starts empty for a freshly
-    /// created tab, so the whole tree can be spawned and assembled in one pass.
-    fn apply_float_layout_root(
+    /// already-running tab, the float tree is spawned and assembled in one
+    /// pass into a staged layer. The caller decides whether it joins or
+    /// replaces the workspace's layer. A failed build shuts down whatever it
+    /// spawned.
+    fn build_float_layer(
         &mut self,
         ws_idx: usize,
         tab_idx: usize,
         node: &LayoutNode,
         default_cwd: PathBuf,
-    ) -> Result<(), String> {
-        let (float_node, focus) = self.build_float_node(ws_idx, tab_idx, node, &default_cwd)?;
-        let Some(tab) = self
-            .state
-            .workspaces
-            .get_mut(ws_idx)
-            .and_then(|ws| ws.tabs.get_mut(tab_idx))
-        else {
-            return Err("tab not found".into());
+    ) -> Result<FloatLayer, String> {
+        let mut staged = FloatLayer::default();
+        match self.build_float_node(ws_idx, tab_idx, node, &default_cwd, &mut staged) {
+            Ok((float_node, focus)) => {
+                staged.layout = Some(TileLayout::from_saved(float_node, focus));
+                staged.needs_reflow = false;
+                if matches!(node, LayoutNode::Stack { .. }) {
+                    staged.arrangement = Arrangement::Stacked;
+                }
+                Ok(staged)
+            }
+            Err(message) => {
+                self.discard_float_layer(ws_idx, staged);
+                Err(message)
+            }
+        }
+    }
+
+    fn discard_float_layer(&mut self, ws_idx: usize, mut layer: FloatLayer) {
+        let detached = match self.state.workspaces.get_mut(ws_idx) {
+            Some(ws) => ws.release_float_layer(layer),
+            None => layer.take_all(),
         };
-        tab.float_layout = Some(TileLayout::from_saved(float_node, focus));
-        Ok(())
+        self.state
+            .remove_plugin_pane_records(detached.iter().map(|(pane_id, _)| *pane_id));
+        self.state.remove_unattached_terminal_ids(
+            detached.into_iter().map(|(_, terminal_id)| terminal_id),
+        );
+        self.shutdown_detached_terminal_runtimes();
     }
 
     fn build_float_node(
@@ -649,10 +691,11 @@ impl App {
         tab_idx: usize,
         node: &LayoutNode,
         default_cwd: &Path,
+        staged: &mut FloatLayer,
     ) -> Result<(Node, PaneId), String> {
         match node {
             LayoutNode::Pane { pane } => {
-                let pane_id = self.spawn_float_pane(ws_idx, tab_idx, pane, default_cwd)?;
+                let pane_id = self.spawn_float_pane(ws_idx, tab_idx, pane, default_cwd, staged)?;
                 Ok((Node::Pane(pane_id), pane_id))
             }
             LayoutNode::Split {
@@ -662,9 +705,9 @@ impl App {
                 second,
             } => {
                 let (first_node, focus) =
-                    self.build_float_node(ws_idx, tab_idx, first, default_cwd)?;
+                    self.build_float_node(ws_idx, tab_idx, first, default_cwd, staged)?;
                 let (second_node, _) =
-                    self.build_float_node(ws_idx, tab_idx, second, default_cwd)?;
+                    self.build_float_node(ws_idx, tab_idx, second, default_cwd, staged)?;
                 let direction = match direction {
                     SplitDirection::Right => Direction::Horizontal,
                     SplitDirection::Down => Direction::Vertical,
@@ -682,7 +725,7 @@ impl App {
             LayoutNode::Stack { panes, active } => {
                 let mut ids = Vec::with_capacity(panes.len());
                 for pane in panes {
-                    ids.push(self.spawn_float_pane(ws_idx, tab_idx, pane, default_cwd)?);
+                    ids.push(self.spawn_float_pane(ws_idx, tab_idx, pane, default_cwd, staged)?);
                 }
                 // validate_layout_tree already rejected an empty stack and an
                 // out-of-range active index before this ran.
@@ -714,6 +757,7 @@ impl App {
         tab_idx: usize,
         pane: &LayoutPane,
         default_cwd: &Path,
+        staged: &mut FloatLayer,
     ) -> Result<PaneId, String> {
         let cwd = pane
             .cwd
@@ -781,23 +825,25 @@ impl App {
         .map_err(|err| err.to_string())?;
 
         let terminal_id = crate::terminal::TerminalId::alloc();
-        let terminal = match command {
+        let mut terminal = match command {
             Some(argv) => {
                 crate::terminal::TerminalState::new(terminal_id.clone(), cwd).with_launch_argv(argv)
             }
             None => crate::terminal::TerminalState::new(terminal_id.clone(), cwd),
         };
+        if let Some(label) = layout_pane_label(pane) {
+            terminal.set_manual_label(label.to_string());
+        }
         self.terminal_runtimes.insert(terminal_id.clone(), runtime);
         self.state.remove_alias_shadowed_by_new_pane(pane_id);
         self.state.terminals.insert(terminal_id.clone(), terminal);
 
         let ws = &mut self.state.workspaces[ws_idx];
         ws.register_new_pane_with_number(pane_id, pane_number);
-        ws.tabs[tab_idx]
+        staged
             .panes
             .insert(pane_id, crate::pane::PaneState::new(terminal_id));
 
-        self.apply_layout_pane_label(ws_idx, pane_id, pane);
         Ok(pane_id)
     }
 
@@ -812,16 +858,14 @@ impl App {
         };
         let terminal_ids = self.state.terminal_ids_for_tab(ws_idx, tab_idx);
         let plugin_pane_ids = self.state.pane_ids_for_tab(ws_idx, tab_idx);
-        if self
-            .state
-            .workspaces
-            .get_mut(ws_idx)
-            .is_some_and(|ws| ws.close_tab(tab_idx))
-        {
+        let Some(ws) = self.state.workspaces.get_mut(ws_idx) else {
+            return;
+        };
+        if ws.close_tab(tab_idx) {
             self.state.remove_plugin_pane_records(plugin_pane_ids);
-            self.state.remove_unattached_terminal_ids(terminal_ids);
-            self.shutdown_detached_terminal_runtimes();
         }
+        self.state.remove_unattached_terminal_ids(terminal_ids);
+        self.shutdown_detached_terminal_runtimes();
     }
 }
 
@@ -886,6 +930,13 @@ fn first_layout_leaf(node: &LayoutNode) -> &LayoutPane {
         // empty stack, so `panes` is guaranteed non-empty here.
         LayoutNode::Stack { panes, .. } => panes.first().expect("stack validated non-empty"),
     }
+}
+
+fn layout_pane_label(pane: &LayoutPane) -> Option<&str> {
+    pane.label
+        .as_ref()
+        .map(|label| label.trim())
+        .filter(|label| !label.is_empty())
 }
 
 fn layout_command(pane: &LayoutPane) -> Result<Option<Vec<String>>, String> {
@@ -1252,7 +1303,7 @@ mod tests {
         // A render tick reflows the active tab unconditionally
         // (src/ui.rs's compute_view/compute_mobile_view); the tree
         // layout.apply just built must survive it.
-        tab.reflow(Rect::new(0, 0, 80, 20), None);
+        tab.reflow(Rect::new(0, 0, 80, 20));
 
         assert!(matches!(
             tab.layout.root(),
@@ -1300,7 +1351,7 @@ mod tests {
         let tab = &mut app.state.workspaces[0].tabs[0];
         let members = tab.layout.pane_ids();
         tab.needs_reflow = true;
-        tab.reflow(Rect::new(0, 0, 80, 20), None);
+        tab.reflow(Rect::new(0, 0, 80, 20));
         assert!(matches!(
             tab.layout.root(),
             Node::Stack { panes, .. } if *panes == members
@@ -1376,9 +1427,9 @@ mod tests {
         assert_eq!(panes[0].label.as_deref(), Some("one"));
         assert_eq!(panes[1].label.as_deref(), Some("two"));
 
-        let tab = &app.state.workspaces[0].tabs[0];
-        assert_eq!(tab.floats().len(), 2);
-        let float_layout = tab.float_layout.as_ref().expect("float layout");
+        let floats = &app.state.workspaces[0].floats;
+        assert_eq!(floats.pane_ids().len(), 2);
+        let float_layout = floats.layout.as_ref().expect("float layout");
         assert!(matches!(
             float_layout.root(),
             Node::Stack { panes, .. } if panes.len() == 2
@@ -1421,23 +1472,24 @@ mod tests {
             },
         );
 
-        let tab = &mut app.state.workspaces[0].tabs[0];
-        let float_members = tab.floats();
+        let ws = &mut app.state.workspaces[0];
+        let float_members = ws.floats.pane_ids();
         assert_eq!(float_members.len(), 2);
         // Confirms the split primitive actually did mark the tab, so the
         // next assertion is exercising the clear-up rather than a no-op.
-        assert!(!tab.needs_reflow);
+        assert!(!ws.tabs[0].needs_reflow);
 
         // A render tick reflows the active tab unconditionally
         // (src/ui.rs's compute_view/compute_mobile_view); both the split's
         // ratio and the float stack layout.apply just built must survive it.
-        tab.reflow(Rect::new(0, 0, 80, 20), Some(Rect::new(0, 0, 40, 10)));
+        ws.tabs[0].reflow(Rect::new(0, 0, 80, 20));
+        ws.floats.reflow(Some(Rect::new(0, 0, 40, 10)));
 
-        let Node::Split { ratio, .. } = tab.layout.root() else {
+        let Node::Split { ratio, .. } = ws.tabs[0].layout.root() else {
             panic!("expected split tiled root");
         };
         assert!((*ratio - 0.7).abs() < f32::EPSILON);
-        let float_layout = tab.float_layout.as_ref().expect("float layout");
+        let float_layout = ws.floats.layout.as_ref().expect("float layout");
         assert!(matches!(
             float_layout.root(),
             Node::Stack { panes, .. } if *panes == float_members
@@ -1472,6 +1524,268 @@ mod tests {
         assert_eq!(app.state.workspaces[0].tabs.len(), original_tab_count);
     }
 
+    fn float_apply_params(
+        tab_id: Option<String>,
+        float_root: Option<LayoutNode>,
+    ) -> LayoutApplyParams {
+        LayoutApplyParams {
+            workspace_id: None,
+            tab_id,
+            tab_label: Some("floats".into()),
+            focus: false,
+            root: LayoutNode::Pane {
+                pane: LayoutPane::default(),
+            },
+            float_root,
+        }
+    }
+
+    fn float_pane_leaf() -> LayoutNode {
+        LayoutNode::Pane {
+            pane: LayoutPane::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn layout_apply_appends_floats_to_a_populated_workspace_layer() {
+        let mut app = app_with_workspace();
+        let existing = app.open_float_pane(0, None).unwrap();
+        app.state.workspaces[0].floats.arrangement = Arrangement::Grid;
+        app.state.workspaces[0].floats.needs_reflow = false;
+
+        let response = app.handle_layout_apply(
+            "req".into(),
+            float_apply_params(None, Some(float_pane_leaf())),
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::LayoutApply { .. }));
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.floats.pane_ids().len(), 2);
+        assert!(ws.floats.contains(existing));
+        assert_eq!(ws.floats.arrangement, Arrangement::Grid);
+        assert!(ws.floats.needs_reflow);
+        app.state.assert_invariants_for_test();
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn layout_apply_appending_to_a_hidden_layer_shows_it_without_focus() {
+        let mut app = app_with_workspace();
+        app.open_float_pane(0, None).unwrap();
+        app.state.workspaces[0].floats.set_hidden(true);
+
+        let response = app.handle_layout_apply(
+            "req".into(),
+            float_apply_params(None, Some(float_pane_leaf())),
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::LayoutApply { .. }));
+        let floats = &app.state.workspaces[0].floats;
+        assert_eq!(floats.pane_ids().len(), 2);
+        assert!(!floats.hidden);
+        assert!(!floats.focused);
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn discarding_a_float_layer_for_a_missing_workspace_still_releases_its_terminals() {
+        let mut app = app_with_workspace();
+        let float = PaneId::alloc();
+        let terminal_id = crate::terminal::TerminalId::alloc();
+        app.state.terminals.insert(
+            terminal_id.clone(),
+            crate::terminal::TerminalState::new(terminal_id.clone(), PathBuf::from("/tmp")),
+        );
+        let mut staged = FloatLayer::default();
+        staged.push(float, crate::pane::PaneState::new(terminal_id.clone()));
+
+        app.discard_float_layer(app.state.workspaces.len(), staged);
+
+        assert!(!app.state.terminals.contains_key(&terminal_id));
+    }
+
+    #[tokio::test]
+    async fn layout_apply_into_an_empty_layer_keeps_its_arrangement_unless_the_root_is_a_stack() {
+        let mut app = app_with_workspace();
+        app.state.workspaces[0].floats.arrangement = Arrangement::Grid;
+        let split = LayoutNode::Split {
+            direction: SplitDirection::Right,
+            ratio: 0.5,
+            first: Box::new(float_pane_leaf()),
+            second: Box::new(float_pane_leaf()),
+        };
+
+        app.handle_layout_apply("req".into(), float_apply_params(None, Some(split)));
+
+        assert_eq!(app.state.workspaces[0].floats.pane_ids().len(), 2);
+        assert_eq!(
+            app.state.workspaces[0].floats.arrangement,
+            Arrangement::Grid
+        );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn layout_apply_replace_with_a_float_root_replaces_the_workspace_layer() {
+        let mut app = app_with_workspace();
+        let old_float = app.open_float_pane(0, None).unwrap();
+        let old_terminal = app.state.workspaces[0]
+            .floats
+            .terminal_id(old_float)
+            .cloned()
+            .unwrap();
+        app.state.plugin_panes.insert(
+            old_float,
+            crate::app::state::PluginPaneRecord {
+                plugin_id: "example.layout".into(),
+                entrypoint: "board".into(),
+            },
+        );
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+
+        let response = app.handle_layout_apply(
+            "req".into(),
+            float_apply_params(Some(tab_id), Some(float_pane_leaf())),
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::LayoutApply { .. }));
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.floats.pane_ids().len(), 1);
+        assert!(!ws.floats.pane_ids().contains(&old_float));
+        assert!(!ws.public_pane_numbers.contains_key(&old_float));
+        assert!(!app.state.terminals.contains_key(&old_terminal));
+        assert!(app.terminal_runtimes.get(&old_terminal).is_none());
+        assert!(app.state.terminal_runtime_shutdowns.is_empty());
+        assert!(!app.state.plugin_panes.contains_key(&old_float));
+        app.state.assert_invariants_for_test();
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn layout_apply_replace_without_a_float_root_keeps_the_workspace_layer() {
+        let mut app = app_with_workspace();
+        let old_float = app.open_float_pane(0, None).unwrap();
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+
+        let response =
+            app.handle_layout_apply("req".into(), float_apply_params(Some(tab_id), None));
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert!(matches!(success.result, ResponseResult::LayoutApply { .. }));
+        assert_eq!(app.state.workspaces[0].floats.pane_ids(), vec![old_float]);
+        app.state.assert_invariants_for_test();
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn layout_export_from_a_non_active_tab_includes_the_workspace_floats() {
+        let mut app = app_with_workspace();
+        app.state.workspaces[0].test_add_tab(Some("second"));
+        app.state.ensure_test_terminals();
+        app.open_float_pane(0, None).unwrap();
+        app.state.workspaces[0].active_tab = 0;
+        let second_tab_id = app.public_tab_id(0, 1).unwrap();
+
+        let response = app.handle_layout_export(
+            "req".into(),
+            LayoutExportParams {
+                tab_id: Some(second_tab_id),
+                pane_id: None,
+            },
+        );
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::LayoutExport { layout } = success.result else {
+            panic!("expected layout export response");
+        };
+        assert!(layout.float_root.is_some());
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn layout_apply_float_failure_spawns_nothing_into_the_layer() {
+        let mut app = app_with_workspace();
+        let numbers_before = app.state.workspaces[0].public_pane_numbers.len();
+        let terminals_before = app.state.terminals.len();
+
+        let response = app.handle_layout_apply(
+            "req".into(),
+            float_apply_params(
+                None,
+                Some(LayoutNode::Stack {
+                    panes: vec![
+                        LayoutPane::default(),
+                        LayoutPane {
+                            command: Some(vec!["herdr-layout-apply-missing-binary".into()]),
+                            ..Default::default()
+                        },
+                    ],
+                    active: 0,
+                }),
+            ),
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "layout_apply_failed");
+        let ws = &app.state.workspaces[0];
+        assert!(ws.floats.pane_ids().is_empty());
+        assert!(ws.floats.panes.is_empty());
+        assert_eq!(ws.tabs.len(), 1);
+        assert_eq!(ws.public_pane_numbers.len(), numbers_before);
+        assert_eq!(app.state.terminals.len(), terminals_before);
+        app.state.assert_invariants_for_test();
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn layout_apply_replace_float_failure_keeps_the_old_tab_and_floats() {
+        let mut app = app_with_workspace();
+        let old_float = app.open_float_pane(0, None).unwrap();
+        let old_terminal = app.state.workspaces[0]
+            .floats
+            .terminal_id(old_float)
+            .cloned()
+            .unwrap();
+        let old_root = app.state.workspaces[0].tabs[0].root_pane;
+        let tab_id = app.public_tab_id(0, 0).unwrap();
+        let numbers_before = app.state.workspaces[0].public_pane_numbers.len();
+        let terminals_before = app.state.terminals.len();
+
+        let response = app.handle_layout_apply(
+            "req".into(),
+            float_apply_params(
+                Some(tab_id),
+                Some(LayoutNode::Stack {
+                    panes: vec![
+                        LayoutPane::default(),
+                        LayoutPane {
+                            command: Some(vec!["herdr-layout-apply-missing-binary".into()]),
+                            ..Default::default()
+                        },
+                    ],
+                    active: 0,
+                }),
+            ),
+        );
+
+        let error: ErrorResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(error.error.code, "layout_apply_failed");
+        let ws = &app.state.workspaces[0];
+        assert_eq!(ws.tabs.len(), 1);
+        assert_eq!(ws.tabs[0].root_pane, old_root);
+        assert_eq!(ws.floats.pane_ids(), vec![old_float]);
+        assert_eq!(ws.floats.panes.len(), 1);
+        assert!(app.state.terminals.contains_key(&old_terminal));
+        assert!(app.terminal_runtimes.get(&old_terminal).is_some());
+        assert_eq!(ws.public_pane_numbers.len(), numbers_before);
+        assert_eq!(app.state.terminals.len(), terminals_before);
+        app.state.assert_invariants_for_test();
+        shutdown_test_runtimes(&mut app);
+    }
+
     #[tokio::test]
     async fn layout_export_focused_pane_id_names_the_tiled_pane_when_the_tiled_layer_holds_focus() {
         let mut app = app_with_workspace();
@@ -1493,9 +1807,8 @@ mod tests {
             },
         );
 
-        let tab = &app.state.workspaces[0].tabs[0];
-        assert!(!tab.float_focused);
-        let tiled_pane = tab.root_pane;
+        assert!(!app.state.workspaces[0].floats.focused);
+        let tiled_pane = app.state.workspaces[0].tabs[0].root_pane;
 
         let response = app.handle_layout_export(
             "req".into(),
@@ -1537,13 +1850,13 @@ mod tests {
             },
         );
 
-        let tab = &mut app.state.workspaces[0].tabs[0];
-        let tiled_pane = tab.root_pane;
-        let float_pane = tab.floats()[0];
+        let ws = &mut app.state.workspaces[0];
+        let tiled_pane = ws.tabs[0].root_pane;
+        let float_pane = ws.floats.pane_ids()[0];
         // layout.apply installs the float layer but does not move focus onto
         // it; simulate the layer already holding focus the way a real client
         // interaction (e.g. pane.float or the toggle-float keybind) would.
-        tab.float_focused = true;
+        ws.floats.focused = true;
 
         let response = app.handle_layout_export(
             "req".into(),
@@ -1812,7 +2125,7 @@ mod tests {
         // A render tick reflows the active tab unconditionally
         // (src/ui.rs's compute_view/compute_mobile_view); the split
         // layout.apply just built, including its ratio, must survive it.
-        tab.reflow(Rect::new(0, 0, 80, 20), None);
+        tab.reflow(Rect::new(0, 0, 80, 20));
 
         assert!(matches!(
             tab.layout.root(),

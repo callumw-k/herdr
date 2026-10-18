@@ -968,6 +968,7 @@ impl AppState {
             .tabs
             .iter()
             .find_map(|tab| tab.runtimes.get(&pane_id))
+            .or_else(|| self.workspaces.get(ws_idx)?.floats.runtimes.get(&pane_id))
         {
             return Some(runtime);
         }
@@ -983,14 +984,10 @@ impl AppState {
         if self.active != Some(ws_idx) {
             return false;
         }
-        let Some(tab) = self
-            .workspaces
-            .get(ws_idx)
-            .and_then(|workspace| workspace.active_tab())
-        else {
+        let Some(ws) = self.workspaces.get(ws_idx) else {
             return false;
         };
-        tab.visible_pane_ids().contains(&pane_id)
+        ws.visible_pane_ids_in_tab(ws.active_tab).contains(&pane_id)
     }
 
     pub fn is_active_pane(
@@ -1132,15 +1129,13 @@ impl AppState {
     pub fn ensure_test_terminals(&mut self) {
         use crate::terminal::TerminalState;
         for ws in &self.workspaces {
-            for tab in &ws.tabs {
-                for pane in tab.panes.values() {
-                    if !self.terminals.contains_key(&pane.attached_terminal_id) {
-                        let cwd = ws.identity_cwd.clone();
-                        self.terminals.insert(
-                            pane.attached_terminal_id.clone(),
-                            TerminalState::new(pane.attached_terminal_id.clone(), cwd),
-                        );
-                    }
+            for (_, pane) in ws.pane_states() {
+                if !self.terminals.contains_key(&pane.attached_terminal_id) {
+                    let cwd = ws.identity_cwd.clone();
+                    self.terminals.insert(
+                        pane.attached_terminal_id.clone(),
+                        TerminalState::new(pane.attached_terminal_id.clone(), cwd),
+                    );
                 }
             }
         }
@@ -1225,25 +1220,23 @@ impl AppState {
             workspace_id_to_idx.insert(ws.id.clone(), ws_idx);
             ws.assert_invariants_for_test();
 
-            for tab in &ws.tabs {
-                for (pane_id, pane) in &tab.panes {
-                    assert!(
-                        pane_ids.insert(*pane_id),
-                        "pane {:?} appears in more than one workspace",
-                        pane_id
-                    );
-                    assert!(
-                        attached_terminal_ids.insert(pane.attached_terminal_id.clone()),
-                        "terminal {} is attached to more than one app pane",
-                        pane.attached_terminal_id
-                    );
-                    assert!(
-                        self.terminals.contains_key(&pane.attached_terminal_id),
-                        "pane {:?} is attached to missing terminal {}",
-                        pane_id,
-                        pane.attached_terminal_id
-                    );
-                }
+            for (pane_id, pane) in ws.pane_states() {
+                assert!(
+                    pane_ids.insert(*pane_id),
+                    "pane {:?} appears in more than one workspace",
+                    pane_id
+                );
+                assert!(
+                    attached_terminal_ids.insert(pane.attached_terminal_id.clone()),
+                    "terminal {} is attached to more than one app pane",
+                    pane.attached_terminal_id
+                );
+                assert!(
+                    self.terminals.contains_key(&pane.attached_terminal_id),
+                    "pane {:?} is attached to missing terminal {}",
+                    pane_id,
+                    pane.attached_terminal_id
+                );
             }
         }
 

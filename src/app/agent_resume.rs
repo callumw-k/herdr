@@ -108,7 +108,7 @@ impl App {
                 for info in
                     self.pending_agent_resume_pane_infos(ws_idx, tab_idx, tab, terminal_area)
                 {
-                    let Some(pane) = tab.panes.get(&info.id) else {
+                    let Some(pane) = ws.pane_state(info.id) else {
                         continue;
                     };
                     if self
@@ -946,6 +946,67 @@ mod tests {
                 .expect("pending resume should launch")
                 .current_size(),
             (28, 98)
+        );
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pending_agent_resume_launches_a_visible_float() {
+        let mut app = test_app();
+        let mut workspace = crate::workspace::Workspace::test_new("float-resume");
+        let float = crate::layout::PaneId::alloc();
+        workspace.register_new_pane_with_number(float, workspace.next_public_pane_number);
+        workspace.floats.push(
+            float,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        let terminal_id = workspace.terminal_id(float).cloned().unwrap();
+        app.state.view.pane_infos = vec![crate::layout::PaneInfo {
+            id: float,
+            rect: ratatui::layout::Rect::new(10, 5, 60, 20),
+            inner_rect: ratatui::layout::Rect::new(11, 6, 58, 18),
+            scrollbar_rect: None,
+            borders: ratatui::widgets::Borders::ALL,
+            is_focused: true,
+        }];
+        app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
+        app.state.workspaces = vec![workspace];
+        app.state.active = Some(0);
+        app.state.ensure_test_terminals();
+        app.state.host_terminal_theme = crate::terminal_theme::TerminalTheme {
+            foreground: Some(crate::terminal_theme::RgbColor {
+                r: 220,
+                g: 220,
+                b: 220,
+            }),
+            background: Some(crate::terminal_theme::RgbColor {
+                r: 20,
+                g: 20,
+                b: 20,
+            }),
+            ..Default::default()
+        };
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test terminal should exist")
+            .pending_agent_resume_plan = Some(crate::agent_resume::AgentResumePlan {
+            agent: "codex".into(),
+            argv: long_running_test_argv(),
+            dedupe_key: "herdr:codex\0codex\0Id\0float-session".into(),
+        });
+
+        assert!(app.start_pending_agent_resumes(Instant::now(), false));
+        assert_eq!(
+            app.terminal_runtimes
+                .get(&terminal_id)
+                .expect("a visible float's pending resume should launch")
+                .current_size(),
+            (18, 58)
         );
 
         for (_, runtime) in app.terminal_runtimes.drain() {

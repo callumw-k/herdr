@@ -124,14 +124,13 @@ impl App {
             .workspaces
             .get(ws_idx)
             .ok_or_else(|| std::io::Error::other("active workspace disappeared"))?;
-        let active_tab = ws
-            .active_tab()
+        ws.active_tab()
             .ok_or_else(|| std::io::Error::other("active tab disappeared"))?;
         let focused_pane = ws
             .focused_pane_id()
             .ok_or_else(|| std::io::Error::other("active tab has no focused pane"))?;
         let cwd = cwd.or_else(|| {
-            active_tab.cwd_for_pane(focused_pane, &self.state.terminals, &self.terminal_runtimes)
+            ws.cwd_for_pane(focused_pane, &self.state.terminals, &self.terminal_runtimes)
         });
         let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| "/".into()));
         let pane_id = PaneId::alloc();
