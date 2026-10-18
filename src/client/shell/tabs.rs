@@ -1,4 +1,5 @@
 use super::*;
+use ratatui::style::Color;
 
 const TAB_SCROLL_BUTTON_WIDTH: u16 = 3;
 const MIN_TAB_STRIP_WIDTH: u16 =
@@ -84,11 +85,27 @@ pub(crate) fn render_tab_bar(
         .iter()
         .filter(|tab| Some(tab.workspace_id.as_str()) == snapshot.focused_workspace_id.as_deref())
         .collect::<Vec<_>>();
+    let bar_style = config.tab_bar_style;
+    let gap = tab_gap(bar_style);
+    let unselected_bg = unselected_tab_bg(palette, bar_style);
+    let pane_counts = if bar_style == TabBarStyleConfig::Quiet {
+        tiled_pane_counts(snapshot)
+    } else {
+        HashMap::new()
+    };
+    let pane_count_of = |tab: &ClientShellTab| {
+        pane_counts
+            .get(tab.tab_id.as_str())
+            .copied()
+            .unwrap_or_default()
+    };
     let desired_widths = tabs
         .iter()
         .map(|tab| {
-            let label = tab_label(tab, &snapshot.tabs, config);
-            display_width(&label).saturating_add(4).max(MIN_TAB_WIDTH)
+            let label = tab_label(tab, &snapshot.tabs, config, pane_count_of(tab));
+            display_width(&label)
+                .saturating_add(tab_padding(bar_style).saturating_mul(2))
+                .max(MIN_TAB_WIDTH)
         })
         .collect::<Vec<_>>();
     let content = render_tab_bar_workspace(
@@ -105,7 +122,9 @@ pub(crate) fn render_tab_bar(
         .iter()
         .copied()
         .fold(0_u16, u16::saturating_add)
-        .saturating_add(tabs.len().saturating_sub(1).min(u16::MAX as usize) as u16)
+        .saturating_add(
+            (tabs.len().saturating_sub(1).min(u16::MAX as usize) as u16).saturating_mul(gap),
+        )
         .saturating_add(new_tab_width);
     let overflow =
         desired_total > content.width && (!mouse_chrome || content.width >= MIN_TAB_STRIP_WIDTH);
@@ -117,12 +136,13 @@ pub(crate) fn render_tab_bar(
     } else {
         content.width.saturating_sub(new_tab_width)
     };
-    let max_scroll = max_tab_scroll(&desired_widths, available);
+    let max_scroll = max_tab_scroll(&desired_widths, available, gap);
     if !overflow {
         *tab_scroll = 0;
     } else if *reveal_focused_tab {
         if let Some(focused) = tabs.iter().position(|tab| tab.focused) {
-            *tab_scroll = centered_tab_scroll(focused, &desired_widths, available).min(max_scroll);
+            *tab_scroll =
+                centered_tab_scroll(focused, &desired_widths, available, gap).min(max_scroll);
         }
     } else {
         *tab_scroll = (*tab_scroll).min(max_scroll);
@@ -162,7 +182,7 @@ pub(crate) fn render_tab_bar(
     let mut first_visible = None;
     let mut last_visible = None;
     for (index, tab) in tabs.iter().enumerate().skip(*tab_scroll) {
-        let name = tab_label(tab, &snapshot.tabs, config);
+        let name = tab_label(tab, &snapshot.tabs, config, pane_count_of(tab));
         let desired = desired_widths[index];
         let remaining = tab_right.saturating_sub(x);
         let width = desired.min(remaining);
@@ -180,9 +200,9 @@ pub(crate) fn render_tab_bar(
                 base
             }
         } else if tab.custom_label {
-            Style::default().fg(palette.overlay1).bg(palette.surface0)
+            Style::default().fg(palette.overlay1).bg(unselected_bg)
         } else {
-            Style::default().fg(palette.overlay0).bg(palette.surface0)
+            Style::default().fg(palette.overlay0).bg(unselected_bg)
         };
         let padding = width.saturating_sub(display_width(&name));
         let left = padding / 2;
@@ -204,7 +224,7 @@ pub(crate) fn render_tab_bar(
         hits.tabs.push((rect, tab.tab_id.clone()));
         first_visible.get_or_insert(index);
         last_visible = Some(index);
-        x = x.saturating_add(width + 1);
+        x = x.saturating_add(width.saturating_add(gap));
         if width < desired {
             break;
         }
@@ -405,7 +425,37 @@ fn tab_drop_indicator_x(
     None
 }
 
-fn centered_tab_scroll(focused: usize, widths: &[u16], available: u16) -> usize {
+fn tab_padding(style: TabBarStyleConfig) -> u16 {
+    match style {
+        TabBarStyleConfig::Classic => 2,
+        TabBarStyleConfig::Quiet => 3,
+    }
+}
+
+fn tab_gap(style: TabBarStyleConfig) -> u16 {
+    match style {
+        TabBarStyleConfig::Classic => 1,
+        TabBarStyleConfig::Quiet => 2,
+    }
+}
+
+fn unselected_tab_bg(palette: &Palette, style: TabBarStyleConfig) -> Color {
+    if style == TabBarStyleConfig::Quiet && palette.surface0 == Color::Reset {
+        palette.active_row_bg
+    } else {
+        palette.surface0
+    }
+}
+
+fn tiled_pane_counts(snapshot: &ClientShellSnapshot) -> HashMap<&str, usize> {
+    let mut counts = HashMap::new();
+    for pane in &snapshot.panes {
+        *counts.entry(pane.tab_id.as_str()).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn centered_tab_scroll(focused: usize, widths: &[u16], available: u16, gap: u16) -> usize {
     let mut best = focused;
     let mut best_distance = u16::MAX;
     for start in 0..=focused {
@@ -415,7 +465,9 @@ fn centered_tab_scroll(focused: usize, widths: &[u16], available: u16) -> usize 
             .enumerate()
             .skip(start)
             .take(focused.saturating_sub(start))
-            .fold(0u16, |width, (_, tab)| width.saturating_add(tab + 1));
+            .fold(0u16, |width, (_, tab)| {
+                width.saturating_add(tab.saturating_add(gap))
+            });
         if before >= available {
             continue;
         }
@@ -430,7 +482,7 @@ fn centered_tab_scroll(focused: usize, widths: &[u16], available: u16) -> usize 
     best
 }
 
-fn max_tab_scroll(widths: &[u16], available: u16) -> usize {
+fn max_tab_scroll(widths: &[u16], available: u16, gap: u16) -> usize {
     let Some((&last, preceding)) = widths.split_last() else {
         return 0;
     };
@@ -439,7 +491,7 @@ fn max_tab_scroll(widths: &[u16], available: u16) -> usize {
     // Keep the longest fully visible suffix, not merely a sliver of the last tab.
     // An oversized last tab must still be reachable at the start of the strip.
     for width in preceding.iter().rev() {
-        let required = used + 1 + u32::from(*width);
+        let required = used + u32::from(gap) + u32::from(*width);
         if required > u32::from(available) {
             break;
         }
@@ -463,8 +515,18 @@ pub(in crate::client::shell) fn tab_display_label(
     }
 }
 
-fn tab_label(tab: &ClientShellTab, tabs: &[ClientShellTab], config: &ClientShellConfig) -> String {
+fn tab_label(
+    tab: &ClientShellTab,
+    tabs: &[ClientShellTab],
+    config: &ClientShellConfig,
+    pane_count: usize,
+) -> String {
     let label = tab_display_label(tab, tabs);
+    let label = if config.tab_bar_style == TabBarStyleConfig::Quiet && pane_count >= 2 {
+        format!("{label} ·{pane_count}")
+    } else {
+        label
+    };
     let label = if tab.zoomed {
         format!("{label} Z")
     } else {
@@ -483,7 +545,7 @@ fn tab_status_icon(tab: &ClientShellTab, config: &ClientShellConfig) -> Option<&
 
 #[cfg(test)]
 mod tests {
-    use super::max_tab_scroll;
+    use super::{centered_tab_scroll, max_tab_scroll};
 
     #[test]
     fn trailing_scroll_limit_accounts_for_full_widths_and_separators() {
@@ -498,10 +560,33 @@ mod tests {
             (&[8, u16::MAX][..], u16::MAX, 1),
         ] {
             assert_eq!(
-                max_tab_scroll(widths, available),
+                max_tab_scroll(widths, available, 1),
                 expected,
                 "widths={widths:?}, available={available}"
             );
         }
+    }
+
+    #[test]
+    fn trailing_scroll_limit_accounts_for_two_cell_gaps() {
+        for (widths, available, gap, expected) in [
+            (&[8, 13][..], 22, 2, 1),
+            (&[8, 13][..], 23, 2, 0),
+            (&[8, 13, 5][..], 20, 2, 1),
+            (&[8, 13, 5][..], 19, 2, 2),
+        ] {
+            assert_eq!(
+                max_tab_scroll(widths, available, gap),
+                expected,
+                "widths={widths:?}, available={available}, gap={gap}"
+            );
+        }
+    }
+
+    #[test]
+    fn centered_scroll_counts_two_cell_gaps() {
+        assert_eq!(centered_tab_scroll(2, &[10, 10, 10], 25, 2), 1);
+        assert_eq!(centered_tab_scroll(2, &[10, 10, 10], 25, 1), 1);
+        assert_eq!(centered_tab_scroll(2, &[10, 10, 10], 21, 2), 2);
     }
 }

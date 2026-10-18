@@ -27,6 +27,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) navigator_on_start: bool,
     pub(super) mobile_width_threshold: u16,
     pub(super) tab_bar_position: TabBarPositionConfig,
+    pub(super) tab_bar_style: TabBarStyleConfig,
     pub(super) hide_tab_bar_when_single_tab: bool,
     pub(super) tab_bar_status: bool,
     pub(super) tab_bar_workspace: bool,

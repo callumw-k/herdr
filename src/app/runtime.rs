@@ -256,6 +256,7 @@ mod tests {
             scrollbar_rect: None,
             borders: ratatui::widgets::Borders::NONE,
             is_focused: true,
+            stacked: false,
         });
         (app, pane_id)
     }

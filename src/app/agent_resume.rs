@@ -326,7 +326,10 @@ fn derived_pending_agent_resume_pane_infos(
     pane_outer_borders: bool,
 ) -> Vec<crate::layout::PaneInfo> {
     crate::ui::apply_pane_chrome(
-        tab.layout.panes(terminal_area),
+        tab.layout.panes_with_gap(
+            terminal_area,
+            crate::ui::pane_split_gap(pane_borders, pane_gaps),
+        ),
         pane_borders,
         pane_gaps,
         pane_outer_borders,
@@ -792,6 +795,7 @@ mod tests {
             scrollbar_rect: None,
             borders: ratatui::widgets::Borders::ALL,
             is_focused: true,
+            stacked: false,
         }];
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
@@ -911,6 +915,7 @@ mod tests {
             scrollbar_rect: None,
             borders: ratatui::widgets::Borders::ALL,
             is_focused: true,
+            stacked: false,
         }];
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
@@ -972,6 +977,7 @@ mod tests {
             scrollbar_rect: None,
             borders: ratatui::widgets::Borders::ALL,
             is_focused: true,
+            stacked: false,
         }];
         app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.workspaces = vec![workspace];
@@ -1027,5 +1033,45 @@ mod tests {
             Some("claude --resume 'session with '\\'' quote'")
         );
         assert_eq!(shell_command_from_argv(&[]), None);
+    }
+
+    #[tokio::test]
+    async fn quiet_pending_resume_pane_rects_match_rendered_panes() {
+        let mut state = crate::app::AppState::test_new();
+        state.pane_borders = crate::config::PaneBordersConfig::Quiet;
+        state.pane_gaps = true;
+        let mut workspace = crate::workspace::Workspace::test_new("test");
+        workspace.test_split(ratatui::layout::Direction::Horizontal);
+        state.workspaces = vec![workspace];
+        state.active = Some(0);
+        let area = Rect::new(0, 0, 100, 20);
+
+        let derived: Vec<_> = derived_pending_agent_resume_pane_infos(
+            &state.workspaces[0].tabs[0],
+            area,
+            state.pane_borders,
+            state.pane_gaps,
+            state.pane_outer_borders,
+        )
+        .iter()
+        .map(|info| (info.id, info.rect))
+        .collect();
+        let rendered: Vec<_> = crate::ui::compute_tab_surface_for(
+            &state,
+            &crate::terminal::TerminalRuntimeRegistry::new(),
+            Some(crate::ui::TabSurfaceTarget {
+                workspace_index: 0,
+                tab_index: 0,
+            }),
+            area,
+            false,
+            Default::default(),
+        )
+        .pane_infos
+        .iter()
+        .map(|info| (info.id, info.rect))
+        .collect();
+
+        assert_eq!(derived, rendered);
     }
 }

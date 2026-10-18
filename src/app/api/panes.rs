@@ -2442,8 +2442,9 @@ impl App {
         let tab = ws.tabs.get(tab_idx)?;
         let area = self.state.view.terminal_area;
         let focused_pane_id = self.public_pane_id(ws_idx, tab.layout.focused())?;
+        let gap = crate::ui::pane_split_gap(self.state.pane_borders, self.state.pane_gaps);
         let panes = crate::ui::apply_pane_chrome(
-            tab.layout.panes(area),
+            tab.layout.panes_with_gap(area, gap),
             self.state.pane_borders,
             self.state.pane_gaps,
             self.state.pane_outer_borders,
@@ -2459,7 +2460,7 @@ impl App {
         .collect();
         let splits = tab
             .layout
-            .splits(area)
+            .splits_with_gap(area, gap)
             .into_iter()
             .enumerate()
             .map(|(idx, split)| PaneLayoutSplit {

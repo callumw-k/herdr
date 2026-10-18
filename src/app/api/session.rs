@@ -128,4 +128,26 @@ mod tests {
             Some(snapshot.panes[0].pane_id.as_str())
         );
     }
+
+    #[test]
+    fn session_snapshot_panes_leave_out_floats() {
+        let mut app = app_with_two_tabs();
+        let ws = &mut app.state.workspaces[0];
+        let float_id = crate::layout::PaneId::alloc();
+        let number = ws.next_public_pane_number;
+        ws.register_new_pane_with_number(float_id, number);
+        ws.floats.push(
+            float_id,
+            crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+        );
+        app.state.ensure_test_terminals();
+
+        let snapshot = app.session_metadata_snapshot();
+        assert_eq!(snapshot.panes.len(), 2);
+        let float_public = app.public_pane_id(0, float_id).expect("float pane id");
+        assert!(snapshot
+            .panes
+            .iter()
+            .all(|pane| pane.pane_id != float_public));
+    }
 }

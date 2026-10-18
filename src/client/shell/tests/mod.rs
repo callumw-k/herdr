@@ -265,6 +265,7 @@ mod mobile;
 mod mouse_selection;
 mod navigator;
 mod popup_focus_projection;
+mod quiet_tab_row;
 mod startup_overlays;
 mod status_dot_style;
 mod subtabs;

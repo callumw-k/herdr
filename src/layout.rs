@@ -43,6 +43,15 @@ pub struct PaneInfo {
     /// Borders drawn around this pane after UI chrome is applied.
     pub borders: Borders,
     pub is_focused: bool,
+    /// Member of a stack holding two or more panes.
+    pub stacked: bool,
+}
+
+/// Cells left empty between the two children of every split.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PaneGap {
+    pub cols: u16,
+    pub rows: u16,
 }
 
 /// Info about a split boundary, used for mouse drag resize.
@@ -330,8 +339,13 @@ impl TileLayout {
 
     /// Compute rects for all panes given the available area.
     pub fn panes(&self, area: Rect) -> Vec<PaneInfo> {
+        self.panes_with_gap(area, PaneGap::default())
+    }
+
+    /// Compute pane rects with `gap` carved between the children of each split.
+    pub fn panes_with_gap(&self, area: Rect, gap: PaneGap) -> Vec<PaneInfo> {
         let mut result = Vec::new();
-        collect_panes(&self.root, area, self.focus, &mut result);
+        collect_panes(&self.root, area, self.focus, gap, &mut result);
         result
     }
 
@@ -344,24 +358,32 @@ impl TileLayout {
         target: PaneId,
         direction: Direction,
         ratio: f32,
+        gap: PaneGap,
     ) -> Option<(Vec<PaneInfo>, usize)> {
-        let mut panes = self.panes(area);
+        let mut panes = self.panes_with_gap(area, gap);
         let index = panes.iter().position(|info| info.id == target)?;
         let (first, second) = split_rect(panes[index].rect, direction, valid_split_ratio(ratio));
+        let (first, second) = gap_children(first, second, direction, gap);
         panes[index].rect = first;
         panes[index].inner_rect = first;
         let mut new_pane = panes[index].clone();
         new_pane.rect = second;
         new_pane.inner_rect = second;
         new_pane.is_focused = false;
+        new_pane.stacked = false;
         panes.insert(index + 1, new_pane);
         Some((panes, index + 1))
     }
 
     /// Collect all split boundaries for mouse drag resize.
     pub fn splits(&self, area: Rect) -> Vec<SplitBorder> {
+        self.splits_with_gap(area, PaneGap::default())
+    }
+
+    /// Collect split boundaries for a layout carved with `gap`.
+    pub fn splits_with_gap(&self, area: Rect, gap: PaneGap) -> Vec<SplitBorder> {
         let mut result = Vec::new();
-        collect_splits(&self.root, area, &mut Vec::new(), &mut result);
+        collect_splits(&self.root, area, gap, &mut Vec::new(), &mut result);
         result
     }
 
@@ -726,7 +748,7 @@ fn count_panes(node: &Node) -> usize {
     }
 }
 
-fn collect_panes(node: &Node, area: Rect, focus: PaneId, result: &mut Vec<PaneInfo>) {
+fn collect_panes(node: &Node, area: Rect, focus: PaneId, gap: PaneGap, result: &mut Vec<PaneInfo>) {
     match node {
         Node::Pane(id) => {
             result.push(PaneInfo {
@@ -737,6 +759,7 @@ fn collect_panes(node: &Node, area: Rect, focus: PaneId, result: &mut Vec<PaneIn
                 scrollbar_rect: None,
                 borders: Borders::NONE,
                 is_focused: *id == focus,
+                stacked: false,
             });
         }
         Node::Split {
@@ -746,10 +769,12 @@ fn collect_panes(node: &Node, area: Rect, focus: PaneId, result: &mut Vec<PaneIn
             second,
         } => {
             let (a, b) = split_rect(area, *direction, *ratio);
-            collect_panes(first, a, focus, result);
-            collect_panes(second, b, focus, result);
+            let (a, b) = gap_children(a, b, *direction, gap);
+            collect_panes(first, a, focus, gap, result);
+            collect_panes(second, b, focus, gap, result);
         }
         Node::Stack { panes, active } => {
+            let stacked = panes.len() > 1;
             for (rect, id) in stack_rects(area, panes.len(), *active)
                 .into_iter()
                 .zip(panes.iter())
@@ -761,13 +786,20 @@ fn collect_panes(node: &Node, area: Rect, focus: PaneId, result: &mut Vec<PaneIn
                     scrollbar_rect: None,
                     borders: Borders::NONE,
                     is_focused: *id == focus,
+                    stacked,
                 });
             }
         }
     }
 }
 
-fn collect_splits(node: &Node, area: Rect, path: &mut Vec<bool>, result: &mut Vec<SplitBorder>) {
+fn collect_splits(
+    node: &Node,
+    area: Rect,
+    gap: PaneGap,
+    path: &mut Vec<bool>,
+    result: &mut Vec<SplitBorder>,
+) {
     if let Node::Split {
         direction,
         ratio,
@@ -787,11 +819,12 @@ fn collect_splits(node: &Node, area: Rect, path: &mut Vec<bool>, result: &mut Ve
             area,
             path: path.clone(),
         });
+        let (a, b) = gap_children(a, b, *direction, gap);
         path.push(false);
-        collect_splits(first, a, path, result);
+        collect_splits(first, a, gap, path, result);
         path.pop();
         path.push(true);
-        collect_splits(second, b, path, result);
+        collect_splits(second, b, gap, path, result);
         path.pop();
     }
 }
@@ -1007,6 +1040,30 @@ fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
     }
 }
 
+fn gap_children(a: Rect, b: Rect, direction: Direction, gap: PaneGap) -> (Rect, Rect) {
+    fn give_up(size: u16, wanted: u16) -> u16 {
+        wanted.min(size.saturating_sub(1))
+    }
+    match direction {
+        Direction::Horizontal => {
+            let from_a = give_up(a.width, gap.cols - gap.cols / 2);
+            let from_b = give_up(b.width, gap.cols / 2);
+            (
+                Rect::new(a.x, a.y, a.width - from_a, a.height),
+                Rect::new(b.x + from_b, b.y, b.width - from_b, b.height),
+            )
+        }
+        Direction::Vertical => {
+            let from_a = give_up(a.height, gap.rows - gap.rows / 2);
+            let from_b = give_up(b.height, gap.rows / 2);
+            (
+                Rect::new(a.x, a.y, a.width, a.height - from_a),
+                Rect::new(b.x, b.y + from_b, b.width, b.height - from_b),
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1104,32 +1161,157 @@ mod tests {
     #[test]
     fn panes_after_split_predicts_the_real_split_geometry() {
         let area = Rect::new(3, 1, 121, 37);
-        let (mut layout, root) = TileLayout::new();
-        let right = layout.split_pane(root, Direction::Horizontal, 0.6).unwrap();
-        let bottom_left = layout.split_pane(root, Direction::Vertical, 0.4).unwrap();
-        for (target, direction, ratio) in [
-            (bottom_left, Direction::Horizontal, 0.5),
-            (right, Direction::Vertical, 0.3),
-            (root, Direction::Horizontal, f32::NAN),
-        ] {
-            let (predicted, new_index) = layout
-                .panes_after_split(area, target, direction, ratio)
-                .unwrap();
-            let new_id = layout.split_pane(target, direction, ratio).unwrap();
-            let actual: Vec<_> = layout
+        for gap in [PaneGap::default(), PaneGap { cols: 2, rows: 1 }] {
+            let (mut layout, root) = TileLayout::new();
+            let right = layout.split_pane(root, Direction::Horizontal, 0.6).unwrap();
+            let bottom_left = layout.split_pane(root, Direction::Vertical, 0.4).unwrap();
+            for (target, direction, ratio) in [
+                (bottom_left, Direction::Horizontal, 0.5),
+                (right, Direction::Vertical, 0.3),
+                (root, Direction::Horizontal, f32::NAN),
+            ] {
+                let (predicted, new_index) = layout
+                    .panes_after_split(area, target, direction, ratio, gap)
+                    .unwrap();
+                let new_id = layout.split_pane(target, direction, ratio).unwrap();
+                let actual: Vec<_> = layout
+                    .panes_with_gap(area, gap)
+                    .into_iter()
+                    .map(|info| info.rect)
+                    .collect();
+                assert_eq!(
+                    predicted.iter().map(|info| info.rect).collect::<Vec<_>>(),
+                    actual
+                );
+                assert_eq!(layout.pane_ids()[new_index], new_id);
+                assert!(!predicted[new_index].stacked);
+            }
+            assert!(layout
+                .panes_after_split(area, PaneId::alloc(), Direction::Vertical, 0.5, gap)
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn a_side_by_side_gap_takes_one_column_from_each_child() {
+        let area = Rect::new(0, 0, 100, 20);
+        let gap = PaneGap { cols: 2, rows: 1 };
+        let (left, right) = (PaneId::alloc(), PaneId::alloc());
+        let layout =
+            TileLayout::from_saved(split_node(left, Direction::Horizontal, right, 0.5), left);
+        let rects: Vec<_> = layout
+            .panes_with_gap(area, gap)
+            .into_iter()
+            .map(|info| info.rect)
+            .collect();
+        assert_eq!(rects, [Rect::new(0, 0, 49, 20), Rect::new(51, 0, 49, 20)]);
+        let splits = layout.splits_with_gap(area, gap);
+        assert_eq!(splits.len(), 1);
+        assert_eq!(splits[0].pos, 50);
+    }
+
+    #[test]
+    fn a_row_gap_takes_one_row_from_the_upper_child() {
+        let area = Rect::new(0, 0, 100, 20);
+        let (top, bottom) = (PaneId::alloc(), PaneId::alloc());
+        let layout = TileLayout::from_saved(split_node(top, Direction::Vertical, bottom, 0.5), top);
+        let rects: Vec<_> = layout
+            .panes_with_gap(area, PaneGap { cols: 2, rows: 1 })
+            .into_iter()
+            .map(|info| info.rect)
+            .collect();
+        assert_eq!(rects, [Rect::new(0, 0, 100, 9), Rect::new(0, 10, 100, 10)]);
+    }
+
+    #[test]
+    fn a_child_too_small_to_give_up_a_cell_keeps_its_size() {
+        let area = Rect::new(0, 0, 3, 20);
+        let (first, second) = (PaneId::alloc(), PaneId::alloc());
+        let layout = TileLayout::from_saved(
+            split_node(first, Direction::Horizontal, second, 0.34),
+            first,
+        );
+        let rects: Vec<_> = layout
+            .panes_with_gap(area, PaneGap { cols: 2, rows: 1 })
+            .into_iter()
+            .map(|info| info.rect)
+            .collect();
+        assert_eq!(rects[0].width, 1);
+        assert!(rects.iter().all(|rect| rect.width > 0));
+    }
+
+    #[test]
+    fn a_stack_inside_a_row_split_keeps_its_bars() {
+        let [a, b, c, d] = [
+            PaneId::alloc(),
+            PaneId::alloc(),
+            PaneId::alloc(),
+            PaneId::alloc(),
+        ];
+        let layout = TileLayout::from_saved(
+            Node::Split {
+                direction: Direction::Vertical,
+                ratio: 0.5,
+                first: Box::new(Node::Stack {
+                    panes: vec![a, b, c],
+                    active: 0,
+                }),
+                second: Box::new(Node::Pane(d)),
+            },
+            a,
+        );
+        let panes = layout.panes_with_gap(Rect::new(0, 0, 80, 20), PaneGap { cols: 2, rows: 1 });
+        let rect = |id: PaneId| {
+            panes
+                .iter()
+                .find(|info| info.id == id)
+                .map(|info| info.rect)
+                .expect("pane should exist")
+        };
+        assert_eq!(rect(b).height, 1);
+        assert_eq!(rect(c).height, 1);
+        assert_eq!(rect(c).y + rect(c).height, 9);
+        assert_eq!(rect(d).y, 10);
+        assert_eq!(rect(b).y, rect(a).y + rect(a).height);
+        assert_eq!(rect(c).y, rect(b).y + rect(b).height);
+    }
+
+    #[test]
+    fn stack_members_are_flagged_only_in_stacks_of_two_or_more() {
+        let area = Rect::new(0, 0, 80, 20);
+        let stacked = |root: Node, focus: PaneId| {
+            TileLayout::from_saved(root, focus)
                 .panes(area)
                 .into_iter()
-                .map(|info| info.rect)
-                .collect();
-            assert_eq!(
-                predicted.iter().map(|info| info.rect).collect::<Vec<_>>(),
-                actual
-            );
-            assert_eq!(layout.pane_ids()[new_index], new_id);
-        }
-        assert!(layout
-            .panes_after_split(area, PaneId::alloc(), Direction::Vertical, 0.5)
-            .is_none());
+                .map(|info| info.stacked)
+                .collect::<Vec<_>>()
+        };
+        let (a, b) = (PaneId::alloc(), PaneId::alloc());
+        assert_eq!(
+            stacked(
+                Node::Stack {
+                    panes: vec![a, b],
+                    active: 0
+                },
+                a
+            ),
+            [true, true]
+        );
+        assert_eq!(stacked(Node::Pane(a), a), [false]);
+        assert_eq!(
+            stacked(split_node(a, Direction::Horizontal, b, 0.5), a),
+            [false, false]
+        );
+        assert_eq!(
+            stacked(
+                Node::Stack {
+                    panes: vec![a],
+                    active: 0
+                },
+                a
+            ),
+            [false]
+        );
     }
 
     #[test]
@@ -1473,6 +1655,7 @@ mod tests {
             scrollbar_rect: None,
             borders: Borders::NONE,
             is_focused: true,
+            stacked: false,
         };
         let small_overlap_first = PaneInfo {
             id: pane(2),
@@ -1481,6 +1664,7 @@ mod tests {
             scrollbar_rect: None,
             borders: Borders::NONE,
             is_focused: false,
+            stacked: false,
         };
         let larger_overlap_second = PaneInfo {
             id: pane(3),
@@ -1489,6 +1673,7 @@ mod tests {
             scrollbar_rect: None,
             borders: Borders::NONE,
             is_focused: false,
+            stacked: false,
         };
         let panes = vec![focused.clone(), small_overlap_first, larger_overlap_second];
 
@@ -1533,7 +1718,7 @@ mod tests {
         let panes = ids(4);
         let root = arrange(Arrangement::Vertical, &panes, panes[0], area).expect("tree");
         let mut infos = Vec::new();
-        collect_panes(&root, area, panes[0], &mut infos);
+        collect_panes(&root, area, panes[0], PaneGap::default(), &mut infos);
         assert_eq!(infos.len(), 4);
         for info in &infos {
             assert_eq!(info.rect.width, 30);
@@ -1547,7 +1732,7 @@ mod tests {
         let panes = ids(4);
         let root = arrange(Arrangement::Horizontal, &panes, panes[0], area).expect("tree");
         let mut infos = Vec::new();
-        collect_panes(&root, area, panes[0], &mut infos);
+        collect_panes(&root, area, panes[0], PaneGap::default(), &mut infos);
         assert_eq!(infos.len(), 4);
         for info in &infos {
             assert_eq!(info.rect.width, 120);
@@ -1694,7 +1879,7 @@ mod tests {
         let panes = ids(3);
         let root = arrange(Arrangement::Stacked, &panes, panes[1], area).expect("tree");
         let mut infos = Vec::new();
-        collect_panes(&root, area, panes[1], &mut infos);
+        collect_panes(&root, area, panes[1], PaneGap::default(), &mut infos);
         assert_eq!(infos.len(), 3);
         assert!(infos[1].is_focused);
         assert!(!infos[0].is_focused);

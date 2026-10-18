@@ -932,4 +932,20 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn quiet_split_hit_rect_covers_the_gap() {
+        let split = crate::layout::SplitBorder {
+            pos: 50,
+            direction: ratatui::layout::Direction::Horizontal,
+            ratio: 0.5,
+            area: Rect::new(0, 0, 100, 20),
+            path: Vec::new(),
+        };
+        let frames = [Rect::new(0, 0, 49, 20), Rect::new(51, 0, 49, 20)];
+
+        let hit = split_hit_rect(&split, true, true, &frames).expect("split is hittable");
+
+        assert!(hit.x <= 49 && hit.right() > 50);
+    }
 }

@@ -68,7 +68,10 @@ pub(crate) fn compute_tab_surface_for(
             if tab.zoomed {
                 Vec::new()
             } else {
-                tab.layout.splits(area)
+                tab.layout.splits_with_gap(
+                    area,
+                    super::panes::pane_split_gap(app.pane_borders, app.pane_gaps),
+                )
             }
         })
         .unwrap_or_default();

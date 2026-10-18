@@ -297,6 +297,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Draw borders around split panes.
 # "auto" draws them only for split panes, "always" also frames a lone pane
 # (only while pane_outer_borders is enabled), "off" disables them.
+# "quiet" draws borders only for split panes, drops pane names except in
+# stacks of two or more, and spaces split panes apart.
 # Legacy booleans still parse: true = "auto", false = "off".
 # pane_borders = "auto"
 
@@ -321,6 +323,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 
 # Desktop tab row placement: "top" or "bottom".
 # tab_bar_position = "top"
+
+# Desktop tab row style: "classic" or "quiet".
+# "quiet" widens tab padding and gaps, fills every tab, shows pane counts,
+# and leaves a blank row between the tab row and the panes.
+# tab_bar_style = "classic"
 
 # Show each tab's agent status before its label in the desktop tab row.
 # tab_bar_status = false

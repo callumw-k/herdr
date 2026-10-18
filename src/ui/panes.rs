@@ -11,7 +11,7 @@ use super::text::truncate_end;
 use super::widgets::panel_contrast_fg;
 use crate::app::state::Palette;
 use crate::app::AppState;
-use crate::layout::{PaneId, PaneInfo};
+use crate::layout::{PaneGap, PaneId, PaneInfo};
 use crate::popup_size::resolve_popup_geometry;
 use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
 
@@ -71,8 +71,23 @@ fn terminal_inner_rect_for(pane_inner: Rect, scrollbar_gutter: bool) -> Rect {
     )
 }
 
+/// Blank cells carved between the children of each split. Every caller that
+/// lays a tab out for chrome passes this, so PTY sizes match the render path.
+pub(crate) fn pane_split_gap(
+    pane_borders: crate::config::PaneBordersConfig,
+    pane_gaps: bool,
+) -> PaneGap {
+    if pane_borders.is_quiet() && pane_gaps {
+        PaneGap { cols: 2, rows: 1 }
+    } else {
+        PaneGap::default()
+    }
+}
+
 fn zoomed_pane_borders(app: &AppState, multi_pane: bool) -> Borders {
-    if app.pane_borders.shows_borders(multi_pane) && app.pane_outer_borders {
+    if app.pane_borders.is_quiet() {
+        Borders::NONE
+    } else if app.pane_borders.shows_borders(multi_pane) && app.pane_outer_borders {
         Borders::ALL
     } else {
         Borders::NONE
@@ -104,6 +119,7 @@ pub(crate) fn new_pane_terminal_size(
     area: Rect,
     placement: NewPanePlacement,
 ) -> (u16, u16) {
+    let gap = pane_split_gap(app.pane_borders, app.pane_gaps);
     let laid_out = |panes: Vec<PaneInfo>, index: usize| {
         let infos = apply_pane_chrome(
             panes,
@@ -122,6 +138,7 @@ pub(crate) fn new_pane_terminal_size(
                 scrollbar_rect: None,
                 borders: Borders::NONE,
                 is_focused: true,
+                stacked: false,
             }],
             0,
         )
@@ -138,7 +155,7 @@ pub(crate) fn new_pane_terminal_size(
                     let multi_pane = tab.layout.pane_count() > 1;
                     return Some(pane_inner_rect(area, zoomed_pane_borders(app, multi_pane)));
                 }
-                let panes = tab.layout.panes(area);
+                let panes = tab.layout.panes_with_gap(area, gap);
                 let index = panes.iter().position(|info| info.id == pane)?;
                 Some(laid_out(panes, index))
             })
@@ -150,7 +167,10 @@ pub(crate) fn new_pane_terminal_size(
             direction,
             ratio,
         } => tab_for(ws_idx, target)
-            .and_then(|tab| tab.layout.panes_after_split(area, target, direction, ratio))
+            .and_then(|tab| {
+                tab.layout
+                    .panes_after_split(area, target, direction, ratio, gap)
+            })
             .map(|(panes, new_index)| laid_out(panes, new_index))
             .unwrap_or_else(alone),
     };
@@ -165,7 +185,7 @@ pub(crate) fn new_layout_terminal_sizes(
     layout: &crate::layout::TileLayout,
 ) -> Vec<(u16, u16)> {
     apply_pane_chrome(
-        layout.panes(area),
+        layout.panes_with_gap(area, pane_split_gap(app.pane_borders, app.pane_gaps)),
         app.pane_borders,
         app.pane_gaps,
         app.pane_outer_borders,
@@ -389,7 +409,8 @@ pub(super) fn resize_tab_panes(
         }
     } else {
         for info in apply_pane_chrome(
-            tab.layout.panes(area),
+            tab.layout
+                .panes_with_gap(area, pane_split_gap(app.pane_borders, app.pane_gaps)),
             app.pane_borders,
             app.pane_gaps,
             app.pane_outer_borders,
@@ -501,10 +522,12 @@ pub(super) fn compute_pane_infos_for_tab(
             scrollbar_rect,
             borders,
             is_focused: !floats.focused,
+            stacked: false,
         }]
     } else {
         let mut pane_infos = apply_pane_chrome(
-            tab.layout.panes(area),
+            tab.layout
+                .panes_with_gap(area, pane_split_gap(app.pane_borders, app.pane_gaps)),
             app.pane_borders,
             app.pane_gaps,
             app.pane_outer_borders,
@@ -725,7 +748,11 @@ fn render_float_chrome(
     if rect.is_empty() {
         return;
     }
-    let title = pane_label(app, ws, info.id);
+    let title = if app.pane_borders.is_quiet() && !info.stacked {
+        String::new()
+    } else {
+        pane_label(app, ws, info.id)
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Thick)
@@ -1144,7 +1171,10 @@ fn render_pane_border_titles(
     let buf = frame.buffer_mut();
     let area = buf.area;
     for info in pane_infos {
-        if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
+        if !info.borders.contains(Borders::TOP)
+            || info.rect.width <= 4
+            || (app.pane_borders.is_quiet() && !info.stacked)
+        {
             continue;
         }
         let Some(title) = ws
@@ -1436,6 +1466,7 @@ mod tests {
             scrollbar_rect: None,
             borders: Borders::ALL,
             is_focused: false,
+            stacked: false,
         }];
 
         let terminal_id = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
@@ -1495,6 +1526,212 @@ mod tests {
         assert_eq!(top.rect.y + top.rect.height, bottom.rect.y);
         assert!(!top.borders.contains(Borders::BOTTOM));
         assert!(bottom.borders.contains(Borders::TOP));
+    }
+
+    #[test]
+    fn quiet_lone_pane_has_no_borders() {
+        let workspace = Workspace::test_new("test");
+        let area = Rect::new(0, 0, 100, 20);
+
+        let infos = apply_pane_chrome(
+            workspace.tabs[0]
+                .layout
+                .panes_with_gap(area, pane_split_gap(PaneBordersConfig::Quiet, true)),
+            PaneBordersConfig::Quiet,
+            true,
+            true,
+        );
+
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].borders, Borders::NONE);
+        assert_eq!(pane_inner_rect(infos[0].rect, infos[0].borders), area);
+    }
+
+    #[test]
+    fn quiet_side_by_side_split_leaves_two_blank_columns() {
+        let mut workspace = Workspace::test_new("test");
+        let root = workspace.tabs[0].root_pane;
+        let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        workspace.tabs[0].layout.focus_pane(root);
+
+        let infos = apply_pane_chrome(
+            workspace.tabs[0].layout.panes_with_gap(
+                Rect::new(0, 0, 100, 20),
+                pane_split_gap(PaneBordersConfig::Quiet, true),
+            ),
+            PaneBordersConfig::Quiet,
+            true,
+            true,
+        );
+        let left = infos.iter().find(|info| info.id == root).unwrap();
+        let right = infos.iter().find(|info| info.id == right).unwrap();
+
+        assert_eq!(left.borders, Borders::ALL);
+        assert_eq!(right.borders, Borders::ALL);
+        assert_eq!(right.rect.x - (left.rect.x + left.rect.width), 2);
+    }
+
+    #[test]
+    fn quiet_row_split_leaves_one_blank_row() {
+        let mut workspace = Workspace::test_new("test");
+        let root = workspace.tabs[0].root_pane;
+        let bottom = workspace.test_split(ratatui::layout::Direction::Vertical);
+        workspace.tabs[0].layout.focus_pane(root);
+
+        let infos = apply_pane_chrome(
+            workspace.tabs[0].layout.panes_with_gap(
+                Rect::new(0, 0, 100, 20),
+                pane_split_gap(PaneBordersConfig::Quiet, true),
+            ),
+            PaneBordersConfig::Quiet,
+            true,
+            true,
+        );
+        let top = infos.iter().find(|info| info.id == root).unwrap();
+        let bottom = infos.iter().find(|info| info.id == bottom).unwrap();
+
+        assert_eq!(top.borders, Borders::ALL);
+        assert_eq!(bottom.borders, Borders::ALL);
+        assert_eq!(bottom.rect.y - (top.rect.y + top.rect.height), 1);
+    }
+
+    #[test]
+    fn quiet_without_pane_gaps_keeps_shared_dividers() {
+        assert_eq!(
+            pane_split_gap(PaneBordersConfig::Quiet, false),
+            PaneGap::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn quiet_zoomed_pane_has_no_borders() {
+        let mut app = AppState::test_new();
+        app.pane_borders = PaneBordersConfig::Quiet;
+        let mut workspace = Workspace::test_new("test");
+        workspace.test_split(ratatui::layout::Direction::Horizontal);
+        workspace.zoomed = true;
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+
+        let infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            Rect::new(0, 0, 100, 20),
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].borders, Borders::NONE);
+    }
+
+    #[tokio::test]
+    async fn quiet_new_split_pane_starts_at_its_rendered_size() {
+        let mut app = AppState::test_new();
+        app.pane_borders = PaneBordersConfig::Quiet;
+        app.pane_gaps = true;
+        app.pane_scrollbars = false;
+        let mut workspace = Workspace::test_new("test");
+        let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        let area = Rect::new(0, 0, 100, 20);
+
+        let predicted = new_pane_terminal_size(
+            &app,
+            area,
+            NewPanePlacement::Split {
+                ws_idx: 0,
+                target: right,
+                direction: ratatui::layout::Direction::Horizontal,
+                ratio: 0.5,
+            },
+        );
+        let new_pane = app.workspaces[0].tabs[0]
+            .layout
+            .split_pane(right, ratatui::layout::Direction::Horizontal, 0.5)
+            .unwrap();
+        let infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let info = infos.iter().find(|info| info.id == new_pane).unwrap();
+
+        assert_eq!(predicted, (info.inner_rect.height, info.inner_rect.width));
+    }
+
+    #[tokio::test]
+    async fn quiet_layout_terminal_sizes_match_rendered_panes() {
+        let mut app = AppState::test_new();
+        app.pane_borders = PaneBordersConfig::Quiet;
+        app.pane_gaps = true;
+        app.pane_scrollbars = false;
+        let mut workspace = Workspace::test_new("test");
+        workspace.test_split(ratatui::layout::Direction::Horizontal);
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        let area = Rect::new(0, 0, 100, 20);
+
+        let sizes = new_layout_terminal_sizes(&app, area, &app.workspaces[0].tabs[0].layout);
+        let rendered: Vec<_> = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        )
+        .iter()
+        .map(|info| (info.inner_rect.height, info.inner_rect.width))
+        .collect();
+
+        assert_eq!(sizes, rendered);
+    }
+
+    #[tokio::test]
+    async fn quiet_tab_resize_matches_rendered_panes() {
+        let mut app = AppState::test_new();
+        app.pane_borders = PaneBordersConfig::Quiet;
+        app.pane_gaps = true;
+        app.pane_scrollbars = false;
+        let mut workspace = Workspace::test_new("test");
+        let left = workspace.tabs[0].root_pane;
+        let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        for id in [left, right] {
+            workspace.tabs[0].runtimes.insert(
+                id,
+                TerminalRuntime::test_with_scrollback_bytes(10, 5, 1024, b"ready\n"),
+            );
+        }
+        app.workspaces = vec![workspace];
+        app.active = Some(0);
+        let area = Rect::new(0, 0, 100, 20);
+
+        resize_tab_panes(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            0,
+            0,
+            area,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        let infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+
+        for id in [left, right] {
+            let info = infos.iter().find(|info| info.id == id).unwrap();
+            assert_eq!(
+                app.workspaces[0].tabs[0].runtimes[&id].current_size(),
+                (info.inner_rect.height, info.inner_rect.width)
+            );
+        }
     }
 
     #[test]
@@ -1618,6 +1855,7 @@ mod tests {
             scrollbar_rect: None,
             borders: Borders::NONE,
             is_focused: true,
+            stacked: false,
         }];
         let auto = apply_pane_chrome(
             lone.clone(),
@@ -1649,6 +1887,7 @@ mod tests {
                 scrollbar_rect: None,
                 borders: Borders::TOP | Borders::LEFT,
                 is_focused: true,
+                stacked: false,
             },
             PaneInfo {
                 id: PaneId::from_raw(2),
@@ -1657,6 +1896,7 @@ mod tests {
                 scrollbar_rect: None,
                 borders: Borders::TOP | Borders::LEFT | Borders::RIGHT,
                 is_focused: false,
+                stacked: false,
             },
             PaneInfo {
                 id: PaneId::from_raw(3),
@@ -1665,6 +1905,7 @@ mod tests {
                 scrollbar_rect: None,
                 borders: Borders::TOP | Borders::LEFT | Borders::BOTTOM,
                 is_focused: false,
+                stacked: false,
             },
             PaneInfo {
                 id: PaneId::from_raw(4),
@@ -1673,6 +1914,7 @@ mod tests {
                 scrollbar_rect: None,
                 borders: Borders::ALL,
                 is_focused: false,
+                stacked: false,
             },
         ];
         let split_borders = vec![
@@ -1719,6 +1961,7 @@ mod tests {
                 scrollbar_rect: None,
                 borders: Borders::ALL,
                 is_focused: true,
+                stacked: false,
             },
             PaneInfo {
                 id: PaneId::from_raw(2),
@@ -1727,6 +1970,7 @@ mod tests {
                 scrollbar_rect: None,
                 borders: Borders::ALL,
                 is_focused: false,
+                stacked: false,
             },
         ];
         let ws = Workspace::test_new("test");
@@ -1814,6 +2058,133 @@ mod tests {
         (0..area.height)
             .map(|y| (0..area.width).map(|x| buffer[(x, y)].symbol()).collect())
             .collect()
+    }
+
+    fn label_pane(app: &mut AppState, ws: &Workspace, pane_id: crate::layout::PaneId, label: &str) {
+        let terminal_id = ws.pane_state(pane_id).unwrap().attached_terminal_id.clone();
+        let mut terminal_state = TerminalState::new(terminal_id.clone(), "/tmp".into());
+        terminal_state.set_manual_label(label.into());
+        app.terminals.insert(terminal_id, terminal_state);
+    }
+
+    fn render_split_rows(borders: PaneBordersConfig) -> Vec<String> {
+        let area = Rect::new(0, 0, 40, 10);
+        let mut app = AppState::test_new();
+        app.pane_borders = borders;
+        let mut ws = Workspace::test_new("test");
+        let left = ws.tabs[0].root_pane;
+        let right = ws.test_split(ratatui::layout::Direction::Horizontal);
+        label_pane(&mut app, &ws, left, "left");
+        label_pane(&mut app, &ws, right, "right");
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        let pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        render_stacked(&pane_infos, &app, area)
+    }
+
+    #[test]
+    fn quiet_split_panes_draw_no_titles() {
+        let rows = render_split_rows(PaneBordersConfig::Quiet);
+        assert!(!rows[0].contains("left"), "{:?}", rows[0]);
+        assert!(!rows[0].contains("right"), "{:?}", rows[0]);
+    }
+
+    #[test]
+    fn auto_split_panes_still_draw_titles() {
+        let rows = render_split_rows(PaneBordersConfig::Auto);
+        assert!(rows[0].contains("left"), "{:?}", rows[0]);
+        assert!(rows[0].contains("right"), "{:?}", rows[0]);
+    }
+
+    #[test]
+    fn quiet_open_stack_member_draws_its_title() {
+        let area = Rect::new(0, 0, 30, 10);
+        let mut app = AppState::test_new();
+        app.pane_borders = PaneBordersConfig::Quiet;
+        let mut ws = Workspace::test_new("test");
+        let first = ws.tabs[0].root_pane;
+        let second = ws.test_split(ratatui::layout::Direction::Horizontal);
+        let tab = &mut ws.tabs[0];
+        tab.layout.focus_pane(first);
+        tab.arrangement = crate::layout::Arrangement::Stacked;
+        tab.needs_reflow = true;
+        tab.reflow(area);
+        let infos = tab.layout.panes(area);
+        let pane_infos = apply_pane_chrome(infos, PaneBordersConfig::Quiet, true, true);
+        assert_eq!(pane_infos[1].id, second);
+        label_pane(&mut app, &ws, pane_infos[0].id, "nvim");
+        label_pane(&mut app, &ws, pane_infos[1].id, "tests");
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+
+        let rows = render_stacked(&pane_infos, &app, area);
+        assert!(rows[0].contains("nvim"), "{:?}", rows[0]);
+        assert!(rows[9].contains("tests"), "{:?}", rows[9]);
+    }
+
+    fn app_with_labelled_floats(labels: &[&str], area: Rect) -> (AppState, Vec<PaneInfo>) {
+        let mut app = AppState::test_new();
+        app.pane_borders = PaneBordersConfig::Quiet;
+        let mut ws = Workspace::test_new("test");
+        let mut ids = Vec::new();
+        for _ in labels {
+            let float_id = crate::layout::PaneId::alloc();
+            let number = ws.next_public_pane_number;
+            ws.register_new_pane_with_number(float_id, number);
+            ws.floats.push(
+                float_id,
+                crate::pane::PaneState::new(crate::terminal::TerminalId::alloc()),
+            );
+            ws.tabs[0].runtimes.insert(
+                float_id,
+                TerminalRuntime::test_with_scrollback_bytes(20, 6, 1024, b"floating\n"),
+            );
+            ids.push(float_id);
+        }
+        for (id, label) in ids.iter().zip(labels) {
+            label_pane(&mut app, &ws, *id, label);
+        }
+        app.workspaces = vec![ws];
+        app.active = Some(0);
+        crate::ui::reflow_tab_for_area(
+            &mut app,
+            crate::ui::TabSurfaceTarget {
+                workspace_index: 0,
+                tab_index: 0,
+            },
+            area,
+        );
+        let pane_infos = compute_pane_infos(
+            &app,
+            &TerminalRuntimeRegistry::new(),
+            area,
+            false,
+            crate::kitty_graphics::HostCellSize::default(),
+        );
+        (app, pane_infos)
+    }
+
+    #[tokio::test]
+    async fn quiet_lone_float_draws_no_title() {
+        let area = Rect::new(0, 0, 60, 20);
+        let (app, pane_infos) = app_with_labelled_floats(&["htop"], area);
+        let rows = render_stacked(&pane_infos, &app, area);
+        assert!(rows.iter().all(|row| !row.contains("htop")), "{rows:?}");
+    }
+
+    #[tokio::test]
+    async fn quiet_stacked_floats_draw_their_titles() {
+        let area = Rect::new(0, 0, 60, 20);
+        let (app, pane_infos) = app_with_labelled_floats(&["htop", "lazygit"], area);
+        let rows = render_stacked(&pane_infos, &app, area);
+        assert!(rows.iter().any(|row| row.contains("htop")), "{rows:?}");
+        assert!(rows.iter().any(|row| row.contains("lazygit")), "{rows:?}");
     }
 
     #[tokio::test]
@@ -2030,6 +2401,7 @@ mod tests {
             scrollbar_rect: None,
             borders: Borders::ALL,
             is_focused: false,
+            stacked: false,
         };
         terminal
             .draw(|frame| render_float_chrome(&app, &ws, frame, &info))
@@ -2068,6 +2440,7 @@ mod tests {
             scrollbar_rect: None,
             borders: Borders::NONE,
             is_focused: false,
+            stacked: false,
         };
         // Two folded members land on the row the collapsed bar already owns, so
         // that pane joins the count rather than keeping its own row.
@@ -2088,6 +2461,7 @@ mod tests {
             scrollbar_rect: None,
             borders: Borders::NONE,
             is_focused: false,
+            stacked: false,
         };
         let bars = stack_bars_for([pane(1, 0, 9), pane(2, 9, 0), pane(3, 9, 0)].iter());
 

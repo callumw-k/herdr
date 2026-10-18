@@ -326,6 +326,27 @@ pub(super) fn render_shell(
             state.tab_drag_insert_index,
             &mut hits,
         );
+        let blank_row = match config.tab_bar_position {
+            TabBarPositionConfig::Top => Rect::new(
+                layout.tab_bar.x,
+                layout.tab_bar.bottom(),
+                layout.tab_bar.width,
+                layout
+                    .pane_surface
+                    .y
+                    .saturating_sub(layout.tab_bar.bottom()),
+            ),
+            TabBarPositionConfig::Bottom => Rect::new(
+                layout.tab_bar.x,
+                layout.pane_surface.bottom(),
+                layout.tab_bar.width,
+                layout
+                    .tab_bar
+                    .y
+                    .saturating_sub(layout.pane_surface.bottom()),
+            ),
+        };
+        buffer.set_style(blank_row, Style::default().bg(config.palette.panel_bg));
     }
     if !config.mouse_capture {
         hits.sidebar_divider = Rect::default();

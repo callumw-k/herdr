@@ -956,12 +956,21 @@ pub enum TabBarPositionConfig {
     Bottom,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TabBarStyleConfig {
+    #[default]
+    Classic,
+    Quiet,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PaneBordersConfig {
     #[default]
     Auto,
     Always,
     Off,
+    Quiet,
 }
 
 impl PaneBordersConfig {
@@ -971,6 +980,10 @@ impl PaneBordersConfig {
 
     pub fn shows_borders(self, multi_pane: bool) -> bool {
         self.draws_borders() && (multi_pane || matches!(self, Self::Always))
+    }
+
+    pub fn is_quiet(self) -> bool {
+        matches!(self, Self::Quiet)
     }
 }
 
@@ -985,7 +998,7 @@ impl<'de> Deserialize<'de> for PaneBordersConfig {
             type Value = PaneBordersConfig;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("\"auto\", \"always\", \"off\", or a legacy boolean")
+                formatter.write_str("\"auto\", \"always\", \"off\", \"quiet\", or a legacy boolean")
             }
 
             fn visit_bool<E: de::Error>(self, value: bool) -> Result<Self::Value, E> {
@@ -1001,6 +1014,7 @@ impl<'de> Deserialize<'de> for PaneBordersConfig {
                     "auto" => Ok(PaneBordersConfig::Auto),
                     "always" => Ok(PaneBordersConfig::Always),
                     "off" => Ok(PaneBordersConfig::Off),
+                    "quiet" => Ok(PaneBordersConfig::Quiet),
                     other => Err(E::invalid_value(de::Unexpected::Str(other), &self)),
                 }
             }
@@ -1049,8 +1063,9 @@ pub struct UiConfig {
     /// Draw borders around split panes. auto draws them only for split panes,
     /// always also frames a lone pane (only while pane_outer_borders is
     /// enabled, since every edge of a lone pane is an outer edge), off
-    /// disables them. Legacy booleans map true to auto and false to off.
-    /// Default: auto.
+    /// disables them. quiet draws borders only for split panes, drops pane
+    /// names except in stacks of two or more, and spaces split panes apart.
+    /// Legacy booleans map true to auto and false to off. Default: auto.
     pub pane_borders: PaneBordersConfig,
     /// Width of floating panes, in cells or as a percentage like "60%".
     /// Unset uses half the terminal area.
@@ -1070,6 +1085,8 @@ pub struct UiConfig {
     pub hide_tab_bar_when_single_tab: bool,
     /// Desktop tab row placement. Default: top.
     pub tab_bar_position: TabBarPositionConfig,
+    /// Desktop tab row style. quiet widens tab padding and gaps, fills every tab, shows pane counts, and leaves a blank row between the tab row and the panes. Default: classic.
+    pub tab_bar_style: TabBarStyleConfig,
     /// Show each tab's agent status before its label in the desktop tab row. Default: false.
     pub tab_bar_status: bool,
     /// Show the focused workspace's name at the left of the desktop tab row. Default: false.
@@ -1328,6 +1345,7 @@ impl Default for UiConfig {
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
+            tab_bar_style: TabBarStyleConfig::Classic,
             tab_bar_status: false,
             tab_bar_workspace: false,
             tab_bar_right: Vec::new(),
@@ -1605,6 +1623,19 @@ status_indicators = "symbols"
     }
 
     #[test]
+    fn tab_bar_style_parses_and_defaults_to_classic() {
+        assert_eq!(
+            Config::default().ui.tab_bar_style,
+            TabBarStyleConfig::Classic
+        );
+
+        let quiet: Config = toml::from_str("[ui]\ntab_bar_style = \"quiet\"").unwrap();
+        assert_eq!(quiet.ui.tab_bar_style, TabBarStyleConfig::Quiet);
+
+        assert!(toml::from_str::<Config>("[ui]\ntab_bar_style = \"loud\"").is_err());
+    }
+
+    #[test]
     fn pane_borders_legacy_booleans_map_to_modes() {
         let enabled: Config = toml::from_str("[ui]\npane_borders = true").unwrap();
         assert_eq!(enabled.ui.pane_borders, PaneBordersConfig::Auto);
@@ -1618,15 +1649,23 @@ status_indicators = "symbols"
         let off: Config = toml::from_str("[ui]\npane_borders = \"off\"").unwrap();
         assert_eq!(off.ui.pane_borders, PaneBordersConfig::Off);
 
+        let quiet: Config = toml::from_str("[ui]\npane_borders = \"quiet\"").unwrap();
+        assert_eq!(quiet.ui.pane_borders, PaneBordersConfig::Quiet);
+        assert!(quiet.ui.pane_borders.draws_borders());
+        assert!(quiet.ui.pane_borders.shows_borders(true));
+        assert!(!quiet.ui.pane_borders.shows_borders(false));
+
         let unknown = toml::from_str::<Config>("[ui]\npane_borders = \"framed\"")
             .unwrap_err()
             .to_string();
-        assert!(unknown.contains("\"auto\", \"always\", \"off\", or a legacy boolean"));
+        assert!(unknown.contains("\"auto\", \"always\", \"off\", \"quiet\", or a legacy boolean"));
 
         let wrong_type = toml::from_str::<Config>("[ui]\npane_borders = 3")
             .unwrap_err()
             .to_string();
-        assert!(wrong_type.contains("\"auto\", \"always\", \"off\", or a legacy boolean"));
+        assert!(
+            wrong_type.contains("\"auto\", \"always\", \"off\", \"quiet\", or a legacy boolean")
+        );
     }
 
     #[test]
