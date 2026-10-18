@@ -1018,7 +1018,7 @@ impl ClientShellState {
                 super::aggregate_navigation::online_agent_targets(
                     &self.endpoints,
                     &self.active_endpoint_id,
-                    self.config.agent_panel_sort,
+                    self.config.agent_list_order(),
                 )
                 .get(*index)
                 .is_some()

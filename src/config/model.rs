@@ -404,6 +404,10 @@ pub struct KeysConfig {
     pub previous_tab: BindingConfig,
     /// Select the next tab. Default: "prefix+n".
     pub next_tab: BindingConfig,
+    /// Select the previous tab across all workspaces. Unset by default.
+    pub previous_tab_global: BindingConfig,
+    /// Select the next tab across all workspaces. Unset by default.
+    pub next_tab_global: BindingConfig,
     /// Move the active tab one position toward the front. Unset by default.
     pub move_tab_previous: BindingConfig,
     /// Move the active tab one position toward the back. Unset by default.
@@ -559,6 +563,10 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     next_tab: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    previous_tab_global: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_tab_global: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     move_tab_previous: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     move_tab_next: Option<BindingConfig>,
@@ -713,6 +721,8 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(rename_tab);
         apply_field!(previous_tab);
         apply_field!(next_tab);
+        apply_field!(previous_tab_global);
+        apply_field!(next_tab_global);
         apply_field!(move_tab_previous);
         apply_field!(move_tab_next);
         apply_field!(switch_tab);
@@ -826,6 +836,8 @@ impl KeysConfig {
         copy_effective_action_field!(rename_tab, keybinds.rename_tab);
         copy_effective_action_field!(previous_tab, keybinds.previous_tab);
         copy_effective_action_field!(next_tab, keybinds.next_tab);
+        copy_effective_action_field!(previous_tab_global, keybinds.previous_tab_global);
+        copy_effective_action_field!(next_tab_global, keybinds.next_tab_global);
         copy_effective_action_field!(move_tab_previous, keybinds.move_tab_previous);
         copy_effective_action_field!(move_tab_next, keybinds.move_tab_next);
         copy_effective_indexed_field!(switch_tab, keybinds.switch_tab);
@@ -1058,6 +1070,10 @@ pub struct UiConfig {
     pub hide_tab_bar_when_single_tab: bool,
     /// Desktop tab row placement. Default: top.
     pub tab_bar_position: TabBarPositionConfig,
+    /// Show each tab's agent status before its label in the desktop tab row. Default: false.
+    pub tab_bar_status: bool,
+    /// Show the focused workspace's name at the left of the desktop tab row. Default: false.
+    pub tab_bar_workspace: bool,
     /// Ordered entries shown at the right edge of the desktop tab row. Empty by default.
     pub tab_bar_right: Vec<TabBarRightEntryConfig>,
     /// Text inserted between visible right-side tab bar entries. Default: one space.
@@ -1067,6 +1083,8 @@ pub struct UiConfig {
     pub window_title: String,
     /// Agent sidebar ordering. Saved values are "spaces" or "priority". Default: "spaces".
     pub agent_panel_sort: AgentPanelSortConfig,
+    /// Limit the agent panel and agent jumps to the focused workspace. Default: false.
+    pub agent_panel_follows_workspace: bool,
     /// Retired setting that Herdr wrote before the workspace filter was removed.
     #[serde(rename = "agent_panel_scope")]
     _legacy_agent_panel_scope: Option<LegacyAgentPanelScopeConfig>,
@@ -1228,6 +1246,8 @@ impl Default for KeysConfig {
             rename_tab: BindingConfig::one("prefix+shift+t"),
             previous_tab: BindingConfig::one("prefix+p"),
             next_tab: BindingConfig::one("prefix+n"),
+            previous_tab_global: BindingConfig::empty(),
+            next_tab_global: BindingConfig::empty(),
             move_tab_previous: BindingConfig::empty(),
             move_tab_next: BindingConfig::empty(),
             switch_tab: BindingConfig::one("prefix+1..9"),
@@ -1308,10 +1328,13 @@ impl Default for UiConfig {
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
+            tab_bar_status: false,
+            tab_bar_workspace: false,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: " ".into(),
             window_title: super::window_title::default_window_title(),
             agent_panel_sort: AgentPanelSortConfig::Spaces,
+            agent_panel_follows_workspace: false,
             _legacy_agent_panel_scope: None,
             status_indicators: StatusIndicatorStyle::Dots,
             status_pulse: true,

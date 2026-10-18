@@ -79,6 +79,7 @@ impl ClientShellState {
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
             pulse_phase: self.pulse_phase,
+            workspace_flash_phase: self.workspace_flash_phase,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -190,6 +191,7 @@ impl ClientShellState {
         let layout = self.layout(cols, rows);
         self.dots_visible = layout.sidebar.width > 0
             || layout.mobile_header.height > 0
+            || (self.config.tab_bar_status && layout.tab_bar.height > 0)
             || matches!(self.overlay, Some(ClientShellOverlay::Navigator(_)));
         if self.last_tab_bar_width != Some(layout.tab_bar.width) {
             self.last_tab_bar_width = Some(layout.tab_bar.width);
@@ -239,6 +241,7 @@ impl ClientShellState {
                 dragged_workspace_id,
                 workspace_drop_indicator_row,
                 pulse_phase: self.pulse_phase,
+                workspace_flash_phase: self.workspace_flash_phase,
             },
         );
         self.hits.panes = surface
@@ -344,6 +347,7 @@ impl ClientShellState {
         if mode_bar == Some(layout.tab_bar) {
             self.hits.tabs.clear();
             self.hits.new_tab = Rect::default();
+            self.hits.tab_bar_workspace = Rect::default();
             self.hits.tab_scroll_left = Rect::default();
             self.hits.tab_scroll_right = Rect::default();
         }

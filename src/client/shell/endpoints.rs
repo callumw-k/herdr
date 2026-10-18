@@ -233,6 +233,10 @@ impl ClientShellState {
         };
         let generation = endpoint.snapshot_generation;
         let switching_endpoint = endpoint_id != &self.active_endpoint_id;
+        let had_focused_workspace = self
+            .snapshot
+            .as_deref()
+            .is_some_and(|current| current.focused_workspace_id.is_some());
         let agent_scroll = self.agent_scroll;
         if switching_endpoint {
             self.active_endpoint_id = endpoint_id.clone();
@@ -243,6 +247,9 @@ impl ClientShellState {
         if switching_endpoint {
             // The aggregate agent list belongs to the client, not one endpoint.
             self.agent_scroll = agent_scroll;
+            if had_focused_workspace {
+                self.start_workspace_flash();
+            }
         }
         if let Some((_, pane_id)) = pending_agent_reveal {
             self.reveal_endpoint_agent(endpoint_id, &pane_id, agent_body_height);

@@ -2086,6 +2086,15 @@ impl ClientShellState {
                     );
                     return;
                 }
+                if super::contains(self.hits.tab_bar_workspace, point) {
+                    self.record_binding(
+                        crate::input::KeybindMatch::Action(
+                            crate::input::KeybindAction::WorkspacePicker,
+                        ),
+                        outcome,
+                    );
+                    return;
+                }
                 if super::contains(self.hits.new_tab, point) {
                     self.record_binding(
                         crate::input::KeybindMatch::Action(crate::input::KeybindAction::NewTab),

@@ -31,7 +31,40 @@ impl AgentRow {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct AgentListOrder {
+    pub(super) sort: crate::config::AgentPanelSortConfig,
+    pub(super) follows_workspace: bool,
+}
+
+impl ClientShellConfig {
+    pub(super) fn agent_list_order(&self) -> AgentListOrder {
+        AgentListOrder {
+            sort: self.agent_panel_sort,
+            follows_workspace: self.agent_panel_follows_workspace,
+        }
+    }
+}
+
 pub(super) fn ordered_agent_pane_ids(
+    snapshot: &ClientShellSnapshot,
+    order: AgentListOrder,
+) -> Vec<String> {
+    let mut pane_ids = unscoped_agent_pane_ids(snapshot, order.sort);
+    if order.follows_workspace {
+        let focused = snapshot.focused_workspace_id.as_deref();
+        let scoped = snapshot
+            .agents
+            .iter()
+            .filter(|agent| Some(agent.workspace_id.as_str()) == focused)
+            .map(|agent| agent.pane_id.as_str())
+            .collect::<HashSet<_>>();
+        pane_ids.retain(|pane_id| scoped.contains(pane_id.as_str()));
+    }
+    pane_ids
+}
+
+pub(super) fn unscoped_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
     sort: crate::config::AgentPanelSortConfig,
 ) -> Vec<String> {
@@ -181,9 +214,11 @@ pub(super) fn render_agent_panel(
     pulse_phase: u8,
     hits: &mut ShellHitMap,
 ) {
+    let title = agent_panel_title(Some(snapshot), config);
     if !render_agent_panel_header(
         buffer,
         area,
+        &title,
         snapshot.agent_view_label.as_deref(),
         config,
         hits,
@@ -196,10 +231,7 @@ pub(super) fn render_agent_panel(
         buffer,
         area,
         &rows,
-        snapshot
-            .agent_view_label
-            .as_ref()
-            .map(|_| " no matching agents"),
+        agent_panel_empty_message(snapshot.agent_view_label.as_deref(), config),
         config,
         agent_scroll,
         hits,
@@ -214,6 +246,7 @@ pub(super) fn render_agent_panel(
 pub(super) fn render_agent_panel_header(
     buffer: &mut Buffer,
     area: Rect,
+    title: &str,
     agent_view_label: Option<&str>,
     config: &ClientShellConfig,
     hits: &mut ShellHitMap,
@@ -232,21 +265,22 @@ pub(super) fn render_agent_panel_header(
     if area.height < 2 {
         return false;
     }
-    put_text(
-        buffer,
-        area.x,
-        area.y + 1,
-        area.width,
-        " agents",
-        Style::default()
-            .fg(config.palette.overlay0)
-            .add_modifier(Modifier::BOLD),
-    );
     let sort_label = agent_view_label.unwrap_or(match config.agent_panel_sort {
         crate::config::AgentPanelSortConfig::Spaces => "grouped",
         crate::config::AgentPanelSortConfig::Priority => "priority",
     });
     let sort_width = display_width(sort_label).min(area.width as usize) as u16;
+    let title_width = area.width.saturating_sub(sort_width.saturating_add(1));
+    put_text(
+        buffer,
+        area.x,
+        area.y + 1,
+        title_width,
+        &crate::ui::truncate_end(title, title_width as usize),
+        Style::default()
+            .fg(config.palette.overlay0)
+            .add_modifier(Modifier::BOLD),
+    );
     let sort_rect = Rect::new(
         area.right().saturating_sub(sort_width),
         area.y + 1,
@@ -273,6 +307,40 @@ pub(super) fn render_agent_panel_header(
             .add_modifier(Modifier::BOLD),
     );
     true
+}
+
+pub(super) fn agent_panel_title(
+    snapshot: Option<&ClientShellSnapshot>,
+    config: &ClientShellConfig,
+) -> String {
+    let followed = config
+        .agent_panel_follows_workspace
+        .then_some(snapshot)
+        .flatten()
+        .and_then(|snapshot| {
+            let workspace_id = snapshot.focused_workspace_id.as_deref()?;
+            snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == workspace_id)
+        });
+    match followed {
+        Some(workspace) => format!(" {}", workspace.label),
+        None => " agents".to_owned(),
+    }
+}
+
+pub(super) fn agent_panel_empty_message(
+    agent_view_label: Option<&str>,
+    config: &ClientShellConfig,
+) -> Option<&'static str> {
+    if agent_view_label.is_some() {
+        Some(" no matching agents")
+    } else {
+        config
+            .agent_panel_follows_workspace
+            .then_some(" no agents here")
+    }
 }
 
 pub(super) fn render_agent_list<T>(
@@ -367,16 +435,18 @@ pub(super) fn agent_rows(
     // sort would scatter them.
     let grouped = config.agent_panel_sort == crate::config::AgentPanelSortConfig::Spaces
         && snapshot.agent_view_label.is_none();
+    let headers = grouped && !config.agent_panel_follows_workspace;
     let depths = if grouped {
         agent_tab_depths(snapshot)
     } else {
         HashMap::new()
     };
     let mut previous_workspace: Option<&str> = None;
-    let mut rows: Vec<AgentRow> = ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    let mut rows: Vec<AgentRow> = ordered_agent_pane_ids(snapshot, config.agent_list_order())
         .into_iter()
-        .filter_map(|pane_id| {
-            let mut row = agent_row(snapshot, &pane_id, config, machine)?;
+        .enumerate()
+        .filter_map(|(position, pane_id)| {
+            let mut row = agent_row(snapshot, &pane_id, config, machine, Some(position + 1))?;
             let agent = snapshot
                 .agents
                 .iter()
@@ -385,7 +455,7 @@ pub(super) fn agent_rows(
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.workspace_id == agent.workspace_id)?;
-            row.group = (grouped && previous_workspace != Some(workspace.workspace_id.as_str()))
+            row.group = (headers && previous_workspace != Some(workspace.workspace_id.as_str()))
                 .then(|| workspace.label.clone());
             row.group_gap = row.group.is_some() && previous_workspace.is_some();
             row.depth = depths.get(agent.tab_id.as_str()).copied().unwrap_or(0);
@@ -411,6 +481,7 @@ pub(super) fn agent_row(
     pane_id: &str,
     config: &ClientShellConfig,
     machine: Option<&str>,
+    index: Option<usize>,
 ) -> Option<AgentRow> {
     let agent = snapshot
         .agents
@@ -468,6 +539,7 @@ pub(super) fn agent_row(
             terminal_title_stripped: agent.terminal_title_stripped.as_deref(),
             canonical_agent,
             tokens: &tokens,
+            index,
         },
         state_text,
     );

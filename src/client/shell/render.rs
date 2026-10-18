@@ -249,6 +249,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) dragged_workspace_id: Option<&'a str>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
     pub(super) pulse_phase: u8,
+    pub(super) workspace_flash_phase: Option<u8>,
 }
 
 pub(super) fn render_shell(
@@ -318,6 +319,8 @@ pub(super) fn render_shell(
             layout.tab_bar,
             snapshot,
             config,
+            state.pulse_phase,
+            state.workspace_flash_phase,
             state.tab_scroll,
             state.reveal_focused_tab,
             state.tab_drag_insert_index,
@@ -338,6 +341,7 @@ pub(super) fn render_shell(
         hits.tab_scroll_left = Rect::default();
         hits.tab_scroll_right = Rect::default();
         hits.new_tab = Rect::default();
+        hits.tab_bar_workspace = Rect::default();
         hits.pane_splits.clear();
     }
     hits

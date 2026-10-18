@@ -662,6 +662,18 @@
           "description": "Select the next tab."
         },
         {
+          "key": "keys.previous_tab_global",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Select the previous tab across all workspaces, walking workspaces in sidebar order. Unset by default."
+        },
+        {
+          "key": "keys.next_tab_global",
+          "type": "keybinding",
+          "default": "unset",
+          "description": "Select the next tab across all workspaces, walking workspaces in sidebar order. Unset by default."
+        },
+        {
           "key": "keys.move_tab_previous",
           "type": "keybinding",
           "default": "unset",
@@ -1076,6 +1088,18 @@
           ]
         },
         {
+          "key": "ui.tab_bar_status",
+          "type": "boolean",
+          "default": "false",
+          "description": "Show each tab's agent status before its label in the desktop tab row."
+        },
+        {
+          "key": "ui.tab_bar_workspace",
+          "type": "boolean",
+          "default": "false",
+          "description": "Show the focused workspace's name at the left of the desktop tab row. It flashes when the focused workspace changes, and a click opens workspace navigation."
+        },
+        {
           "key": "ui.tab_bar_right",
           "type": "array",
           "default": "[]",
@@ -1109,6 +1133,12 @@
             "spaces",
             "priority"
           ]
+        },
+        {
+          "key": "ui.agent_panel_follows_workspace",
+          "type": "boolean",
+          "default": "false",
+          "description": "Limit the agent panel and agent jumps to the focused workspace. The navigator still lists every agent."
         },
         {
           "key": "ui.status_indicators",

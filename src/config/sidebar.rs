@@ -117,6 +117,7 @@ pub enum AgentSidebarToken {
     Activity,
     TerminalTitle,
     TerminalTitleStripped,
+    Index,
     Custom(String),
     Text(String),
     Styled {
@@ -133,6 +134,7 @@ pub enum SpaceSidebarToken {
     Workspace,
     Branch,
     GitStatus,
+    Index,
     Custom(String),
     Text(String),
     Styled {
@@ -233,7 +235,7 @@ impl RawSidebarToken {
                     return Err("sidebar tokens may contain at most 16 rules".into());
                 }
                 if !token.rules.is_empty()
-                    && matches!(token.token.as_str(), "state_icon" | "git_status")
+                    && matches!(token.token.as_str(), "state_icon" | "git_status" | "index")
                 {
                     return Err("sidebar rules require a text-valued token".into());
                 }
@@ -336,6 +338,7 @@ fn agent_token_name(token: &AgentSidebarToken) -> String {
         AgentSidebarToken::Activity => "activity".into(),
         AgentSidebarToken::TerminalTitle => "terminal_title".into(),
         AgentSidebarToken::TerminalTitleStripped => "terminal_title_stripped".into(),
+        AgentSidebarToken::Index => "index".into(),
         AgentSidebarToken::Custom(name) => format!("${name}"),
         AgentSidebarToken::Text(text) => text.clone(),
         AgentSidebarToken::Styled { token, .. } => agent_token_name(token),
@@ -357,6 +360,7 @@ fn space_token_name(token: &SpaceSidebarToken) -> String {
         SpaceSidebarToken::Workspace => "workspace".into(),
         SpaceSidebarToken::Branch => "branch".into(),
         SpaceSidebarToken::GitStatus => "git_status".into(),
+        SpaceSidebarToken::Index => "index".into(),
         SpaceSidebarToken::Custom(name) => format!("${name}"),
         SpaceSidebarToken::Text(text) => text.clone(),
         SpaceSidebarToken::Styled { token, .. } => space_token_name(token),
@@ -438,6 +442,7 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
                 ("activity", Self::Activity),
                 ("terminal_title", Self::TerminalTitle),
                 ("terminal_title_stripped", Self::TerminalTitleStripped),
+                ("index", Self::Index),
             ],
         )
         .map_err(serde::de::Error::custom)?;
@@ -511,6 +516,7 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
                 ("workspace", Self::Workspace),
                 ("branch", Self::Branch),
                 ("git_status", Self::GitStatus),
+                ("index", Self::Index),
             ],
         )
         .map_err(serde::de::Error::custom)?;
@@ -611,6 +617,19 @@ pub struct SidebarConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_token_parses_for_agents_and_spaces_and_rejects_rules() {
+        let agents: AgentsSidebarConfig = toml::from_str(r#"rows = [["index", "agent"]]"#).unwrap();
+        assert_eq!(agents.rows[0][0], AgentSidebarToken::Index);
+        let spaces: SpacesSidebarConfig =
+            toml::from_str(r#"rows = [["index", "workspace"]]"#).unwrap();
+        assert_eq!(spaces.rows[0][0], SpaceSidebarToken::Index);
+        assert!(toml::from_str::<AgentsSidebarConfig>(
+            r#"rows = [[{ token = "index", rules = [{ equals = "1" }] }]]"#
+        )
+        .is_err());
+    }
 
     #[test]
     fn defaults_match_the_compact_agent_and_existing_space_layouts() {

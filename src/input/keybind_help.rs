@@ -162,6 +162,14 @@ pub(crate) fn keybind_help_groups(
                 entry(binding_label(&keybinds.rename_tab), "rename tab"),
                 entry(binding_label(&keybinds.previous_tab), "previous tab"),
                 entry(binding_label(&keybinds.next_tab), "next tab"),
+                entry(
+                    binding_label(&keybinds.previous_tab_global),
+                    "previous tab, any workspace",
+                ),
+                entry(
+                    binding_label(&keybinds.next_tab_global),
+                    "next tab, any workspace",
+                ),
                 entry(binding_label(&keybinds.move_tab_previous), "move tab left"),
                 entry(binding_label(&keybinds.move_tab_next), "move tab right"),
                 entry(indexed_label(&keybinds.switch_tab), "switch tab 1-9"),

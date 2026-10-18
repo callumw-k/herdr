@@ -118,6 +118,7 @@ pub(crate) fn resolved_token_spans(
         .iter()
         .map(|token| match &token.kind {
             ResolvedTokenKind::StateIcon => display_width(state_icon.0),
+            ResolvedTokenKind::Index(index) => display_width(&index.to_string()),
             ResolvedTokenKind::Text(text) => display_width(text),
             ResolvedTokenKind::GitStatus { ahead, behind } => {
                 usize::from(*ahead > 0) * display_width(&format!("↑{ahead}"))
@@ -228,6 +229,10 @@ pub(crate) fn resolved_token_spans(
             ResolvedTokenKind::StateIcon => spans.push(Span::styled(
                 state_icon.0.to_string(),
                 apply_token_style(state_icon.1, token.style),
+            )),
+            ResolvedTokenKind::Index(index) => spans.push(Span::styled(
+                index.to_string(),
+                apply_token_style(secondary_style, token.style),
             )),
             ResolvedTokenKind::StateText(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),

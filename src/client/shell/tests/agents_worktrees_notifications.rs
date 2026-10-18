@@ -1905,3 +1905,148 @@ fn grouped_sort_labels_each_workspace_once_and_priority_sort_drops_the_labels() 
         .iter()
         .all(|row| row.group.is_none()));
 }
+
+#[test]
+fn agent_list_follows_focused_workspace_when_enabled() {
+    let projected = two_workspace_snapshot();
+    let global = super::agent_sidebar::AgentListOrder {
+        sort: crate::config::AgentPanelSortConfig::Spaces,
+        follows_workspace: false,
+    };
+    let following = super::agent_sidebar::AgentListOrder {
+        follows_workspace: true,
+        ..global
+    };
+
+    assert_eq!(
+        super::agent_sidebar::ordered_agent_pane_ids(&projected, global),
+        ["pane_1", "pane_2", "pane_3"]
+    );
+    assert_eq!(
+        super::agent_sidebar::ordered_agent_pane_ids(&projected, following),
+        ["pane_1", "pane_2"]
+    );
+
+    let mut viewed = projected.clone();
+    viewed.agent_view_label = Some("review".into());
+    viewed.agent_order = vec!["pane_2".into(), "pane_3".into(), "pane_1".into()];
+    assert_eq!(
+        super::agent_sidebar::ordered_agent_pane_ids(&viewed, following),
+        ["pane_2", "pane_1"]
+    );
+
+    let mut unfocused = projected;
+    unfocused.focused_workspace_id = None;
+    assert!(super::agent_sidebar::ordered_agent_pane_ids(&unfocused, following).is_empty());
+}
+
+#[test]
+fn following_workspace_keeps_tab_tree_and_drops_headers() {
+    let mut projected = two_workspace_snapshot();
+    let mut child_tab = projected.tabs[0].clone();
+    child_tab.tab_id = "tab_child".into();
+    child_tab.number = 2;
+    child_tab.label = "child".into();
+    child_tab.focused = false;
+    child_tab.parent_tab_id = Some("tab_1".into());
+    projected.tabs.insert(1, child_tab);
+    for pane in projected
+        .panes
+        .iter_mut()
+        .filter(|pane| pane.pane_id == "pane_2")
+    {
+        pane.tab_id = "tab_child".into();
+    }
+    for agent in projected
+        .agents
+        .iter_mut()
+        .filter(|agent| agent.pane_id == "pane_2")
+    {
+        agent.tab_id = "tab_child".into();
+    }
+    let mut config = Config::default();
+    config.ui.agent_panel_follows_workspace = true;
+    let shell = ClientShellConfig::from_config(&config);
+
+    let rows = super::agent_sidebar::agent_rows(&projected, &shell, None);
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row.pane_id.as_str(), row.depth, row.group.is_some()))
+            .collect::<Vec<_>>(),
+        [("pane_1", 0, false), ("pane_2", 1, false)]
+    );
+}
+
+#[test]
+fn agent_jumps_stay_in_focused_workspace_when_enabled() {
+    let mut config = Config::default();
+    config.ui.agent_panel_follows_workspace = true;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(two_workspace_snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 30).expect("following agent sidebar");
+    assert_eq!(
+        state
+            .hits
+            .agents
+            .iter()
+            .map(|(_, pane_id)| pane_id.as_str())
+            .collect::<Vec<_>>(),
+        ["pane_1", "pane_2"]
+    );
+
+    let mut focus = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::FocusAgent(1)),
+        &mut focus,
+    );
+    assert_eq!(focused_pane_request(&focus), Some("pane_2"));
+
+    let mut next = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::NextAgent),
+        &mut next,
+    );
+    assert_eq!(focused_pane_request(&next), Some("pane_2"));
+
+    let mut out_of_range = ClientShellInput::default();
+    state.record_binding(
+        crate::input::KeybindMatch::Action(crate::input::KeybindAction::FocusAgent(2)),
+        &mut out_of_range,
+    );
+    assert_eq!(focused_pane_request(&out_of_range), None);
+}
+
+#[test]
+fn index_tokens_number_rows_in_jump_order() {
+    let mut config = Config::default();
+    config.ui.agent_panel_follows_workspace = true;
+    config.ui.sidebar.agents.rows = vec![vec![
+        crate::config::AgentSidebarToken::Index,
+        crate::config::AgentSidebarToken::Agent,
+    ]];
+    config.ui.sidebar.spaces.rows = vec![vec![
+        crate::config::SpaceSidebarToken::Index,
+        crate::config::SpaceSidebarToken::Workspace,
+    ]];
+    let mut shell = ClientShellConfig::from_config(&config);
+    shell.mobile_width_threshold = 0;
+    let mut state = ClientShellState::new(shell);
+    state.set_snapshot(Box::new(two_workspace_snapshot()));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 30).expect("indexed sidebar");
+    let text = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("1 here one"), "{text}");
+    assert!(text.contains("2 here two"), "{text}");
+    assert!(text.contains("1 client-shell"), "{text}");
+    assert!(text.contains("2 other"), "{text}");
+}

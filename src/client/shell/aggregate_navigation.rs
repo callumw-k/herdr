@@ -56,6 +56,22 @@ pub(super) struct AggregateAgentTarget {
 pub(super) fn aggregate_agent_rows<'a>(
     endpoints: &'a [ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
+    order: super::agent_sidebar::AgentListOrder,
+) -> Vec<AggregateAgentRow<'a>> {
+    let mut rows = unscoped_aggregate_agent_rows(endpoints, active_endpoint_id, order.sort);
+    if order.follows_workspace {
+        rows.retain(|row| {
+            row.endpoint.endpoint_id == active_endpoint_id
+                && Some(row.agent.workspace_id.as_str())
+                    == row.endpoint.snapshot.focused_workspace_id.as_deref()
+        });
+    }
+    rows
+}
+
+fn unscoped_aggregate_agent_rows<'a>(
+    endpoints: &'a [ClientShellEndpoint],
+    active_endpoint_id: &ClientEndpointId,
     sort: crate::config::AgentPanelSortConfig,
 ) -> Vec<AggregateAgentRow<'a>> {
     let active_index = endpoints
@@ -136,7 +152,7 @@ pub(super) fn aggregate_agent_rows<'a>(
 
     let mut rows = cached_endpoint_snapshots(endpoints)
         .flat_map(|endpoint| {
-            super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, sort)
+            super::agent_sidebar::unscoped_agent_pane_ids(endpoint.snapshot, sort)
                 .into_iter()
                 .filter_map(move |pane_id| {
                     let agent = endpoint
@@ -285,9 +301,9 @@ fn pane_label(
 pub(super) fn online_agent_targets(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
-    sort: crate::config::AgentPanelSortConfig,
+    order: super::agent_sidebar::AgentListOrder,
 ) -> Vec<AggregateAgentTarget> {
-    aggregate_agent_rows(endpoints, active_endpoint_id, sort)
+    aggregate_agent_rows(endpoints, active_endpoint_id, order)
         .into_iter()
         .filter(|row| !row.endpoint.stale())
         .map(|row| AggregateAgentTarget {

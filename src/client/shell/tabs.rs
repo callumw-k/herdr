@@ -3,12 +3,75 @@ use super::*;
 const TAB_SCROLL_BUTTON_WIDTH: u16 = 3;
 const MIN_TAB_STRIP_WIDTH: u16 =
     MIN_TAB_WIDTH + NEW_TAB_WIDTH + TAB_SCROLL_BUTTON_WIDTH.saturating_mul(2);
+const MAX_TAB_BAR_WORKSPACE_WIDTH: usize = 24;
+
+fn render_tab_bar_workspace(
+    buffer: &mut Buffer,
+    content: Rect,
+    snapshot: &ClientShellSnapshot,
+    config: &ClientShellConfig,
+    flash_phase: Option<u8>,
+    hits: &mut ShellHitMap,
+) -> Rect {
+    if !config.tab_bar_workspace {
+        return content;
+    }
+    let Some(workspace) = snapshot.focused_workspace_id.as_deref().and_then(|id| {
+        snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == id)
+    }) else {
+        return content;
+    };
+    let label = crate::ui::truncate_end(&workspace.label, MAX_TAB_BAR_WORKSPACE_WIDTH);
+    let label_width = display_width(&label);
+    let segment_width = label_width.saturating_add(4);
+    if content.width.saturating_sub(segment_width) < MIN_TAB_STRIP_WIDTH {
+        return content;
+    }
+    let palette = &config.palette;
+    let label_style = match flash_phase {
+        Some(0) => Style::default()
+            .fg(panel_contrast_fg(palette))
+            .bg(palette.accent),
+        Some(_) => Style::default().fg(palette.accent).bg(palette.surface0),
+        None => Style::default().fg(palette.accent).bg(palette.panel_bg),
+    }
+    .add_modifier(Modifier::BOLD);
+    put_text(
+        buffer,
+        content.x,
+        content.y,
+        label_width.saturating_add(2),
+        &format!(" {label} "),
+        label_style,
+    );
+    put_text(
+        buffer,
+        content.x.saturating_add(label_width).saturating_add(2),
+        content.y,
+        2,
+        "│ ",
+        Style::default()
+            .fg(palette.surface_dim)
+            .bg(palette.panel_bg),
+    );
+    hits.tab_bar_workspace = Rect::new(content.x, content.y, label_width.saturating_add(2), 1);
+    Rect {
+        x: content.x.saturating_add(segment_width),
+        width: content.width.saturating_sub(segment_width),
+        ..content
+    }
+}
 
 pub(crate) fn render_tab_bar(
     buffer: &mut Buffer,
     area: Rect,
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
+    pulse_phase: u8,
+    workspace_flash_phase: Option<u8>,
     tab_scroll: &mut usize,
     reveal_focused_tab: &mut bool,
     tab_drag_insert_index: Option<usize>,
@@ -24,11 +87,18 @@ pub(crate) fn render_tab_bar(
     let desired_widths = tabs
         .iter()
         .map(|tab| {
-            let label = tab_label(tab, &snapshot.tabs);
+            let label = tab_label(tab, &snapshot.tabs, config);
             display_width(&label).saturating_add(4).max(MIN_TAB_WIDTH)
         })
         .collect::<Vec<_>>();
-    let content = tab_bar_content_area(snapshot, area);
+    let content = render_tab_bar_workspace(
+        buffer,
+        tab_bar_content_area(snapshot, area),
+        snapshot,
+        config,
+        workspace_flash_phase,
+        hits,
+    );
     let mouse_chrome = config.mouse_capture;
     let new_tab_width = if mouse_chrome { NEW_TAB_WIDTH } else { 0 };
     let desired_total = desired_widths
@@ -92,7 +162,7 @@ pub(crate) fn render_tab_bar(
     let mut first_visible = None;
     let mut last_visible = None;
     for (index, tab) in tabs.iter().enumerate().skip(*tab_scroll) {
-        let name = tab_label(tab, &snapshot.tabs);
+        let name = tab_label(tab, &snapshot.tabs, config);
         let desired = desired_widths[index];
         let remaining = tab_right.saturating_sub(x);
         let width = desired.min(remaining);
@@ -123,6 +193,14 @@ pub(crate) fn render_tab_bar(
             right_padding = padding.saturating_sub(left) as usize,
         );
         put_text(buffer, rect.x, rect.y, rect.width, &text, style);
+        if let Some(icon) = tab_status_icon(tab, config) {
+            let icon_x = rect.x.saturating_add(left);
+            let icon_width = display_width(icon).min(rect.right().saturating_sub(icon_x));
+            buffer.set_style(
+                Rect::new(icon_x, rect.y, icon_width, 1),
+                status_dot_style(tab.agent_status, palette, pulse_phase),
+            );
+        }
         hits.tabs.push((rect, tab.tab_id.clone()));
         first_visible.get_or_insert(index);
         last_visible = Some(index);
@@ -385,13 +463,22 @@ pub(in crate::client::shell) fn tab_display_label(
     }
 }
 
-fn tab_label(tab: &ClientShellTab, tabs: &[ClientShellTab]) -> String {
+fn tab_label(tab: &ClientShellTab, tabs: &[ClientShellTab], config: &ClientShellConfig) -> String {
     let label = tab_display_label(tab, tabs);
-    if tab.zoomed {
+    let label = if tab.zoomed {
         format!("{label} Z")
     } else {
         label
+    };
+    match tab_status_icon(tab, config) {
+        Some(icon) => format!("{icon} {label}"),
+        None => label,
     }
+}
+
+fn tab_status_icon(tab: &ClientShellTab, config: &ClientShellConfig) -> Option<&'static str> {
+    (config.tab_bar_status && tab.agent_status != crate::api::schema::AgentStatus::Unknown)
+        .then(|| status_icon(tab.agent_status, config.status_indicators))
 }
 
 #[cfg(test)]

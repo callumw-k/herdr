@@ -375,6 +375,8 @@ pub struct Keybinds {
     pub rename_tab: ActionKeybinds,
     pub previous_tab: ActionKeybinds,
     pub next_tab: ActionKeybinds,
+    pub previous_tab_global: ActionKeybinds,
+    pub next_tab_global: ActionKeybinds,
     pub move_tab_previous: ActionKeybinds,
     pub move_tab_next: ActionKeybinds,
     pub switch_tab: Vec<IndexedKeybind>,
@@ -566,6 +568,8 @@ impl Config {
             rename_tab: empty_action!(),
             previous_tab: empty_action!(),
             next_tab: empty_action!(),
+            previous_tab_global: empty_action!(),
+            next_tab_global: empty_action!(),
             move_tab_previous: empty_action!(),
             move_tab_next: empty_action!(),
             switch_tab: Vec::new(),
@@ -712,6 +716,8 @@ impl Config {
             apply_action!(keybinds.rename_tab, rename_tab, source);
             apply_action!(keybinds.previous_tab, previous_tab, source);
             apply_action!(keybinds.next_tab, next_tab, source);
+            apply_action!(keybinds.previous_tab_global, previous_tab_global, source);
+            apply_action!(keybinds.next_tab_global, next_tab_global, source);
             apply_action!(keybinds.move_tab_previous, move_tab_previous, source);
             apply_action!(keybinds.move_tab_next, move_tab_next, source);
             apply_indexed!(
@@ -1685,6 +1691,21 @@ next_tab = "prefix+n"
                 KeyModifiers::empty()
             ))]
         );
+    }
+
+    #[test]
+    fn global_tab_cycle_bindings_parse() {
+        let config: Config = toml::from_str(
+            r#"
+[keys]
+next_tab_global = "alt+shift+j"
+previous_tab_global = "alt+shift+k"
+"#,
+        )
+        .unwrap();
+        let kb = config.keybinds();
+        assert!(!binding_triggers(&kb.next_tab_global).is_empty());
+        assert!(!binding_triggers(&kb.previous_tab_global).is_empty());
     }
 
     #[test]

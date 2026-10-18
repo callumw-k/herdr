@@ -28,9 +28,12 @@ pub(crate) struct ClientShellConfig {
     pub(super) mobile_width_threshold: u16,
     pub(super) tab_bar_position: TabBarPositionConfig,
     pub(super) hide_tab_bar_when_single_tab: bool,
+    pub(super) tab_bar_status: bool,
+    pub(super) tab_bar_workspace: bool,
     pub(super) spaces: SpacesSidebarConfig,
     pub(super) agents: crate::config::AgentsSidebarConfig,
     pub(super) agent_panel_sort: crate::config::AgentPanelSortConfig,
+    pub(super) agent_panel_follows_workspace: bool,
     pub(super) status_indicators: crate::config::StatusIndicatorStyle,
     pub(super) status_pulse: bool,
     pub(super) sound_enabled: bool,
@@ -113,6 +116,7 @@ pub(super) struct ShellHitMap {
     pub(super) sidebar_toggle: Rect,
     pub(super) new_workspace: Rect,
     pub(super) new_tab: Rect,
+    pub(super) tab_bar_workspace: Rect,
     pub(super) tab_scroll_left: Rect,
     pub(super) tab_scroll_right: Rect,
     pub(super) mobile_switch: Rect,
@@ -999,6 +1003,8 @@ pub(crate) struct ClientShellState {
     pub(super) copy_feedback_deadline: Option<std::time::Instant>,
     pub(super) pulse_phase: u8,
     pulse_started: Option<std::time::Instant>,
+    pub(super) workspace_flash_phase: Option<u8>,
+    pub(super) workspace_flash_started: Option<std::time::Instant>,
     /// Set by `compose`: whether the last frame drew any status dots.
     pub(super) dots_visible: bool,
     pub(super) host_mouse_pixels: Option<crate::input::mouse::HostPixels>,
@@ -1024,6 +1030,15 @@ pub(crate) struct ClientShellState {
     pub(super) endpoint_error: Option<String>,
     pub(super) endpoint_error_deadline: Option<std::time::Instant>,
     pub(super) dismissed_product_announcement: Option<(String, String)>,
+}
+
+fn focused_workspace_label(snapshot: &ClientShellSnapshot) -> Option<&str> {
+    let focused = snapshot.focused_workspace_id.as_deref()?;
+    snapshot
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_id == focused)
+        .map(|workspace| workspace.label.as_str())
 }
 
 pub(super) fn product_announcement_state(
@@ -1178,6 +1193,8 @@ impl ClientShellState {
             copy_feedback_deadline: None,
             pulse_phase: 0,
             pulse_started: None,
+            workspace_flash_phase: None,
+            workspace_flash_started: None,
             dots_visible: false,
             host_mouse_pixels: None,
             input_leases: ClientInputLeases::default(),
@@ -1483,6 +1500,8 @@ impl ClientShellState {
                 self.mode = ClientShellMode::Terminal;
             }
         }
+        let tab_bar_status = self.config.tab_bar_status;
+        let tab_bar_workspace = self.config.tab_bar_workspace;
         let tab_layout_changed = self.snapshot.as_deref().is_none_or(|current| {
             current.tabs.len() != snapshot.tabs.len()
                 || current
@@ -1494,15 +1513,23 @@ impl ClientShellState {
                             || left.workspace_id != right.workspace_id
                             || left.label != right.label
                             || left.zoomed != right.zoomed
+                            || (tab_bar_status
+                                && (left.agent_status == crate::api::schema::AgentStatus::Unknown)
+                                    != (right.agent_status
+                                        == crate::api::schema::AgentStatus::Unknown))
                     })
                 || render::tab_bar_status_width(current) != render::tab_bar_status_width(&snapshot)
+                || (tab_bar_workspace
+                    && focused_workspace_label(current) != focused_workspace_label(&snapshot))
         });
-        if self
+        let previous_workspace = self
             .snapshot
             .as_deref()
-            .and_then(|current| current.focused_workspace_id.as_deref())
-            != snapshot.focused_workspace_id.as_deref()
-        {
+            .and_then(|current| current.focused_workspace_id.as_deref());
+        if previous_workspace != snapshot.focused_workspace_id.as_deref() {
+            if previous_workspace.is_some() {
+                self.start_workspace_flash();
+            }
             self.reveal_focused_workspace = true;
         }
         if tab_layout_changed
@@ -1939,6 +1966,26 @@ impl ClientShellState {
         let elapsed = now.saturating_duration_since(started).as_millis() as u64;
         let phase = ((elapsed / super::PULSE_PHASE_MS) % u64::from(super::PULSE_PHASES)) as u8;
         std::mem::replace(&mut self.pulse_phase, phase) != phase
+    }
+
+    pub(super) fn start_workspace_flash(&mut self) {
+        if self.config.tab_bar_workspace && self.config.status_pulse {
+            self.workspace_flash_started = Some(std::time::Instant::now());
+            self.workspace_flash_phase = Some(0);
+        }
+    }
+
+    pub(crate) fn tick_workspace_flash(&mut self, now: std::time::Instant) -> bool {
+        let Some(started) = self.workspace_flash_started else {
+            return false;
+        };
+        let elapsed = now.saturating_duration_since(started).as_millis() as u64;
+        let step = elapsed / super::PULSE_PHASE_MS;
+        let phase = (step < 2).then_some(step as u8);
+        if phase.is_none() {
+            self.workspace_flash_started = None;
+        }
+        std::mem::replace(&mut self.workspace_flash_phase, phase) != phase
     }
 
     pub(crate) fn tick_navigator(

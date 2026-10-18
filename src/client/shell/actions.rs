@@ -953,7 +953,7 @@ impl ClientShellState {
             KeybindAction::FocusAgent(index) => {
                 let agents = super::agent_sidebar::ordered_agent_pane_ids(
                     snapshot,
-                    self.config.agent_panel_sort,
+                    self.config.agent_list_order(),
                 );
                 Some(Method::PaneFocus(PaneTarget {
                     pane_id: agents.get(index)?.clone(),
@@ -962,7 +962,7 @@ impl ClientShellState {
             KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
                 let agents = super::agent_sidebar::ordered_agent_pane_ids(
                     snapshot,
-                    self.config.agent_panel_sort,
+                    self.config.agent_list_order(),
                 );
                 if agents.is_empty() {
                     return None;
@@ -1050,6 +1050,39 @@ impl ClientShellState {
                 Some(Method::TabFocus(TabTarget {
                     tab_id: tabs[next].tab_id.clone(),
                 }))
+            }
+            KeybindAction::PreviousTabGlobal | KeybindAction::NextTabGlobal => {
+                let order = self
+                    .navigation_workspace_entries(snapshot)
+                    .into_iter()
+                    .filter_map(|entry| snapshot.workspaces.get(entry.index))
+                    .flat_map(|workspace| {
+                        snapshot
+                            .tabs
+                            .iter()
+                            .filter(move |tab| tab.workspace_id == workspace.workspace_id)
+                    })
+                    .collect::<Vec<_>>();
+                if order.is_empty() {
+                    return None;
+                }
+                let current = focused_tab
+                    .as_deref()
+                    .and_then(|focused| order.iter().position(|tab| tab.tab_id == focused));
+                let next = match (current, action) {
+                    (Some(current), KeybindAction::PreviousTabGlobal) => {
+                        (current + order.len() - 1) % order.len()
+                    }
+                    (Some(current), _) => (current + 1) % order.len(),
+                    (None, KeybindAction::PreviousTabGlobal) => order.len() - 1,
+                    (None, _) => 0,
+                };
+                let tab_id = order[next].tab_id.clone();
+                let workspace_id = order[next].workspace_id.clone();
+                if workspace_id != focused_workspace {
+                    self.reveal_workspace(&workspace_id);
+                }
+                Some(Method::TabFocus(TabTarget { tab_id }))
             }
             KeybindAction::MoveTabPrevious | KeybindAction::MoveTabNext => {
                 let tabs = snapshot

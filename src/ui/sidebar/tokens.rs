@@ -12,6 +12,7 @@ pub(crate) struct ResolvedToken {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ResolvedTokenKind {
     StateIcon,
+    Index(usize),
     StateText(String),
     Machine(String),
     Workspace(String),
@@ -37,7 +38,7 @@ impl ResolvedTokenKind {
             | Self::TerminalTitle(value)
             | Self::Branch(value)
             | Self::Custom(value) => Some(value),
-            Self::StateIcon | Self::GitStatus { .. } | Self::Text(_) => None,
+            Self::StateIcon | Self::Index(_) | Self::GitStatus { .. } | Self::Text(_) => None,
         }
     }
 
@@ -71,6 +72,7 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) terminal_title_stripped: Option<&'a str>,
     pub(crate) canonical_agent: Option<crate::detect::Agent>,
     pub(crate) tokens: &'a std::collections::HashMap<String, String>,
+    pub(crate) index: Option<usize>,
 }
 
 pub(crate) fn agent_rows(
@@ -88,6 +90,10 @@ pub(crate) fn agent_rows(
                     let (token, style) = configured.parts();
                     let kind = match token {
                         AgentSidebarToken::StateIcon => Some(ResolvedTokenKind::StateIcon),
+                        AgentSidebarToken::Index => context
+                            .index
+                            .filter(|index| (1..=9).contains(index))
+                            .map(ResolvedTokenKind::Index),
                         AgentSidebarToken::StateText => {
                             Some(ResolvedTokenKind::StateText(state_text.to_string()))
                         }
@@ -162,6 +168,7 @@ pub(crate) struct SpaceTokenContext<'a> {
     pub(crate) state_text: &'a str,
     pub(crate) ahead_behind: Option<(usize, usize)>,
     pub(crate) tokens: &'a std::collections::HashMap<String, String>,
+    pub(crate) index: Option<usize>,
     pub(crate) suppress_git_details: bool,
 }
 
@@ -179,6 +186,10 @@ pub(crate) fn space_rows(
                     let (token, style) = configured.parts();
                     let kind = match token {
                         SpaceSidebarToken::StateIcon => Some(ResolvedTokenKind::StateIcon),
+                        SpaceSidebarToken::Index => context
+                            .index
+                            .filter(|index| (1..=9).contains(index))
+                            .map(ResolvedTokenKind::Index),
                         SpaceSidebarToken::StateText => {
                             Some(ResolvedTokenKind::StateText(context.state_text.to_string()))
                         }
@@ -223,8 +234,10 @@ pub(crate) fn space_rows(
 pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'static str {
     if previous.kind.is_literal() || current.kind.is_literal() {
         ""
-    } else if matches!(previous.kind, ResolvedTokenKind::StateIcon)
-        || matches!(current.kind, ResolvedTokenKind::GitStatus { .. })
+    } else if matches!(
+        previous.kind,
+        ResolvedTokenKind::StateIcon | ResolvedTokenKind::Index(_)
+    ) || matches!(current.kind, ResolvedTokenKind::GitStatus { .. })
     {
         " "
     } else {
@@ -272,7 +285,25 @@ mod tests {
             terminal_title_stripped: entry.terminal_title_stripped.as_deref(),
             canonical_agent: entry.canonical_agent,
             tokens: &entry.tokens,
+            index: None,
         }
+    }
+
+    #[test]
+    fn index_token_numbers_only_positions_one_to_nine() {
+        let config = AgentsSidebarConfig {
+            rows: vec![vec![AgentSidebarToken::Index, AgentSidebarToken::Agent]],
+            ..Default::default()
+        };
+        let entry = entry();
+        let first_token = |index| {
+            let mut context = context(&entry);
+            context.index = index;
+            agent_rows(&config, context, "working")[0][0].kind.clone()
+        };
+        assert_eq!(first_token(Some(9)), ResolvedTokenKind::Index(9));
+        assert_eq!(first_token(Some(10)), ResolvedTokenKind::Agent("pi".into()));
+        assert_eq!(first_token(None), ResolvedTokenKind::Agent("pi".into()));
     }
 
     #[test]
@@ -402,6 +433,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, dim = true }] }]]
                     state_text: "working",
                     ahead_behind: None,
                     suppress_git_details: false,
+                    index: None,
                     tokens: &entry.tokens,
                 },
             );
@@ -451,6 +483,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     state_text: "working",
                     ahead_behind: None,
                     suppress_git_details: false,
+                    index: None,
                     tokens: &entry.tokens,
                 },
             );
@@ -657,6 +690,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     ahead_behind: Some((2, 1)),
                     tokens: &std::collections::HashMap::new(),
                     suppress_git_details: true,
+                    index: None,
                 },
             ),
             vec![vec![
@@ -683,6 +717,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             ahead_behind: None,
             tokens,
             suppress_git_details: false,
+            index: None,
         };
 
         assert_eq!(
@@ -697,6 +732,40 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Workspace(
                 "repo".into()
             ))]]
+        );
+    }
+
+    #[test]
+    fn space_index_token_numbers_only_positions_one_to_nine() {
+        let config = SpacesSidebarConfig {
+            rows: vec![vec![SpaceSidebarToken::Index, SpaceSidebarToken::Workspace]],
+            ..Default::default()
+        };
+        let tokens = std::collections::HashMap::new();
+        let first_token = |index| {
+            space_rows(
+                &config,
+                SpaceTokenContext {
+                    workspace: "repo",
+                    branch: None,
+                    state_text: "idle",
+                    ahead_behind: None,
+                    tokens: &tokens,
+                    suppress_git_details: false,
+                    index,
+                },
+            )[0][0]
+                .kind
+                .clone()
+        };
+        assert_eq!(first_token(Some(9)), ResolvedTokenKind::Index(9));
+        assert_eq!(
+            first_token(Some(10)),
+            ResolvedTokenKind::Workspace("repo".into())
+        );
+        assert_eq!(
+            first_token(None),
+            ResolvedTokenKind::Workspace("repo".into())
         );
     }
 
@@ -718,6 +787,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                     ahead_behind: None,
                     tokens: &tokens,
                     suppress_git_details: false,
+                    index: None,
                 },
             ),
             vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Custom(

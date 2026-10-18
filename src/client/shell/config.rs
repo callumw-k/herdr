@@ -75,6 +75,7 @@ impl ClientShellState {
         match crate::config::load_live_config() {
             Ok(loaded) => {
                 let agent_panel_sort = self.config.agent_panel_sort;
+                let tab_row_segments = (self.config.tab_bar_status, self.config.tab_bar_workspace);
                 let diagnostics = self.config.apply_live_config(
                     &loaded.config,
                     &loaded.diagnostics,
@@ -91,6 +92,9 @@ impl ClientShellState {
                 }
                 if self.agent_panel_sort_manual {
                     self.config.agent_panel_sort = agent_panel_sort;
+                }
+                if tab_row_segments != (self.config.tab_bar_status, self.config.tab_bar_workspace) {
+                    self.reveal_focused_tab = true;
                 }
                 self.set_local_config_diagnostic(self.config.local_config_diagnostic(&diagnostics));
                 if let Some(snapshot) = self.snapshot.as_deref() {
@@ -126,9 +130,12 @@ impl ClientShellConfig {
             mobile_width_threshold: config.ui.mobile_width_threshold,
             tab_bar_position: config.ui.tab_bar_position,
             hide_tab_bar_when_single_tab: config.ui.hide_tab_bar_when_single_tab,
+            tab_bar_status: config.ui.tab_bar_status,
+            tab_bar_workspace: config.ui.tab_bar_workspace,
             spaces: config.ui.sidebar.spaces.clone(),
             agents: config.ui.sidebar.agents.clone(),
             agent_panel_sort: config.ui.agent_panel_sort,
+            agent_panel_follows_workspace: config.ui.agent_panel_follows_workspace,
             status_indicators: config.ui.status_indicators,
             status_pulse: config.ui.status_pulse,
             sound_enabled: config.ui.sound.enabled,
@@ -354,9 +361,12 @@ impl ClientShellConfig {
                 self.mobile_width_threshold = ui.mobile_width_threshold;
                 self.tab_bar_position = ui.tab_bar_position;
                 self.hide_tab_bar_when_single_tab = ui.hide_tab_bar_when_single_tab;
+                self.tab_bar_status = ui.tab_bar_status;
+                self.tab_bar_workspace = ui.tab_bar_workspace;
                 self.spaces = ui.sidebar.spaces.clone();
                 self.agents = ui.sidebar.agents.clone();
                 self.agent_panel_sort = ui.agent_panel_sort;
+                self.agent_panel_follows_workspace = ui.agent_panel_follows_workspace;
                 self.status_indicators = ui.status_indicators;
                 self.status_pulse = ui.status_pulse;
                 self.sound_enabled = ui.sound.enabled;
@@ -488,7 +498,10 @@ mod tests {
         let mut next = Config::default();
         next.ui.sidebar_width = 31;
         next.ui.tab_bar_position = TabBarPositionConfig::Bottom;
+        next.ui.tab_bar_status = true;
+        next.ui.tab_bar_workspace = true;
         next.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
+        next.ui.agent_panel_follows_workspace = true;
         next.ui.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
         next.ui.sidebar.agents = toml::from_str("rows = [[{ token = 'machine', rules = [{ equals = 'Local', bold = true }] }]]\nrow_gap = 2").unwrap();
         next.keys.prefix = crate::config::BindingConfig::one("ctrl+a");
@@ -498,10 +511,13 @@ mod tests {
         assert!(diagnostics.is_empty());
         assert_eq!(shell.sidebar_width, 31);
         assert_eq!(shell.tab_bar_position, TabBarPositionConfig::Bottom);
+        assert!(shell.tab_bar_status);
+        assert!(shell.tab_bar_workspace);
         assert_eq!(
             shell.agent_panel_sort,
             crate::config::AgentPanelSortConfig::Priority
         );
+        assert!(shell.agent_panel_follows_workspace);
         assert_eq!(
             shell.status_indicators,
             crate::config::StatusIndicatorStyle::Symbols

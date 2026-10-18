@@ -88,7 +88,7 @@ fn grouped_order_walks_the_tab_tree_after_a_manual_move() {
     );
 
     assert_eq!(
-        super::agent_sidebar::ordered_agent_pane_ids(
+        super::agent_sidebar::unscoped_agent_pane_ids(
             &snapshot,
             crate::config::AgentPanelSortConfig::Spaces
         ),
@@ -112,7 +112,7 @@ fn grouped_order_keeps_agents_of_tabs_in_a_parent_cycle() {
     );
 
     assert_eq!(
-        super::agent_sidebar::ordered_agent_pane_ids(
+        super::agent_sidebar::unscoped_agent_pane_ids(
             &snapshot,
             crate::config::AgentPanelSortConfig::Spaces
         ),
@@ -263,7 +263,10 @@ fn agent_focus_targets_follow_the_sidebar_tree_order() {
     let targets = aggregate_navigation::online_agent_targets(
         &state.endpoints,
         &state.active_endpoint_id,
-        crate::config::AgentPanelSortConfig::Spaces,
+        super::agent_sidebar::AgentListOrder {
+            sort: crate::config::AgentPanelSortConfig::Spaces,
+            follows_workspace: false,
+        },
     )
     .into_iter()
     .map(|target| target.pane_id)

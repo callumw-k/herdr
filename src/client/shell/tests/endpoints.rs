@@ -683,6 +683,18 @@ fn same_machine_reboot_still_resets_agent_scroll() {
 }
 
 #[test]
+fn switching_machines_flashes_workspace_with_matching_ids() {
+    let (mut state, remote) = state_with_remote();
+    let mut config = Config::default();
+    config.ui.tab_bar_workspace = true;
+    state.config = ClientShellConfig::from_config(&config);
+    assert_eq!(state.workspace_flash_phase, None);
+
+    assert!(state.activate_endpoint_projection(&remote));
+    assert_eq!(state.workspace_flash_phase, Some(0));
+}
+
+#[test]
 fn switching_machines_from_copy_mode_restores_terminal_input() {
     let (mut state, remote) = state_with_remote();
     let mut local_surface = surface();
@@ -1763,7 +1775,10 @@ fn selected_position_sort_uses_public_tab_and_pane_numbers() {
     let names = aggregate_navigation::aggregate_agent_rows(
         &state.endpoints,
         &state.active_endpoint_id,
-        crate::config::AgentPanelSortConfig::Priority,
+        super::agent_sidebar::AgentListOrder {
+            sort: crate::config::AgentPanelSortConfig::Priority,
+            follows_workspace: false,
+        },
     )
     .into_iter()
     .map(|row| row.agent.name.as_deref().expect("agent name"))
@@ -2862,4 +2877,128 @@ fn navigator_foreign_tab_selection_keeps_the_tab_target() {
             target: Some(ClientEndpointFocusTarget::Tab(tab_id)),
         }] if activated == &endpoint_id && tab_id == "tab_1"
     ));
+}
+
+#[test]
+fn following_workspace_drops_other_machines_and_workspaces() {
+    use crate::api::schema::AgentStatus;
+
+    let mut config = Config::default();
+    config.ui.agent_panel_follows_workspace = true;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let profile = remote_profile();
+    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+
+    let mut local = snapshot();
+    let mut elsewhere = agent("elsewhere", AgentStatus::Idle, 1);
+    elsewhere.pane_id = "pane_9".into();
+    elsewhere.workspace_id = "ws_9".into();
+    local.agents = vec![agent("local agent", AgentStatus::Idle, 1), elsewhere];
+    state.set_snapshot(Box::new(local));
+    state.set_pane_surface(surface());
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+
+    let following = state.config.agent_list_order();
+    let global = super::agent_sidebar::AgentListOrder {
+        follows_workspace: false,
+        ..following
+    };
+    let names = |order: super::agent_sidebar::AgentListOrder| {
+        aggregate_navigation::aggregate_agent_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            order,
+        )
+        .into_iter()
+        .map(|row| row.agent.name.clone().expect("agent name"))
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(names(global).len(), 3);
+    assert_eq!(names(following), ["local agent"]);
+}
+
+#[test]
+fn index_token_skips_stale_machines() {
+    use crate::api::schema::{
+        AgentStatus, AgentViewBuiltinSortField, AgentViewSort, AgentViewSortField,
+        AgentViewSortOrder,
+    };
+    use crate::config::AgentSidebarToken;
+
+    let mut config = Config::default();
+    config.ui.sidebar.agents.rows = vec![vec![AgentSidebarToken::Index, AgentSidebarToken::Agent]];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let profile = remote_profile();
+    let endpoint_id = ClientEndpointId::Ssh(profile.id.clone());
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
+
+    let mut local = snapshot();
+    local.agent_view_label = Some("by tab".into());
+    local.agents = vec![agent("local agent", AgentStatus::Idle, 1)];
+    state.set_snapshot(Box::new(local));
+    state.set_pane_surface(surface());
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    remote.tabs[0].number = 5;
+    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 1)];
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting);
+
+    let mut view = current_workspace_view();
+    view.label = Some("by tab".into());
+    view.filter = None;
+    view.sort = vec![AgentViewSort {
+        field: AgentViewSortField::Builtin(AgentViewBuiltinSortField::TabOrder),
+        order: AgentViewSortOrder::Desc,
+    }];
+    state.set_test_endpoint_agent_view(&ClientEndpointId::Local, Some(view));
+
+    let frame = state.compose(100, 28).expect("indexed endpoint frame");
+    let text = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let remote_at = text.find("remote agent").expect("stale remote row");
+    let local_at = text
+        .find("1 local agent")
+        .expect("live local row numbered 1");
+    assert!(
+        remote_at < local_at,
+        "stale row must sort first for this test: {text}"
+    );
+    assert!(!text.contains("1 remote agent"), "{text}");
+}
+
+#[test]
+fn space_index_numbers_only_the_active_machine() {
+    use crate::config::SpaceSidebarToken;
+
+    let (mut state, _endpoint_id) = state_with_remote();
+    state.config.spaces.rows = vec![vec![SpaceSidebarToken::Index, SpaceSidebarToken::Workspace]];
+    let frame = state.compose(100, 28).expect("indexed machines frame");
+    let text = frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("1 client-shell"), "{text}");
+    assert!(text.contains("remote-workspace"), "{text}");
+    assert!(!text.contains("1 remote-workspace"), "{text}");
 }

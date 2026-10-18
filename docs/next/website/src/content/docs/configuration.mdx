@@ -328,9 +328,15 @@ The active palette is applied in this order: built-in theme, `[theme.custom]`, t
 
 The sidebar is the main Herdr dashboard. Search `ui.` in the [Config reference](/docs/config-reference/) for sizing, collapsed mode, Agent panel ordering, mouse behavior, pane borders, and other presentation settings.
 
+Set `agent_panel_follows_workspace = true` under `[ui]` to limit the Agent panel, and the next, previous and numbered agent jumps, to the focused workspace. The panel header then shows the workspace's name, and child tabs stay nested under their parent. The navigator (`prefix+g`) still lists every agent.
+
 `ui.pane_borders` accepts `"auto"` (the default: split panes get borders, a single pane keeps a one-row title strip), `"always"` (frame a single pane on all sides), or `"off"`. A full single-pane frame requires `ui.pane_outer_borders = true`, because all its edges are outer edges. Existing boolean values remain valid: `true` means `"auto"` and `false` means `"off"`.
 
 Set `tab_bar_position = "bottom"` under `[ui]` to place the desktop tab row below the terminal panes. Prefix, Navigate, Copy, and Resize mode bars temporarily replace the bottom tab row while active. The default is `"top"`.
+
+Set `tab_bar_status = true` under `[ui]` to show each tab's agent status before its label, with the same indicators as the sidebar. Tabs without an agent show no indicator.
+
+Set `tab_bar_workspace = true` to show the focused workspace's name at the left of the tab row. It flashes briefly when you move to another workspace, unless `status_pulse = false`. Click it to open workspace navigation. On a narrow row it gives way to the tabs.
 
 Configure an ordered tmux-style status area at the right edge of the tab row:
 
@@ -408,6 +414,7 @@ Agent rows accept these built-in tokens:
 
 - `state_icon` — colored icon for the agent's semantic state.
 - `state_text` — `idle`, `working`, `blocked`, `done`, or `unknown`, including a reported display label when present.
+- `index` — the row's position for numbered agent jumps (`focus_agent`), 1–9. Absent from the tenth row on.
 - `machine` — machine label when the client has multiple machines; omitted for a single local machine.
 - `workspace` — workspace name.
 - `tab` — tab name when available.
@@ -422,6 +429,7 @@ Space rows accept these built-in tokens:
 
 - `state_icon` — colored icon for the space's rolled-up agent state.
 - `state_text` — text for the rolled-up agent state.
+- `index` — the space's position for numbered workspace jumps (`switch_workspace`), 1–9. In the machines sidebar only the active machine's spaces are numbered.
 - `workspace` — workspace name.
 - `branch` — Git branch when available.
 - `git_status` — Git ahead and behind counts when nonzero.
@@ -470,7 +478,7 @@ The first matching rule wins. Its specified style fields override the occurrence
 
 `gt` and `lt` take finite numeric thresholds and compare strictly greater or less, not equal. Values must parse completely as finite numbers; decimal and exponent forms work, but whitespace, units, `NaN`, and infinity do not match. `ignore_case` is not accepted on numeric rules. Comparisons use floating-point numbers, not exact large-integer arithmetic.
 
-Rules work with text-valued built-ins and custom `$name` tokens in Agent rows, `rows_by_agent` overrides, and Space rows. Custom tokens match their reported value: `$load` reporting `"90"` selects red and bold above, `"60"` selects yellow, and `"90%"` keeps white. Unreported tokens still disappear. `state_icon` and composite `git_status` accept fixed styles only, not rules. Unknown conditions and malformed rules are rejected when loading config; regex, fuzzy matching, and scripts are not supported.
+Rules work with text-valued built-ins and custom `$name` tokens in Agent rows, `rows_by_agent` overrides, and Space rows. Custom tokens match their reported value: `$load` reporting `"90"` selects red and bold above, `"60"` selects yellow, and `"90%"` keeps white. Unreported tokens still disappear. `state_icon`, `index` and composite `git_status` accept fixed styles only, not rules. Unknown conditions and malformed rules are rejected when loading config; regex, fuzzy matching, and scripts are not supported.
 
 `row_gap` controls the blank terminal rows between entries, independently for the Agent and Space panels. It defaults to `0`, which packs entries together; set it to `1` to restore the previous spacing. It does not add spacing between the content lines declared in `rows`. Consecutive indented worktree children remain packed as one Space group.
 

@@ -187,7 +187,7 @@ pub(crate) fn render_collapsed_sidebar(
         detail_area.height.saturating_sub(1),
     );
     // Agent positions are not keyboard-addressable, so the strip shows state only.
-    let agent_pane_ids = super::ordered_agent_pane_ids(snapshot, config.agent_panel_sort);
+    let agent_pane_ids = super::ordered_agent_pane_ids(snapshot, config.agent_list_order());
     let agents_total = agent_pane_ids.len();
     let agents_shown = collapsed_visible_rows(detail_content.height as usize, agents_total);
     for (index, pane_id) in agent_pane_ids.into_iter().take(agents_shown).enumerate() {
@@ -296,7 +296,8 @@ pub(crate) fn render_sidebar(
     hits.workspace_body = body;
     let row_heights = entries
         .iter()
-        .map(|entry| {
+        .enumerate()
+        .map(|(position, entry)| {
             snapshot
                 .workspaces
                 .get(entry.index)
@@ -306,6 +307,7 @@ pub(crate) fn render_sidebar(
                         displayed_workspace_status(snapshot, workspace, state.collapsed_groups),
                         entry.indented,
                         &config.spaces,
+                        Some(position + 1),
                     )
                     .len()
                     .max(1)
@@ -358,7 +360,13 @@ pub(crate) fn render_sidebar(
             continue;
         };
         let status = displayed_workspace_status(snapshot, workspace, state.collapsed_groups);
-        let rows = workspace_rows(workspace, status, entry.indented, &config.spaces);
+        let rows = workspace_rows(
+            workspace,
+            status,
+            entry.indented,
+            &config.spaces,
+            Some(entry_position + 1),
+        );
         let row_height = (rows.len().max(1).min(u16::MAX as usize) as u16).min(body.height);
         if y.saturating_add(row_height) > body.bottom() {
             break;
@@ -752,6 +760,7 @@ pub(in crate::client::shell) fn workspace_rows(
     status: crate::api::schema::AgentStatus,
     indented: bool,
     config: &SpacesSidebarConfig,
+    index: Option<usize>,
 ) -> Vec<Vec<crate::ui::ResolvedToken>> {
     let label = if indented && !workspace.custom_label {
         workspace
@@ -772,6 +781,7 @@ pub(in crate::client::shell) fn workspace_rows(
             ahead_behind: workspace.git_ahead_behind,
             tokens: &token_values,
             suppress_git_details: indented,
+            index,
         },
     )
 }

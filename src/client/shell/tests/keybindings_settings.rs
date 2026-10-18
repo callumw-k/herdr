@@ -967,3 +967,204 @@ fn resize_mode_reuses_endpoint_resize_and_stays_active_until_done() {
     assert!(state.handle_input_bytes(b"\r").actions.is_empty());
     assert_eq!(state.mode, ClientShellMode::Terminal);
 }
+
+#[test]
+fn tab_bar_status_marks_agent_tabs_only_when_enabled() {
+    let mut projected = snapshot();
+    projected.tabs[0].label = "build".into();
+    projected.tabs[0].custom_label = true;
+    projected.tabs[0].agent_status = AgentStatus::Working;
+    let mut shell_tab = projected.tabs[0].clone();
+    shell_tab.tab_id = "tab_2".into();
+    shell_tab.number = 2;
+    shell_tab.label = "shell".into();
+    shell_tab.focused = false;
+    shell_tab.agent_status = AgentStatus::Unknown;
+    projected.tabs.push(shell_tab);
+
+    let top = |enabled: bool| {
+        let mut config = Config::default();
+        config.ui.tab_bar_status = enabled;
+        let mut shell = ClientShellConfig::from_config(&config);
+        shell.mobile_width_threshold = 0;
+        let mut state = ClientShellState::new(shell);
+        state.set_snapshot(Box::new(projected.clone()));
+        state.set_pane_surface(surface());
+        let frame = state.compose(106, 20).expect("tab row");
+        frame.cells[..frame.width as usize]
+            .iter()
+            .map(|cell| cell.symbol.as_str())
+            .collect::<String>()
+    };
+    let marked = top(true);
+    assert!(marked.contains("● build"), "{marked}");
+    assert!(marked.contains("shell"), "{marked}");
+    assert!(!marked.contains("· shell"), "{marked}");
+    assert!(!marked.contains("● shell"), "{marked}");
+    assert!(!top(false).contains("● build"));
+}
+
+#[test]
+fn blocked_tab_pulses_with_sidebar_hidden() {
+    let mut projected = snapshot();
+    projected.workspaces[0].agent_status = AgentStatus::Blocked;
+    projected.tabs[0].agent_status = AgentStatus::Blocked;
+    let pulses = |tab_bar_status: bool| {
+        let mut config = Config::default();
+        config.ui.tab_bar_status = tab_bar_status;
+        config.ui.sidebar_start_collapsed = true;
+        config.ui.sidebar_collapsed_mode = crate::config::SidebarCollapsedModeConfig::Hidden;
+        let mut shell = ClientShellConfig::from_config(&config);
+        shell.mobile_width_threshold = 0;
+        let mut state = ClientShellState::new(shell);
+        state.set_snapshot(Box::new(projected.clone()));
+        state.set_pane_surface(surface());
+        state.compose(106, 20).expect("hidden sidebar frame");
+        let start = std::time::Instant::now();
+        state.tick_pulse(start);
+        state.tick_pulse(
+            start + std::time::Duration::from_millis(crate::client::shell::PULSE_PHASE_MS),
+        )
+    };
+    assert!(pulses(true));
+    assert!(!pulses(false));
+}
+
+#[test]
+fn tab_bar_workspace_segment_opens_navigation_and_yields_to_tabs() {
+    let mut config = Config::default();
+    config.ui.tab_bar_workspace = true;
+    let mut shell = ClientShellConfig::from_config(&config);
+    shell.mobile_width_threshold = 0;
+    let mut state = ClientShellState::new(shell);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let frame = state.compose(106, 20).expect("workspace segment");
+    let top = frame.cells[..frame.width as usize]
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect::<String>();
+    assert!(top.contains(" client-shell │ "), "{top}");
+    let segment = state.hits.tab_bar_workspace;
+    assert!(!segment.is_empty());
+    assert!(state.hits.tabs[0].0.x >= segment.right());
+
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: segment.x,
+        row: segment.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert_eq!(state.mode, ClientShellMode::Navigate);
+
+    state.mode = ClientShellMode::Terminal;
+    state.compose(50, 20).expect("narrow tab row");
+    assert!(state.hits.tab_bar_workspace.is_empty());
+    assert!(!state.hits.tabs.is_empty());
+}
+
+#[test]
+fn workspace_flash_runs_on_workspace_changes_only() {
+    let phase = crate::client::shell::PULSE_PHASE_MS;
+    let mut config = Config::default();
+    config.ui.tab_bar_workspace = true;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut projected = two_workspace_snapshot();
+    state.set_snapshot(Box::new(projected.clone()));
+    assert_eq!(state.workspace_flash_phase, None);
+
+    projected.revision = 2;
+    projected.focused_pane_id = Some("pane_2".into());
+    state.set_snapshot(Box::new(projected.clone()));
+    assert_eq!(state.workspace_flash_phase, None);
+
+    projected.revision = 3;
+    projected.focused_workspace_id = Some("ws_2".into());
+    projected.focused_tab_id = Some("tab_2".into());
+    projected.focused_pane_id = Some("pane_3".into());
+    state.set_snapshot(Box::new(projected.clone()));
+    assert_eq!(state.workspace_flash_phase, Some(0));
+    let started = state.workspace_flash_started.expect("flash started");
+    assert!(state.tick_workspace_flash(started + std::time::Duration::from_millis(phase)));
+    assert_eq!(state.workspace_flash_phase, Some(1));
+    assert!(state.tick_workspace_flash(started + std::time::Duration::from_millis(2 * phase)));
+    assert_eq!(state.workspace_flash_phase, None);
+    assert!(!state.tick_workspace_flash(started + std::time::Duration::from_millis(3 * phase)));
+
+    let mut still = Config::default();
+    still.ui.tab_bar_workspace = true;
+    still.ui.status_pulse = false;
+    let mut quiet = ClientShellState::new(ClientShellConfig::from_config(&still));
+    let mut projected = two_workspace_snapshot();
+    quiet.set_snapshot(Box::new(projected.clone()));
+    projected.revision = 2;
+    projected.focused_workspace_id = Some("ws_2".into());
+    quiet.set_snapshot(Box::new(projected));
+    assert_eq!(quiet.workspace_flash_phase, None);
+
+    let mut off = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let mut projected = two_workspace_snapshot();
+    off.set_snapshot(Box::new(projected.clone()));
+    projected.revision = 2;
+    projected.focused_workspace_id = Some("ws_2".into());
+    off.set_snapshot(Box::new(projected));
+    assert_eq!(off.workspace_flash_phase, None);
+}
+
+#[test]
+fn tab_status_icon_appearing_reveals_focused_tab() {
+    let mut config = Config::default();
+    config.ui.tab_bar_status = true;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut projected = snapshot();
+    projected.tabs[0].agent_status = crate::api::schema::AgentStatus::Unknown;
+    state.set_snapshot(Box::new(projected.clone()));
+    state.reveal_focused_tab = false;
+
+    projected.revision = 2;
+    projected.tabs[0].agent_status = crate::api::schema::AgentStatus::Working;
+    state.set_snapshot(Box::new(projected));
+    assert!(state.reveal_focused_tab);
+}
+
+#[test]
+fn global_tab_cycle_walks_workspaces_in_order_and_wraps() {
+    let mut projected = two_workspace_snapshot();
+    let mut extra = projected.tabs[0].clone();
+    extra.tab_id = "tab_3".into();
+    extra.number = 2;
+    extra.label = "shell".into();
+    extra.focused = false;
+    projected.tabs.push(extra);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(projected.clone()));
+
+    let target = |state: &mut ClientShellState, action| {
+        let mut outcome = ClientShellInput::default();
+        state.record_binding(crate::input::KeybindMatch::Action(action), &mut outcome);
+        match &outcome.actions[..] {
+            [ClientShellAction::Endpoint { request, .. }] => match &request.method {
+                crate::api::schema::Method::TabFocus(target) => Some(target.tab_id.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    use crate::input::KeybindAction::{NextTabGlobal, PreviousTabGlobal};
+    assert_eq!(target(&mut state, NextTabGlobal).as_deref(), Some("tab_3"));
+    assert_eq!(
+        target(&mut state, PreviousTabGlobal).as_deref(),
+        Some("tab_2")
+    );
+
+    projected.revision = 2;
+    projected.focused_workspace_id = Some("ws_2".into());
+    projected.focused_tab_id = Some("tab_2".into());
+    projected.focused_pane_id = Some("pane_3".into());
+    state.set_snapshot(Box::new(projected));
+    assert_eq!(target(&mut state, NextTabGlobal).as_deref(), Some("tab_1"));
+    assert_eq!(
+        target(&mut state, PreviousTabGlobal).as_deref(),
+        Some("tab_3")
+    );
+}

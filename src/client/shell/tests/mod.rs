@@ -328,3 +328,69 @@ pub(super) fn pane_info(
         revision: 0,
     }
 }
+
+pub(super) fn workspace_agent(
+    pane_id: &str,
+    workspace_id: &str,
+    tab_id: &str,
+    name: &str,
+) -> ClientShellAgent {
+    ClientShellAgent {
+        pane_id: pane_id.into(),
+        workspace_id: workspace_id.into(),
+        tab_id: tab_id.into(),
+        name: Some(name.into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: pane_id == "pane_1",
+    }
+}
+
+pub(super) fn two_workspace_snapshot() -> ClientShellSnapshot {
+    let mut projected = snapshot();
+    let mut other = projected.workspaces[0].clone();
+    other.workspace_id = "ws_2".into();
+    other.active_tab_id = "tab_2".into();
+    other.number = 2;
+    other.label = "other".into();
+    other.focused = false;
+    projected.workspaces.push(other);
+    let mut other_tab = projected.tabs[0].clone();
+    other_tab.tab_id = "tab_2".into();
+    other_tab.workspace_id = "ws_2".into();
+    other_tab.focused = false;
+    projected.tabs.push(other_tab);
+    for (pane_id, workspace_id, tab_id) in
+        [("pane_2", "ws_1", "tab_1"), ("pane_3", "ws_2", "tab_2")]
+    {
+        let mut pane = projected.panes[0].clone();
+        pane.pane_id = pane_id.into();
+        pane.workspace_id = workspace_id.into();
+        pane.tab_id = tab_id.into();
+        pane.focused = false;
+        projected.panes.push(pane);
+    }
+    projected.agents = vec![
+        workspace_agent("pane_1", "ws_1", "tab_1", "here one"),
+        workspace_agent("pane_3", "ws_2", "tab_2", "elsewhere"),
+        workspace_agent("pane_2", "ws_1", "tab_1", "here two"),
+    ];
+    projected
+}
+
+pub(super) fn focused_pane_request(outcome: &ClientShellInput) -> Option<&str> {
+    match &outcome.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => match &request.method {
+            crate::api::schema::Method::PaneFocus(target) => Some(target.pane_id.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
