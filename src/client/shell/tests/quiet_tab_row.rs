@@ -59,13 +59,13 @@ fn row_text(buffer: &Buffer) -> String {
 }
 
 #[test]
-fn quiet_tabs_pad_three_cells_and_gap_two() {
+fn quiet_tabs_pad_three_cells_and_gap_one() {
     let (_, hits) = render(
         &three_tab_snapshot(),
         &config(TabBarStyleConfig::Quiet, Palette::catppuccin()),
     );
     assert_eq!(hits.tabs[0].0.width, 4 + 6);
-    assert_eq!(hits.tabs[1].0.x, hits.tabs[0].0.right() + 2);
+    assert_eq!(hits.tabs[1].0.x, hits.tabs[0].0.right() + 1);
 }
 
 #[test]
