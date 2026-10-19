@@ -159,6 +159,7 @@ impl App {
             self.state.host_terminal_theme,
             self.state.host_terminal_appearance,
             crate::pane::PaneShellConfig::new(&self.state.default_shell, self.state.shell_mode),
+            self.state.default_arrangement,
             self.event_tx.clone(),
             self.render_notify.clone(),
             self.render_dirty.clone(),

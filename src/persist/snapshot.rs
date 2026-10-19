@@ -181,8 +181,7 @@ pub enum DirectionSnapshot {
 ///
 /// A snapshot written before arrangements existed carries a hand-built BSP
 /// tree. Grid is the arrangement that keeps every one of those panes visible
-/// when the tab is next reflowed, so it is the legacy default even though a
-/// tab created today starts Stacked (`Arrangement::default`).
+/// when the tab is next reflowed, so it is the legacy default.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ArrangementSnapshot {
     Vertical,

@@ -218,6 +218,7 @@ impl App {
             self.state.pane_scrollback_limit_bytes,
             self.state.host_terminal_theme,
             self.state.host_terminal_appearance,
+            self.state.default_arrangement,
         ) {
             Ok(result) => result,
             Err(err) => return encode_error(id, "plugin_pane_open_failed", err.to_string()),

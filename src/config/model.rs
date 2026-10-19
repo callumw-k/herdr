@@ -144,6 +144,16 @@ pub enum SidebarCollapsedModeConfig {
     Hidden,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArrangementConfig {
+    Vertical,
+    Horizontal,
+    #[default]
+    Grid,
+    Stacked,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RightClickPassthroughModifierConfig(Option<KeyModifiers>);
 
@@ -1079,6 +1089,8 @@ pub struct UiConfig {
     pub pane_scrollbars: bool,
     /// Keep split panes visually separated instead of sharing divider borders. Default: true.
     pub pane_gaps: bool,
+    /// Arrangement a new tab starts in. Default: grid.
+    pub default_arrangement: ArrangementConfig,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
     /// Hide the tab row when the workspace has one tab. Default: false.
@@ -1342,6 +1354,7 @@ impl Default for UiConfig {
             pane_outer_borders: true,
             pane_scrollbars: true,
             pane_gaps: true,
+            default_arrangement: ArrangementConfig::Grid,
             show_agent_labels_on_pane_borders: false,
             hide_tab_bar_when_single_tab: false,
             tab_bar_position: TabBarPositionConfig::Top,
@@ -1871,6 +1884,21 @@ navigator_on_start = true
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.navigator_agents_only);
         assert!(config.ui.navigator_on_start);
+    }
+
+    #[test]
+    fn default_arrangement_defaults_grid_and_parses_stacked() {
+        assert_eq!(
+            Config::default().ui.default_arrangement,
+            ArrangementConfig::Grid
+        );
+
+        let toml = r#"
+[ui]
+default_arrangement = "stacked"
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.ui.default_arrangement, ArrangementConfig::Stacked);
     }
 
     #[test]

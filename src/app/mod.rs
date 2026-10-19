@@ -217,6 +217,17 @@ fn agent_panel_sort_from_config(
     }
 }
 
+fn arrangement_from_config(
+    arrangement: crate::config::ArrangementConfig,
+) -> crate::layout::Arrangement {
+    match arrangement {
+        crate::config::ArrangementConfig::Vertical => crate::layout::Arrangement::Vertical,
+        crate::config::ArrangementConfig::Horizontal => crate::layout::Arrangement::Horizontal,
+        crate::config::ArrangementConfig::Grid => crate::layout::Arrangement::Grid,
+        crate::config::ArrangementConfig::Stacked => crate::layout::Arrangement::Stacked,
+    }
+}
+
 /// Parse the configured agent name list into a deduplicated set of `Agent`
 /// values. Unknown agent names are silently dropped so a typo cannot disable
 /// other valid entries.
@@ -545,6 +556,7 @@ impl App {
             pane_outer_borders: config.ui.pane_outer_borders,
             pane_scrollbars: config.ui.pane_scrollbars,
             pane_gaps: config.ui.pane_gaps,
+            default_arrangement: arrangement_from_config(config.ui.default_arrangement),
             show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
             tab_bar_right: Vec::new(),
             tab_bar_right_separator: String::new(),
@@ -913,6 +925,8 @@ impl App {
                 self.state.pane_outer_borders = config.ui.pane_outer_borders;
                 self.state.pane_scrollbars = config.ui.pane_scrollbars;
                 self.state.pane_gaps = config.ui.pane_gaps;
+                self.state.default_arrangement =
+                    arrangement_from_config(config.ui.default_arrangement);
                 self.state.show_agent_labels_on_pane_borders =
                     config.ui.show_agent_labels_on_pane_borders;
                 self.configure_tab_bar_status(

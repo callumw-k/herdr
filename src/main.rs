@@ -313,6 +313,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # Keep split panes visually separated instead of sharing divider borders.
 # pane_gaps = true
 
+# Arrangement a new tab starts in: "grid", "stacked", "vertical", or "horizontal".
+# Existing tabs keep their arrangement; cycle it with the arrangement keybindings.
+# default_arrangement = "grid"
+
 # Use detected/reported agent names as pane border titles. Off, an agent pane
 # still shows its own terminal title, then its directory, then its number.
 # show_agent_labels_on_pane_borders = false

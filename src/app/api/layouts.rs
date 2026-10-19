@@ -127,6 +127,7 @@ impl App {
                     scrollback_limit_bytes,
                     host_terminal_theme,
                     host_terminal_appearance,
+                    self.state.default_arrangement,
                 )
             } else {
                 ws.create_tab(
@@ -138,6 +139,7 @@ impl App {
                     host_terminal_appearance,
                     crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
                     extra_env,
+                    self.state.default_arrangement,
                 )
             }
         };

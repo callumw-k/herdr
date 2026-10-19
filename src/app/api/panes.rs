@@ -1518,6 +1518,7 @@ impl App {
                     .create_tab_from_existing_pane(
                         moved,
                         label,
+                        self.state.default_arrangement,
                         self.event_tx.clone(),
                         self.render_notify.clone(),
                         self.render_dirty.clone(),
@@ -1538,6 +1539,7 @@ impl App {
                     tab_label,
                     identity_cwd,
                     moved,
+                    self.state.default_arrangement,
                     self.event_tx.clone(),
                     self.render_notify.clone(),
                     self.render_dirty.clone(),
@@ -1657,6 +1659,7 @@ impl App {
             self.state.workspaces[ws_idx].create_tab_from_existing_pane(
                 moved,
                 context.previous_tab_label,
+                self.state.default_arrangement,
                 self.event_tx.clone(),
                 self.render_notify.clone(),
                 self.render_dirty.clone(),
@@ -1667,6 +1670,7 @@ impl App {
                 context.previous_tab_label,
                 context.identity_cwd,
                 moved,
+                self.state.default_arrangement,
                 self.event_tx.clone(),
                 self.render_notify.clone(),
                 self.render_dirty.clone(),

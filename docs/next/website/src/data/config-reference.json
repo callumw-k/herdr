@@ -1067,6 +1067,18 @@
           "description": "Keep split panes visually separated instead of sharing divider borders."
         },
         {
+          "key": "ui.default_arrangement",
+          "type": "enum",
+          "default": "\"grid\"",
+          "description": "Arrangement a new tab starts in. Existing and restored tabs keep their own arrangement.",
+          "values": [
+            "vertical",
+            "horizontal",
+            "grid",
+            "stacked"
+          ]
+        },
+        {
           "key": "ui.show_agent_labels_on_pane_borders",
           "type": "boolean",
           "default": "false",

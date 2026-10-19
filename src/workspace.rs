@@ -8,9 +8,9 @@ use ratatui::layout::Direction;
 use tokio::sync::{mpsc, Notify};
 
 use crate::events::AppEvent;
-use crate::layout::PaneId;
 #[cfg(test)]
 use crate::layout::TileLayout;
+use crate::layout::{Arrangement, PaneId};
 use crate::pane::{PaneLaunchEnv, PaneState};
 use crate::render_signal::RenderSignal;
 use crate::terminal::{TerminalId, TerminalRuntime, TerminalRuntimeRegistry, TerminalState};
@@ -253,13 +253,16 @@ impl Workspace {
         tab_label: Option<String>,
         identity_cwd: PathBuf,
         moved: MovedPane,
+        arrangement: Arrangement,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
     ) -> Self {
         let id = generate_workspace_id();
         let root_pane = moved.pane_id;
-        let tab = Tab::from_existing_pane(1, tab_label, moved, events, render_notify, render_dirty);
+        let mut tab =
+            Tab::from_existing_pane(1, tab_label, moved, events, render_notify, render_dirty);
+        tab.arrangement = arrangement;
         let mut public_pane_numbers = HashMap::new();
         public_pane_numbers.insert(root_pane, 1);
         let (cached_git_space, cached_auto_label, cached_git_status_key) =
@@ -297,6 +300,7 @@ impl Workspace {
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
+        arrangement: Arrangement,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
@@ -309,6 +313,7 @@ impl Workspace {
             host_terminal_theme,
             host_terminal_appearance,
             shell_config,
+            arrangement,
             events,
             render_notify,
             render_dirty,
@@ -326,6 +331,7 @@ impl Workspace {
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
+        arrangement: Arrangement,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
@@ -340,6 +346,7 @@ impl Workspace {
                 host_terminal_theme,
                 host_terminal_appearance,
                 shell_config,
+                arrangement,
                 events,
                 render_notify,
                 render_dirty,
@@ -353,6 +360,7 @@ impl Workspace {
             host_terminal_theme,
             host_terminal_appearance,
             shell_config,
+            arrangement,
             events,
             render_notify,
             render_dirty,
@@ -370,6 +378,7 @@ impl Workspace {
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
+        arrangement: Arrangement,
         events: mpsc::Sender<AppEvent>,
         render_notify: Arc<Notify>,
         render_dirty: Arc<RenderSignal>,
@@ -382,7 +391,7 @@ impl Workspace {
             public_tab_id_for_number(&id, 1),
             public_pane_id_for_number(&id, 1),
         );
-        let (tab, terminal, runtime) = if let Some(argv) = argv {
+        let (mut tab, terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
                 1,
                 initial_cwd.clone(),
@@ -413,6 +422,7 @@ impl Workspace {
                 render_dirty,
             )?
         };
+        tab.arrangement = arrangement;
         let mut public_pane_numbers = HashMap::new();
         public_pane_numbers.insert(tab.root_pane, 1);
         let (cached_git_space, cached_auto_label, cached_git_status_key) =
@@ -502,6 +512,7 @@ impl Workspace {
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         extra_env: Vec<(String, String)>,
+        arrangement: Arrangement,
     ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
         self.create_tab_with_runtime(
             rows,
@@ -513,6 +524,7 @@ impl Workspace {
             shell_config,
             None,
             extra_env,
+            arrangement,
         )
     }
 
@@ -526,6 +538,7 @@ impl Workspace {
         scrollback_limit_bytes: usize,
         host_terminal_theme: crate::terminal_theme::TerminalTheme,
         host_terminal_appearance: Option<crate::terminal_theme::HostAppearance>,
+        arrangement: Arrangement,
     ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
         self.create_tab_with_runtime(
             rows,
@@ -537,6 +550,7 @@ impl Workspace {
             crate::pane::PaneShellConfig::new("", crate::config::ShellModeConfig::NonLogin),
             Some(argv),
             extra_env,
+            arrangement,
         )
     }
 
@@ -551,6 +565,7 @@ impl Workspace {
         shell_config: crate::pane::PaneShellConfig<'_>,
         argv: Option<&[String]>,
         extra_env: Vec<(String, String)>,
+        arrangement: Arrangement,
     ) -> std::io::Result<(usize, TerminalState, TerminalRuntime)> {
         let number = self.next_public_tab_number;
         self.next_public_tab_number += 1;
@@ -569,7 +584,7 @@ impl Workspace {
             .map(|tab| tab.render_dirty.clone())
             .expect("workspace must always have at least one tab");
 
-        let (tab, terminal, runtime) = if let Some(argv) = argv {
+        let (mut tab, terminal, runtime) = if let Some(argv) = argv {
             Tab::new_argv_command(
                 number,
                 cwd,
@@ -600,6 +615,7 @@ impl Workspace {
                 render_dirty,
             )?
         };
+        tab.arrangement = arrangement;
         self.register_new_pane_with_number(tab.root_pane, pane_number);
         self.tabs.push(tab);
         Ok((self.tabs.len() - 1, terminal, runtime))
@@ -980,6 +996,7 @@ impl Workspace {
         &mut self,
         moved: MovedPane,
         label: Option<String>,
+        arrangement: Arrangement,
         fallback_events: mpsc::Sender<AppEvent>,
         fallback_render_notify: Arc<Notify>,
         fallback_render_dirty: Arc<RenderSignal>,
@@ -1001,8 +1018,9 @@ impl Workspace {
                 fallback_render_notify,
                 fallback_render_dirty,
             ));
-        let tab =
+        let mut tab =
             Tab::from_existing_pane(number, label, moved, events, render_notify, render_dirty);
+        tab.arrangement = arrangement;
         if !self.public_pane_numbers.contains_key(&pane_id) {
             self.register_new_pane_with_number(pane_id, self.next_public_pane_number);
         }

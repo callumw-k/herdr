@@ -4741,20 +4741,14 @@ mod tests {
     #[test]
     fn cycle_tab_arrangement_advances_and_wraps() {
         let mut state = app_with_workspaces(&["test"]);
-        assert_eq!(
-            state.workspaces[0].tabs[0].arrangement,
-            Arrangement::Stacked
-        );
+        assert_eq!(state.workspaces[0].tabs[0].arrangement, Arrangement::Grid);
         state.cycle_tab_arrangement(true);
         assert_eq!(
             state.workspaces[0].tabs[0].arrangement,
-            Arrangement::Vertical
-        );
-        state.cycle_tab_arrangement(false);
-        assert_eq!(
-            state.workspaces[0].tabs[0].arrangement,
             Arrangement::Stacked
         );
+        state.cycle_tab_arrangement(false);
+        assert_eq!(state.workspaces[0].tabs[0].arrangement, Arrangement::Grid);
     }
 
     #[test]
@@ -4785,7 +4779,7 @@ mod tests {
             state.workspaces[0].floats.arrangement, float_before,
             "float layer untouched"
         );
-        assert_ne!(tab.arrangement, Arrangement::Stacked, "tiled layer cycled");
+        assert_ne!(tab.arrangement, Arrangement::Grid, "tiled layer cycled");
     }
 
     #[test]
@@ -4858,7 +4852,7 @@ mod tests {
         );
         assert_ne!(
             tab.arrangement,
-            Arrangement::Stacked,
+            Arrangement::Grid,
             "tiled layer cycled instead"
         );
     }
@@ -4869,11 +4863,7 @@ mod tests {
         state.set_tab_arrangement(Arrangement::Grid);
         let tab = state.workspaces[0].active_tab().expect("a tab");
         assert_eq!(state.workspaces[0].floats.arrangement, Arrangement::Grid);
-        assert_eq!(
-            tab.arrangement,
-            Arrangement::Stacked,
-            "tiled layer untouched"
-        );
+        assert_eq!(tab.arrangement, Arrangement::Grid, "tiled layer untouched");
 
         state.set_tab_arrangement(Arrangement::Vertical);
         let tab = state.workspaces[0].active_tab().expect("a tab");
@@ -4881,11 +4871,7 @@ mod tests {
             state.workspaces[0].floats.arrangement,
             Arrangement::Vertical
         );
-        assert_eq!(
-            tab.arrangement,
-            Arrangement::Stacked,
-            "tiled layer untouched"
-        );
+        assert_eq!(tab.arrangement, Arrangement::Grid, "tiled layer untouched");
     }
 
     #[test]

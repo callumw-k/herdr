@@ -127,6 +127,7 @@ impl App {
                     host_terminal_appearance,
                     crate::pane::PaneShellConfig::new(&default_shell, self.state.shell_mode),
                     extra_env,
+                    self.state.default_arrangement,
                 )
             });
         match result {
