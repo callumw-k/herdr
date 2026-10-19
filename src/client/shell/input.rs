@@ -582,6 +582,7 @@ impl ClientShellState {
                 ))
                 | Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
                     search_focused: true,
+                    keys_open: false,
                     ..
                 }))
                 | Some(ClientShellOverlay::Help(ClientHelpOverlay {

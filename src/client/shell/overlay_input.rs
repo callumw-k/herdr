@@ -208,6 +208,7 @@ impl ClientShellState {
             agents_only: self.navigator_agents_only,
             expanded_workspaces,
             preview: None,
+            keys_open: false,
         };
         let rows =
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, &navigator);
@@ -216,6 +217,16 @@ impl ClientShellState {
             .find(|row| row.current)
             .map(|row| row.target.clone());
         self.overlay = Some(ClientShellOverlay::Navigator(navigator));
+    }
+
+    pub(super) fn navigator_keys_open(&self) -> bool {
+        matches!(
+            self.overlay,
+            Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
+                keys_open: true,
+                ..
+            }))
+        )
     }
 
     pub(super) fn move_navigator_selection(&mut self, delta: isize) {
@@ -237,18 +248,32 @@ impl ClientShellState {
 
     /// Render clamps `scroll` so the selection stays visible, so the selection
     /// has to follow the viewport or the list would snap back on the next frame.
+    /// `scroll` and `viewport_rows` count display lines, including workspace gaps.
     pub(super) fn scroll_navigator_to(&mut self, scroll: usize, viewport_rows: usize) {
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() else {
             return;
         };
         let rows =
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
+        let lines = super::aggregate_navigation::navigator_lines(&rows);
         let viewport_rows = viewport_rows.max(1);
-        navigator.scroll = scroll.min(rows.len().saturating_sub(viewport_rows));
+        navigator.scroll = scroll.min(lines.len().saturating_sub(viewport_rows));
         let selected =
             super::aggregate_navigation::navigator_selected_index(&rows, navigator).unwrap_or(0);
-        let selected = selected.clamp(navigator.scroll, navigator.scroll + viewport_rows - 1);
-        navigator.selected = rows.get(selected).map(|row| row.target.clone());
+        let Some(selected_line) = lines.iter().position(|line| *line == Some(selected)) else {
+            return;
+        };
+        let last_visible = (navigator.scroll + viewport_rows - 1).min(lines.len() - 1);
+        let row = if selected_line < navigator.scroll {
+            lines[navigator.scroll..].iter().find_map(|line| *line)
+        } else if selected_line > last_visible {
+            lines[..=last_visible].iter().rev().find_map(|line| *line)
+        } else {
+            Some(selected)
+        };
+        if let Some(row) = row {
+            navigator.selected = Some(rows[row].target.clone());
+        }
     }
 
     pub(super) fn move_navigator_workspace(&mut self, forward: bool) {
@@ -652,6 +677,7 @@ impl ClientShellState {
                 }
                 true
             }
+            Some(ClientShellOverlay::Navigator(navigator)) if navigator.keys_open => true,
             Some(ClientShellOverlay::Navigator(navigator)) if navigator.search_focused => {
                 if navigator.query.insert(text) {
                     navigator.filter = None;
@@ -830,6 +856,34 @@ impl ClientShellState {
                     ..
                 }))
             );
+            let shifted_without_evidence = key.modifiers.contains(KeyModifiers::SHIFT)
+                && key.generated_text.is_none()
+                && key.shifted_codepoint.is_none();
+            let question_mark =
+                !shifted_without_evidence && crate::input::keybind_help_text_char(key) == Some('?');
+            let keys_open = matches!(
+                self.overlay,
+                Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
+                    keys_open: true,
+                    ..
+                }))
+            );
+            if keys_open {
+                if code == KeyCode::Esc || code == KeyCode::F(1) || question_mark {
+                    if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+                        navigator.keys_open = false;
+                    }
+                }
+                outcome.repaint = true;
+                return;
+            }
+            if code == KeyCode::F(1) {
+                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+                    navigator.keys_open = true;
+                }
+                outcome.repaint = true;
+                return;
+            }
             if code == KeyCode::Esc {
                 let cleared = match self.overlay.as_mut() {
                     Some(ClientShellOverlay::Navigator(navigator))
@@ -887,15 +941,18 @@ impl ClientShellState {
                 outcome.repaint = true;
                 return;
             }
+            let ctrl = modifiers == KeyModifiers::CONTROL;
             if code == KeyCode::Up
-                || code == KeyCode::Char('p') && modifiers == KeyModifiers::CONTROL
+                || code == KeyCode::Char('p') && ctrl
+                || code == KeyCode::Char('k') && ctrl
             {
                 self.move_navigator_selection(-1);
                 outcome.repaint = true;
                 return;
             }
             if code == KeyCode::Down
-                || code == KeyCode::Char('n') && modifiers == KeyModifiers::CONTROL
+                || code == KeyCode::Char('n') && ctrl
+                || code == KeyCode::Char('j') && ctrl
             {
                 self.move_navigator_selection(1);
                 outcome.repaint = true;
@@ -955,13 +1012,17 @@ impl ClientShellState {
                 outcome.repaint = true;
                 return;
             }
+            if question_mark {
+                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+                    navigator.keys_open = true;
+                }
+                outcome.repaint = true;
+                return;
+            }
             // Match the typed character so layouts where `/` needs Shift work
             // when the host reports it as a shifted key (report-all panes).
             // A shifted key needs the host's text or shifted alternate: bare
             // `CSI 47;2u` is Shift+/, which is not `/` on most layouts.
-            let shifted_without_evidence = key.modifiers.contains(KeyModifiers::SHIFT)
-                && key.generated_text.is_none()
-                && key.shifted_codepoint.is_none();
             if !shifted_without_evidence && crate::input::keybind_help_text_char(key) == Some('/') {
                 if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
                     navigator.search_focused = true;

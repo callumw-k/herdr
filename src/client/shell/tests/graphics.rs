@@ -280,6 +280,7 @@ fn every_dialog_and_menu_occludes_its_panel_not_the_whole_screen() {
             filter: None,
             agents_only: false,
             expanded_workspaces: HashSet::new(),
+            keys_open: false,
             preview: None,
         }),
         ClientShellOverlay::WorktreeCreate(ClientWorktreeCreateOverlay {

@@ -2372,8 +2372,33 @@ fn local_direct_graphics_accept_server_ids_across_endpoint_switches_and_restarts
 }
 
 #[test]
-fn navigator_uses_machine_parents_only_for_federated_clients() {
+fn federated_search_rows_prefix_the_machine_and_highlight_it() {
     let (mut state, _) = state_with_remote();
+    state.open_navigator_overlay();
+    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+        panic!("expected navigator");
+    };
+    navigator.agents_only = false;
+    navigator.query = "build".into();
+    let rows =
+        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].meta, "Build › remote-workspace");
+    assert_eq!(rows[0].meta_hits, vec![0, 1, 2, 3, 4]);
+    assert!(rows[0].label_hits.is_empty());
+}
+
+#[test]
+fn navigator_uses_machine_parents_only_for_federated_clients() {
+    let (mut state, endpoint_id) = state_with_remote();
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    remote.workspaces[0].label = "remote-workspace".into();
+    let mut second = remote.panes[0].clone();
+    second.pane_id = "pane_2".into();
+    second.focused = false;
+    remote.panes.push(second);
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     state.open_navigator_overlay();
     let ClientShellOverlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator")
     else {
@@ -2400,24 +2425,63 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
         ClientNavigatorTarget::Machine { .. } => row.depth == 0 && row.status.is_none(),
         ClientNavigatorTarget::Workspace { .. } => row.depth == 1 && row.status.is_none(),
         ClientNavigatorTarget::Tab { .. } => row.depth == 2 && row.status.is_none(),
-        ClientNavigatorTarget::Pane { .. } => row.depth == 3 && row.status.is_some(),
+        ClientNavigatorTarget::Pane { .. } => matches!(row.depth, 2 | 3) && row.status.is_some(),
     }));
     assert_eq!(rows.iter().filter(|row| row.current).count(), 1);
+    let tab_index = rows
+        .iter()
+        .position(|row| matches!(row.target, ClientNavigatorTarget::Tab { .. }))
+        .expect("remote multi-pane tab row");
+    assert_eq!(rows[tab_index].depth, 2);
+    assert!(matches!(
+        rows[tab_index + 1].target,
+        ClientNavigatorTarget::Pane { .. }
+    ));
+    assert_eq!(rows[tab_index + 1].depth, 3);
+    assert_eq!(rows[tab_index + 2].depth, 3);
 
     let frame = state.compose(106, 30).expect("federated navigator");
+    let tab_y = state
+        .hits
+        .navigator_rows
+        .iter()
+        .find(|(_, target)| matches!(target, ClientNavigatorTarget::Tab { .. }))
+        .map(|(rect, _)| rect.y)
+        .expect("tab hit row");
+    let tree_x = render::overlays::navigator_geometry(ratatui::layout::Rect::new(0, 0, 106, 30))
+        .expect("geometry")
+        .tree
+        .x;
     for (rect, target) in &state.hits.navigator_rows {
-        let expected = match target {
-            ClientNavigatorTarget::Machine { .. } => " ▾ ",
-            ClientNavigatorTarget::Workspace { .. } => "   ▾ ",
-            ClientNavigatorTarget::Tab { .. } => "     └── ",
-            ClientNavigatorTarget::Pane { .. } => "        └── ",
-        };
-        let prefix = frame.cells[rect.y as usize * frame.width as usize + rect.x as usize..]
+        let row = rows
             .iter()
-            .take(expected.chars().count())
+            .find(|row| &row.target == target)
+            .expect("row for hit");
+        let indent = 2 * u16::from(row.depth);
+        let expected = match target {
+            ClientNavigatorTarget::Machine { .. } => 0,
+            ClientNavigatorTarget::Workspace { .. } => 2,
+            ClientNavigatorTarget::Tab { .. } => 4,
+            ClientNavigatorTarget::Pane { .. } if rect.y > tab_y => 6,
+            ClientNavigatorTarget::Pane { .. } => 4,
+        };
+        assert_eq!(indent, expected, "{target:?}");
+        let marker = if row.current { "◆ " } else { "" };
+        let expected_text = format!("{marker}{}", row.label);
+        let text = frame.cells
+            [rect.y as usize * frame.width as usize + (tree_x + indent) as usize..]
+            .iter()
+            .take(expected_text.chars().count().min(3))
             .map(|cell| cell.symbol.as_str())
             .collect::<String>();
-        assert_eq!(prefix, expected, "{target:?}");
+        assert_eq!(
+            text,
+            expected_text
+                .chars()
+                .take(expected_text.chars().count().min(3))
+                .collect::<String>(),
+            "{target:?}"
+        );
     }
 
     let mut local = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
@@ -2842,6 +2906,13 @@ fn collapsed_aggregate_workspace_status_uses_its_status_color() {
 #[test]
 fn navigator_foreign_tab_selection_keeps_the_tab_target() {
     let (mut state, endpoint_id) = state_with_remote();
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    let mut second = remote.panes[0].clone();
+    second.pane_id = "pane_2".into();
+    second.focused = false;
+    remote.panes.push(second);
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
     state.open_navigator_overlay();
     let selected = {
         let ClientShellOverlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator")

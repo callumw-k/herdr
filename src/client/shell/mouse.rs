@@ -1659,6 +1659,12 @@ impl ClientShellState {
                         outcome.repaint = true;
                     }
                 }
+                MouseEventKind::Down(MouseButton::Left) if self.navigator_keys_open() => {
+                    if !super::contains(self.hits.navigator_popup, point) {
+                        self.overlay = None;
+                        outcome.repaint = true;
+                    }
+                }
                 MouseEventKind::Down(MouseButton::Left) => {
                     if super::contains(self.hits.navigator_scrollbar, point) {
                         if let Some(metrics) = self.hits.navigator_scroll_metrics {
@@ -1696,7 +1702,7 @@ impl ClientShellState {
                             navigator.selected = Some(target.clone());
                         }
                         let workspace = matches!(target, ClientNavigatorTarget::Workspace { .. });
-                        if workspace && mouse.column <= rect.x.saturating_add(3) {
+                        if workspace && mouse.column < rect.x.saturating_add(2) {
                             self.toggle_selected_navigator_workspace();
                             outcome.repaint = true;
                         } else {
@@ -1707,6 +1713,8 @@ impl ClientShellState {
                         outcome.repaint = true;
                     }
                 }
+                MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                    if self.navigator_keys_open() => {}
                 MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                     let up = mouse.kind == MouseEventKind::ScrollUp;
                     if super::contains(self.hits.navigator_preview, point) {

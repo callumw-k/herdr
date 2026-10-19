@@ -382,7 +382,11 @@ pub(super) enum ClientNavigatorTarget {
 pub(super) struct ClientNavigatorRow {
     pub(super) depth: u8,
     pub(super) label: String,
+    pub(super) title: String,
     pub(super) meta: String,
+    pub(super) cwd: String,
+    pub(super) label_hits: Vec<usize>,
+    pub(super) meta_hits: Vec<usize>,
     pub(super) status: Option<crate::api::schema::AgentStatus>,
     pub(super) stale: bool,
     pub(super) current: bool,
@@ -421,6 +425,7 @@ pub(super) struct ClientNavigatorOverlay {
     pub(super) agents_only: bool,
     pub(super) expanded_workspaces: HashSet<(ClientEndpointId, String)>,
     pub(super) preview: Option<ClientNavigatorPreview>,
+    pub(super) keys_open: bool,
 }
 
 #[derive(Debug)]

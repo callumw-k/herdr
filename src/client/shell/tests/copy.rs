@@ -1037,70 +1037,81 @@ fn navigator_selected_pane(state: &ClientShellState) -> Option<String> {
 }
 
 #[test]
-fn navigator_renders_connected_siblings_and_ancestor_lines() {
+fn navigator_indents_rows_by_depth_without_tree_lines() {
     let mut state = navigator_tree_state();
-    let prefixes = |state: &mut ClientShellState, height| {
-        let frame = state.compose(106, height).expect("navigator frame");
-        state
-            .hits
-            .navigator_rows
+    let g = render::overlays::navigator_geometry(ratatui::layout::Rect::new(0, 0, 160, 40))
+        .expect("geometry");
+    let divider = g.tree.right() + 1;
+    let frame = state.compose(160, 40).expect("navigator frame");
+    for (rect, target) in &state.hits.navigator_rows {
+        if let ClientNavigatorTarget::Workspace { .. } = target {
+            let caret = frame.cells
+                [rect.y as usize * frame.width as usize + (g.tree.x - 2) as usize]
+                .symbol
+                .as_str();
+            assert_eq!(caret, "▾");
+        }
+    }
+    let popup = state.hits.navigator_popup;
+    for y in popup.y + 1..popup.bottom() - 1 {
+        for x in popup.x + 1..popup.right() - 1 {
+            let symbol = frame.cells[y as usize * frame.width as usize + x as usize]
+                .symbol
+                .as_str();
+            assert!(
+                symbol != "├" && symbol != "└",
+                "tree glyph at {x},{y}: {symbol}"
+            );
+            assert!(
+                symbol != "│" || x == divider,
+                "stray vertical line at {x},{y}"
+            );
+        }
+    }
+
+    let rows = {
+        let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
+            panic!("expected navigator");
+        };
+        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
+    };
+    assert!(!state.hits.navigator_rows.is_empty());
+    for (rect, target) in &state.hits.navigator_rows {
+        let row = rows
             .iter()
-            .map(|(rect, _)| {
-                frame.cells[rect.y as usize * frame.width as usize + rect.x as usize + 1..]
-                    .iter()
-                    .take(6)
-                    .map(|cell| cell.symbol.as_str())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(
-        prefixes(&mut state, 30),
-        [
-            "▾ clie",
-            "├── ed",
-            "│  ├──",
-            "│  └──",
-            "├── no",
-            "│  └──",
-            "└── lo",
-            "   └──",
-            "▾ seco",
-            "└── la",
-            "   └──"
-        ]
-    );
+            .find(|row| &row.target == target)
+            .expect("row for hit");
+        let marker = if row.current { "◆ " } else { "" };
+        let expected = format!("{marker}{}", row.label);
+        let x = g.tree.x + 2 * u16::from(row.depth);
+        let first = frame.cells[rect.y as usize * frame.width as usize + x as usize]
+            .symbol
+            .as_str();
+        assert_eq!(
+            first,
+            expected.chars().next().expect("label").to_string(),
+            "{target:?}"
+        );
+    }
 
-    // The editor ancestor is above this viewport; the logs sibling is below it.
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("expected navigator");
     };
-    navigator.scroll = 2;
-    navigator.selected = Some(ClientNavigatorTarget::Pane {
-        endpoint_id: state.active_endpoint_id.clone(),
-        pane_id: "pane_shell".into(),
-    });
-    assert_eq!(
-        prefixes(&mut state, 12),
-        ["│  ├──", "│  └──", "├── no", "│  └──"]
-    );
-
-    // A query flattens to pane rows, so no tree lines are drawn at all.
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-        panic!("expected navigator");
-    };
-    navigator.query = "shell".into();
-    navigator.scroll = 0;
-    assert_eq!(
-        prefixes(&mut state, 30),
-        [" · she", " · age", " · not", " · log"]
-    );
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-        panic!("expected navigator");
-    };
-    navigator.query.clear();
     navigator.expanded_workspaces.clear();
-    assert_eq!(prefixes(&mut state, 30), ["▸ clie", "▸ seco"]);
+    let frame = state.compose(160, 40).expect("collapsed navigator frame");
+    let mut workspaces = 0;
+    for (rect, target) in &state.hits.navigator_rows {
+        if let ClientNavigatorTarget::Workspace { .. } = target {
+            workspaces += 1;
+            let label_x = g.tree.x;
+            let caret = frame.cells
+                [rect.y as usize * frame.width as usize + (label_x - 2) as usize]
+                .symbol
+                .as_str();
+            assert_eq!(caret, "▸");
+        }
+    }
+    assert_eq!(workspaces, 2);
 }
 
 #[test]
@@ -1209,7 +1220,7 @@ fn navigator_jumps_between_workspace_sections_in_tree_mode() {
     }
     assert_eq!(
         navigator_selected_pane(&state).as_deref(),
-        Some("pane_notes")
+        Some("pane_logs")
     );
     navigator_key(&mut state, KeyCode::Char('l'));
     assert_eq!(
@@ -1252,7 +1263,7 @@ fn navigator_scrollbar_click_drag_and_wheel_scroll_the_tree() {
     assert_eq!(state.hits.navigator_scrollbar, Rect::default());
     assert!(state.hits.navigator_scroll_metrics.is_none());
 
-    state.compose(106, 12).expect("navigator frame");
+    state.compose(106, 15).expect("navigator frame");
     let track = state.hits.navigator_scrollbar;
     let metrics = state
         .hits
@@ -1260,7 +1271,7 @@ fn navigator_scrollbar_click_drag_and_wheel_scroll_the_tree() {
         .expect("overflowing tree reports scroll metrics");
     assert_eq!(track.width, 1);
     assert_eq!(metrics.viewport_rows, usize::from(track.height));
-    assert_eq!(metrics.max_offset_from_bottom, 11 - metrics.viewport_rows);
+    assert_eq!(metrics.max_offset_from_bottom, 9 - metrics.viewport_rows);
     let tree_row = state.hits.navigator_rows[0].0;
     assert_eq!(tree_row.right(), track.x);
 
@@ -1277,8 +1288,8 @@ fn navigator_scrollbar_click_drag_and_wheel_scroll_the_tree() {
     assert!(click.repaint);
     assert!(state.overlay.is_some());
     assert_eq!(scroll_of(&state), metrics.max_offset_from_bottom);
-    state.compose(106, 12).expect("navigator frame");
-    assert_eq!(state.hits.navigator_rows.len(), metrics.viewport_rows);
+    state.compose(106, 15).expect("navigator frame");
+    assert_eq!(state.hits.navigator_rows.len(), metrics.viewport_rows - 1);
     assert!(matches!(
         &state.hits.navigator_rows.last().expect("visible rows").1,
         ClientNavigatorTarget::Pane { pane_id, .. } if pane_id == "pane_last"
@@ -1314,7 +1325,7 @@ fn navigator_scrollbar_click_drag_and_wheel_scroll_the_tree() {
     );
     assert!(state.chrome_drag.is_none());
 
-    state.compose(106, 12).expect("navigator frame");
+    state.compose(106, 15).expect("navigator frame");
     navigator_mouse(
         &mut state,
         MouseEventKind::ScrollDown,
@@ -1322,7 +1333,7 @@ fn navigator_scrollbar_click_drag_and_wheel_scroll_the_tree() {
         tree_row.y,
     );
     assert_eq!(scroll_of(&state), 3);
-    state.compose(106, 12).expect("navigator frame");
+    state.compose(106, 15).expect("navigator frame");
     assert!(state.hits.navigator_rows.iter().any(|(_, target)| matches!(
         target,
         ClientNavigatorTarget::Pane { pane_id, .. } if pane_id == "pane_notes"
@@ -1495,7 +1506,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(navigator_text.contains("client-shell"));
-    assert!(navigator_text.contains("pane 1"));
+    assert!(navigator_text.contains("/repo"));
 
     let search = state.hits.navigator_search;
     let focus_search =
