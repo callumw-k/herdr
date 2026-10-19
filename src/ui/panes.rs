@@ -78,7 +78,7 @@ pub(crate) fn pane_split_gap(
     pane_gaps: bool,
 ) -> PaneGap {
     if pane_borders.is_quiet() && pane_gaps {
-        PaneGap { cols: 2, rows: 1 }
+        PaneGap { cols: 1, rows: 1 }
     } else {
         PaneGap::default()
     }
@@ -1548,7 +1548,7 @@ mod tests {
     }
 
     #[test]
-    fn quiet_side_by_side_split_leaves_two_blank_columns() {
+    fn quiet_side_by_side_split_leaves_one_blank_column() {
         let mut workspace = Workspace::test_new("test");
         let root = workspace.tabs[0].root_pane;
         let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
@@ -1568,7 +1568,7 @@ mod tests {
 
         assert_eq!(left.borders, Borders::ALL);
         assert_eq!(right.borders, Borders::ALL);
-        assert_eq!(right.rect.x - (left.rect.x + left.rect.width), 2);
+        assert_eq!(right.rect.x - (left.rect.x + left.rect.width), 1);
     }
 
     #[test]

@@ -325,8 +325,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # tab_bar_position = "top"
 
 # Desktop tab row style: "classic" or "quiet".
-# "quiet" widens tab padding, fills every tab, shows pane counts,
-# and leaves a blank row between the tab row and the panes.
+# "quiet" widens tab padding, fills every tab, and shows pane counts.
 # tab_bar_style = "classic"
 
 # Show each tab's agent status before its label in the desktop tab row.

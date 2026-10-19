@@ -436,13 +436,11 @@ impl ClientShellConfig {
         let main = Rect::new(sidebar_width, 0, cols.saturating_sub(sidebar_width), rows);
         let show_tab_bar = rows > 1 && !(self.hide_tab_bar_when_single_tab && tab_count == 1);
         let tab_height = u16::from(show_tab_bar);
-        let blank_row =
-            u16::from(show_tab_bar && self.tab_bar_style == TabBarStyleConfig::Quiet && rows > 2);
-        let surface_height = rows.saturating_sub(tab_height).saturating_sub(blank_row);
+        let surface_height = rows.saturating_sub(tab_height);
         let (tab_bar, pane_surface) = match self.tab_bar_position {
             TabBarPositionConfig::Top => (
                 Rect::new(main.x, 0, main.width, tab_height),
-                Rect::new(main.x, tab_height + blank_row, main.width, surface_height),
+                Rect::new(main.x, tab_height, main.width, surface_height),
             ),
             TabBarPositionConfig::Bottom => (
                 Rect::new(
@@ -567,115 +565,6 @@ mod tests {
         let state = ClientShellState::new(config);
         assert_eq!(initial, state.surface_size(100, 30));
         std::fs::remove_file(path).expect("remove endpoint chrome");
-    }
-
-    fn quiet_config() -> ClientShellConfig {
-        let mut config = ClientShellConfig::from_config(&Config::default());
-        config.tab_bar_style = TabBarStyleConfig::Quiet;
-        config
-    }
-
-    fn two_tab_state(config: ClientShellConfig) -> ClientShellState {
-        let mut snapshot = crate::client::shell::tests::snapshot();
-        snapshot.tabs.push(crate::protocol::ClientShellTab {
-            tab_id: "tab_2".into(),
-            number: 2,
-            label: "2".into(),
-            focused: false,
-            ..snapshot.tabs[0].clone()
-        });
-        let mut state = ClientShellState::new(config);
-        state.set_snapshot(Box::new(snapshot));
-        state.set_pane_surface(crate::client::shell::tests::surface());
-        state
-    }
-
-    #[test]
-    fn quiet_tab_row_leaves_a_blank_row_above_the_panes() {
-        let layout = quiet_config().layout(120, 40, true, 2, 30);
-        assert_eq!(layout.tab_bar.y, 0);
-        assert_eq!(layout.tab_bar.height, 1);
-        assert_eq!(layout.pane_surface.y, 2);
-        assert_eq!(layout.pane_surface.height, 38);
-    }
-
-    #[test]
-    fn quiet_tab_row_at_the_bottom_leaves_a_blank_row_below_the_panes() {
-        let mut config = quiet_config();
-        config.tab_bar_position = TabBarPositionConfig::Bottom;
-        let layout = config.layout(120, 40, true, 2, 30);
-        assert_eq!(layout.pane_surface.y, 0);
-        assert_eq!(layout.pane_surface.height, 38);
-        assert_eq!(layout.tab_bar.y, 39);
-    }
-
-    #[test]
-    fn quiet_blank_row_goes_with_a_hidden_tab_bar() {
-        let mut config = quiet_config();
-        config.hide_tab_bar_when_single_tab = true;
-        let layout = config.layout(120, 40, true, 1, 30);
-        assert_eq!(
-            layout.pane_surface,
-            Rect::new(layout.sidebar.width, 0, 120 - layout.sidebar.width, 40)
-        );
-    }
-
-    #[test]
-    fn quiet_blank_row_needs_room() {
-        let config = quiet_config();
-        let two_rows = config.layout(120, 2, true, 2, 30);
-        assert_eq!(two_rows.pane_surface.y, 1);
-        assert_eq!(two_rows.pane_surface.height, 1);
-        let three_rows = config.layout(120, 3, true, 2, 30);
-        assert_eq!(three_rows.pane_surface.y, 2);
-        assert_eq!(three_rows.pane_surface.height, 1);
-    }
-
-    #[test]
-    fn classic_tab_row_has_no_blank_row() {
-        let config = ClientShellConfig::from_config(&Config::default());
-        assert_eq!(config.tab_bar_style, TabBarStyleConfig::Classic);
-        let layout = config.layout(120, 40, true, 2, 30);
-        assert_eq!(layout.pane_surface.y, 1);
-        assert_eq!(layout.pane_surface.height, 39);
-    }
-
-    #[test]
-    fn toggling_quiet_tab_row_on_reload_changes_the_surface_size() {
-        let mut state = two_tab_state(ClientShellConfig::from_config(&Config::default()));
-        let previous = state.surface_size(120, 40);
-        assert_eq!(previous.rows, 39);
-
-        let mut next = Config::default();
-        next.ui.tab_bar_style = TabBarStyleConfig::Quiet;
-        state.config.apply_live_config(&next, &[], &[]);
-
-        let reloaded = state.surface_size(120, 40);
-        assert_eq!(reloaded.rows, 38);
-        assert_ne!(previous, reloaded);
-    }
-
-    #[test]
-    fn quiet_blank_row_is_painted_panel_bg() {
-        let mut state = two_tab_state(quiet_config());
-        let frame = state.compose(120, 40).expect("quiet two-tab frame");
-        let layout = state.layout(120, 40);
-        let panel_bg = crate::protocol::color_to_u32(state.config.palette.panel_bg);
-        let row_start = usize::from(frame.width);
-        for x in layout.tab_bar.x..layout.tab_bar.right() {
-            let cell = &frame.cells[row_start + usize::from(x)];
-            assert_eq!(cell.symbol, " ", "column {x}");
-            assert_eq!(cell.bg, panel_bg, "column {x}");
-        }
-
-        state.config.tab_bar_position = TabBarPositionConfig::Bottom;
-        let frame = state.compose(120, 40).expect("quiet bottom two-tab frame");
-        let row_start = 38 * usize::from(frame.width);
-        for x in layout.tab_bar.x..layout.tab_bar.right() {
-            let cell = &frame.cells[row_start + usize::from(x)];
-            assert_eq!(cell.symbol, " ", "bottom column {x}");
-            assert_eq!(cell.bg, panel_bg, "bottom column {x}");
-        }
     }
 
     #[test]

@@ -1085,7 +1085,7 @@ pub struct UiConfig {
     pub hide_tab_bar_when_single_tab: bool,
     /// Desktop tab row placement. Default: top.
     pub tab_bar_position: TabBarPositionConfig,
-    /// Desktop tab row style. quiet widens tab padding, fills every tab, shows pane counts, and leaves a blank row between the tab row and the panes. Default: classic.
+    /// Desktop tab row style. quiet widens tab padding, fills every tab, and shows pane counts. Default: classic.
     pub tab_bar_style: TabBarStyleConfig,
     /// Show each tab's agent status before its label in the desktop tab row. Default: false.
     pub tab_bar_status: bool,

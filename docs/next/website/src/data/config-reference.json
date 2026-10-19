@@ -1092,7 +1092,7 @@
           "key": "ui.tab_bar_style",
           "type": "enum",
           "default": "\"classic\"",
-          "description": "Desktop tab row style. quiet widens tab padding, fills every tab, shows pane counts, and leaves a blank row between the tab row and the panes.",
+          "description": "Desktop tab row style. quiet widens tab padding, fills every tab, and shows pane counts.",
           "values": [
             "classic",
             "quiet"
