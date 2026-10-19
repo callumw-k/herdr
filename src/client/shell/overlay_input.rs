@@ -413,6 +413,44 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
+    pub(super) fn close_selected_navigator_pane(&mut self, outcome: &mut ClientShellInput) {
+        let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_ref() else {
+            return;
+        };
+        let rows =
+            render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
+        let Some(selected) =
+            super::aggregate_navigation::navigator_selected_index(&rows, navigator)
+        else {
+            return;
+        };
+        let ClientNavigatorTarget::Pane {
+            endpoint_id,
+            pane_id,
+        } = &rows[selected].target
+        else {
+            return;
+        };
+        if *endpoint_id != self.active_endpoint_id {
+            let label = self.endpoint_label(endpoint_id).to_owned();
+            outcome.repaint |=
+                self.receive_endpoint_unavailable(format!("Switch to {label} to close its panes"));
+            return;
+        }
+        let pane_id = pane_id.clone();
+        let is_pane = |row: &&ClientNavigatorRow| matches!(&row.target, ClientNavigatorTarget::Pane { pane_id: other, .. } if *other != pane_id);
+        let neighbour = rows[selected + 1..]
+            .iter()
+            .find(is_pane)
+            .or_else(|| rows[..selected].iter().rev().find(is_pane))
+            .map(|row| row.target.clone());
+        if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+            navigator.selected = neighbour;
+        }
+        self.request_pane_close(pane_id, outcome);
+        outcome.repaint = true;
+    }
+
     pub(super) fn toggle_selected_navigator_workspace(&mut self) {
         let workspace_key = self.overlay.as_ref().and_then(|overlay| match overlay {
             ClientShellOverlay::Navigator(navigator) => {
@@ -963,6 +1001,10 @@ impl ClientShellState {
             {
                 self.move_navigator_selection(1);
                 outcome.repaint = true;
+                return;
+            }
+            if code == KeyCode::Char('x') && (ctrl || !search_focused && plain) {
+                self.close_selected_navigator_pane(outcome);
                 return;
             }
             if search_focused {

@@ -2355,7 +2355,7 @@ fn key_sheet_keys_are_never_clipped_across_terminal_sizes() {
                 let drawn = columns
                     .iter()
                     .flat_map(|column| column.entries.iter())
-                    .filter(|(_, action)| action.contains("close"))
+                    .filter(|(_, action)| action.contains("close") && !action.contains("pane"))
                     .count();
                 assert_eq!(drawn, 2, "{context}: both close entries are drawn");
             }
@@ -2417,4 +2417,47 @@ fn editing_a_query_selects_the_top_match_not_the_current_pane() {
         super::super::aggregate_navigation::selected_navigator_target(&rows, navigator(&state)),
         Some(ClientNavigatorTarget::Pane { pane_id, .. }) if pane_id == "pane_2"
     ));
+}
+
+#[test]
+fn ctrl_x_closes_the_selected_pane_and_keeps_the_overview_open() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.config.confirm_close = false;
+    state.navigator_agents_only = false;
+    state.set_snapshot(Box::new(two_workspace_snapshot()));
+    open(&mut state);
+    let outcome = press(&mut state, KeyCode::Char('x'), KeyModifiers::CONTROL);
+    let closed = outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. } => Some(&request.method),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(matches!(
+        closed.as_slice(),
+        [crate::api::schema::Method::PaneClose(target)] if target.pane_id == "pane_1"
+    ));
+    assert!(navigator(&state).query.is_empty());
+    assert!(matches!(
+        &navigator(&state).selected,
+        Some(ClientNavigatorTarget::Pane { pane_id, .. }) if pane_id == "pane_2"
+    ));
+}
+
+#[test]
+fn x_in_tree_mode_ignores_workspace_rows() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.config.confirm_close = false;
+    state.navigator_agents_only = false;
+    state.set_snapshot(Box::new(two_workspace_snapshot()));
+    open(&mut state);
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    press(&mut state, KeyCode::Home, KeyModifiers::NONE);
+    let outcome = press(&mut state, KeyCode::Char('x'), KeyModifiers::NONE);
+    assert!(outcome
+        .actions
+        .iter()
+        .all(|action| !matches!(action, ClientShellAction::Endpoint { .. })));
 }
