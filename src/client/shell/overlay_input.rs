@@ -323,6 +323,13 @@ impl ClientShellState {
         let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_ref() else {
             return;
         };
+        if !navigator.query.is_empty() {
+            if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+                navigator.selected = None;
+                navigator.scroll = 0;
+            }
+            return;
+        }
         let rows =
             render::client_navigator_rows(&self.endpoints, &self.active_endpoint_id, navigator);
         let current = rows

@@ -2399,3 +2399,22 @@ fn the_footer_offers_only_esc_while_the_key_sheet_is_open() {
     press(&mut state, KeyCode::Char('?'), KeyModifiers::NONE);
     assert_eq!(frame_line(&mut state, 160, 40, footer), "esc close keys");
 }
+
+#[test]
+fn editing_a_query_selects_the_top_match_not_the_current_pane() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.navigator_agents_only = false;
+    state.set_snapshot(Box::new(two_workspace_snapshot()));
+    open(&mut state);
+    state.handle_input_bytes(b"zq");
+    press(&mut state, KeyCode::Backspace, KeyModifiers::NONE);
+    let rows = render::client_navigator_rows(
+        &state.endpoints,
+        &state.active_endpoint_id,
+        navigator(&state),
+    );
+    assert!(matches!(
+        super::super::aggregate_navigation::selected_navigator_target(&rows, navigator(&state)),
+        Some(ClientNavigatorTarget::Pane { pane_id, .. }) if pane_id == "pane_2"
+    ));
+}
