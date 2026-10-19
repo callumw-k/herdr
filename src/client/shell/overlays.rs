@@ -882,7 +882,7 @@ fn render_navigator_overlay(
 ) -> Option<OverlayRender> {
     let g = navigator_geometry(b.area)?;
     let q = g.popup;
-    let i = panel(b, q, p.accent, p.panel_bg)?;
+    let i = panel(b, q, p.peach, p.panel_bg)?;
     debug_assert_eq!(i, g.inner);
     put_text(
         b,
