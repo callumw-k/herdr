@@ -623,6 +623,46 @@ fn prefix_g_closes_the_navigator_from_the_keyboard() {
     assert_eq!(state.mode, ClientShellMode::Terminal);
 }
 
+#[test]
+fn a_direct_goto_binding_toggles_the_navigator_closed() {
+    let mut config = Config::default();
+    config.keys.goto =
+        crate::config::BindingConfig::Many(vec!["prefix+g".to_owned(), "alt+p".to_owned()]);
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot()));
+
+    press(&mut state, KeyCode::Char('p'), KeyModifiers::ALT);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
+
+    press(&mut state, KeyCode::Tab, KeyModifiers::NONE);
+    press(&mut state, KeyCode::Char('p'), KeyModifiers::ALT);
+    assert!(state.overlay.is_none());
+
+    press(&mut state, KeyCode::Char('p'), KeyModifiers::ALT);
+    press(&mut state, KeyCode::Char('x'), KeyModifiers::NONE);
+    press(&mut state, KeyCode::Char('p'), KeyModifiers::ALT);
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn other_direct_bindings_still_reach_the_navigator_query() {
+    let mut config = Config::default();
+    config.keys.goto = crate::config::BindingConfig::one("alt+p");
+    config.keys.new_tab = crate::config::BindingConfig::one("alt+t");
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot()));
+
+    press(&mut state, KeyCode::Char('p'), KeyModifiers::ALT);
+    press(&mut state, KeyCode::Char('t'), KeyModifiers::ALT);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::Navigator(_))
+    ));
+}
+
 use ratatui::layout::Rect;
 
 #[test]

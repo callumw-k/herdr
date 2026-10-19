@@ -637,7 +637,22 @@ impl ClientShellState {
             return None;
         }
         if self.overlay.is_some() {
-            let navigator_prefix = matches!(self.overlay, Some(ClientShellOverlay::Navigator(_)))
+            let navigator_open = matches!(self.overlay, Some(ClientShellOverlay::Navigator(_)));
+            if navigator_open
+                && self.mode != ClientShellMode::Prefix
+                && key.kind == KeyEventKind::Press
+                && matches!(
+                    crate::input::resolve_direct_binding(&self.config.keybinds.keybinds, key),
+                    Some(crate::input::KeybindMatch::Action(
+                        crate::input::KeybindAction::OpenNavigator
+                    ))
+                )
+            {
+                self.overlay = None;
+                outcome.repaint = true;
+                return None;
+            }
+            let navigator_prefix = navigator_open
                 && (self.mode == ClientShellMode::Prefix
                     || self.config.keybinds.matches_prefix(key));
             if !navigator_prefix {
