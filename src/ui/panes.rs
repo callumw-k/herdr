@@ -756,11 +756,7 @@ fn render_float_chrome(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Thick)
-        .border_style(Style::default().fg(if info.is_focused {
-            app.palette.accent
-        } else {
-            app.palette.overlay1
-        }))
+        .border_style(Style::default().fg(app.palette.peach))
         .title(pane_border_title(&title, rect.width, info.is_focused).unwrap_or_default())
         .style(Style::default().bg(app.palette.panel_bg));
     frame.render_widget(Clear, rect);
