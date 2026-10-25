@@ -1040,7 +1040,7 @@
           "key": "ui.pane_borders",
           "type": "enum",
           "default": "\"auto\"",
-          "description": "Draw borders around split panes. auto draws them only for split panes, always also frames a lone pane (only while pane_outer_borders is enabled, since every edge of a lone pane is an outer edge), off disables them. quiet draws borders only for split panes, drops pane names except in stacks of two or more, and spaces split panes apart. Legacy booleans still parse: true maps to auto and false maps to off.",
+          "description": "Draw borders around split panes. auto draws them only for split panes, always also frames a lone pane (only while pane_outer_borders is enabled, since every edge of a lone pane is an outer edge), off disables them. quiet draws borders only for split panes, drops pane names except in stacks of two or more, and spaces side-by-side split panes one column apart. Legacy booleans still parse: true maps to auto and false maps to off.",
           "values": [
             "auto",
             "always",

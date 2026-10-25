@@ -78,7 +78,7 @@ pub(crate) fn pane_split_gap(
     pane_gaps: bool,
 ) -> PaneGap {
     if pane_borders.is_quiet() && pane_gaps {
-        PaneGap { cols: 1, rows: 1 }
+        PaneGap { cols: 1, rows: 0 }
     } else {
         PaneGap::default()
     }
@@ -1568,7 +1568,7 @@ mod tests {
     }
 
     #[test]
-    fn quiet_row_split_leaves_one_blank_row() {
+    fn quiet_row_split_stacks_borders_without_a_blank_row() {
         let mut workspace = Workspace::test_new("test");
         let root = workspace.tabs[0].root_pane;
         let bottom = workspace.test_split(ratatui::layout::Direction::Vertical);
@@ -1588,7 +1588,7 @@ mod tests {
 
         assert_eq!(top.borders, Borders::ALL);
         assert_eq!(bottom.borders, Borders::ALL);
-        assert_eq!(bottom.rect.y - (top.rect.y + top.rect.height), 1);
+        assert_eq!(bottom.rect.y - (top.rect.y + top.rect.height), 0);
     }
 
     #[test]
