@@ -187,14 +187,10 @@ pub(crate) fn render_tab_bar(
         }
         let rect = Rect::new(x, area.y, width, 1);
         let style = if tab.focused {
-            let base = Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent);
-            if tab.custom_label {
-                base.add_modifier(Modifier::BOLD)
-            } else {
-                base
-            }
+            Style::default()
+                .fg(palette.accent)
+                .bg(unselected_bg)
+                .add_modifier(Modifier::BOLD)
         } else if tab.custom_label {
             Style::default().fg(palette.overlay1).bg(unselected_bg)
         } else {
