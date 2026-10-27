@@ -15,6 +15,7 @@ use std::io::{self, IsTerminal, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 
+#[cfg(unix)]
 use interprocess::local_socket::traits::Listener as _;
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::local_socket::ListenerNonblockingMode;
@@ -552,7 +553,7 @@ fn windows_powershell_streaming_application_script(path: &str, args: &[&str]) ->
 }
 
 fn posix_remote_output_command(command: &str) -> String {
-    format!("printf '\n%s\n' '{REMOTE_OUTPUT_READY_MARKER}'\n{command}")
+    format!("printf '\\n%s\\n' '{REMOTE_OUTPUT_READY_MARKER}'\n{command}")
 }
 
 fn posix_base64_command(script: &str) -> String {
@@ -5137,6 +5138,26 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn posix_remote_output_command_supports_tcsh() {
+        let output = match Command::new("tcsh")
+            .args(["-f", "-c"])
+            .arg(posix_remote_output_command("echo probe-ok"))
+            .output()
+        {
+            Ok(output) => output,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+            Err(error) => panic!("failed to run tcsh: {error}"),
+        };
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        assert_eq!(
+            output.stdout,
+            format!("\n{REMOTE_OUTPUT_READY_MARKER}\nprobe-ok\n").as_bytes()
+        );
+    }
+
     #[test]
     fn windows_remote_commands_use_one_encoded_powershell_grammar() {
         let executable = RemoteExecutable::WindowsPath("herdr.exe".to_string());
@@ -5537,7 +5558,7 @@ function Get-Process {
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec \"$HOME/.local/bin/herdr\" remote-client-bridge"
+            "printf '\\n%s\\n' 'herdr-remote-output-ready:1'\nexec \"$HOME/.local/bin/herdr\" remote-client-bridge"
         );
         assert_eq!(
             remote_herdr.executable.saved_bridge_command("agents"),
@@ -5558,7 +5579,7 @@ function Get-Process {
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec /usr/bin/herdr remote-client-bridge"
+            "printf '\\n%s\\n' 'herdr-remote-output-ready:1'\nexec /usr/bin/herdr remote-client-bridge"
         );
     }
 
@@ -5576,7 +5597,7 @@ function Get-Process {
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec '/opt/herdr bin/herdr' remote-client-bridge"
+            "printf '\\n%s\\n' 'herdr-remote-output-ready:1'\nexec '/opt/herdr bin/herdr' remote-client-bridge"
         );
     }
 
@@ -5594,7 +5615,7 @@ function Get-Process {
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec /opt/homebrew/bin/herdr remote-client-bridge"
+            "printf '\\n%s\\n' 'herdr-remote-output-ready:1'\nexec /opt/homebrew/bin/herdr remote-client-bridge"
         );
         assert_eq!(remote_herdr.platform.asset_key(), "macos-aarch64");
     }
@@ -5691,7 +5712,7 @@ function Get-Process {
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec '/opt/herdr'\\''s/bin/herdr' remote-client-bridge"
+            "printf '\\n%s\\n' 'herdr-remote-output-ready:1'\nexec '/opt/herdr'\\''s/bin/herdr' remote-client-bridge"
         );
     }
 

@@ -173,11 +173,11 @@ impl App {
             |content| match crate::config::toggle_repo_path(content, &path) {
                 Ok((updated, now_declared)) => {
                     declared = now_declared;
-                    updated
+                    Ok(updated)
                 }
                 Err(message) => {
                     unsupported = Some(message);
-                    content.to_string()
+                    Ok(content.to_string())
                 }
             },
         ) {
