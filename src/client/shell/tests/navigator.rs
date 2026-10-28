@@ -1861,7 +1861,7 @@ fn status_dots_stay_left_of_the_scrollbar() {
     assert!(panes.len() > 10);
     for (rect, _) in panes {
         assert_eq!(rect.right(), scrollbar.x);
-        assert_eq!(cell_at(&frame, rect.right() - 1, rect.y).symbol, dot);
+        assert_eq!(cell_at(&frame, rect.right() - 2, rect.y).symbol, dot);
         assert_ne!(cell_at(&frame, scrollbar.x, rect.y).symbol, dot);
     }
 }
@@ -1892,7 +1892,7 @@ fn status_dots_share_one_column() {
         let dots = (rect.x..rect.right())
             .filter(|x| cell_at(&frame, *x, rect.y).symbol == dot)
             .collect::<Vec<_>>();
-        assert_eq!(dots, vec![rect.right() - 1]);
+        assert_eq!(dots, vec![rect.right() - 2]);
     }
 }
 

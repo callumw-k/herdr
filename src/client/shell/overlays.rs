@@ -1075,7 +1075,8 @@ fn render_navigator_overlay(
                 }
                 _ => None,
             };
-            let mut right_edge = rect.right();
+            let content = Rect::new(rect.x, rect.y, rect.width.saturating_sub(1), 1);
+            let mut right_edge = content.right();
             if let Some(status) = machine_status {
                 let (glyph, state, color) = endpoint_status_presentation(status, p);
                 let signal = if status == ClientEndpointStatus::Online {
@@ -1095,11 +1096,11 @@ fn render_navigator_overlay(
                             Modifier::empty()
                         })
                 };
-                put_right_text(b, rect, rect.y, &signal, signal_style);
+                put_right_text(b, content, rect.y, &signal, signal_style);
                 right_edge = right_edge.saturating_sub(display_width(&signal).saturating_add(1));
             }
             if let Some(status) = r.status {
-                let dot_x = rect.right().saturating_sub(1);
+                let dot_x = content.right().saturating_sub(1);
                 let status_style = if r.stale || selected_row {
                     st
                 } else {
